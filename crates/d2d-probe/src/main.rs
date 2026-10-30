@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
-use tv_engine::{parse, Level, LogFile};
+use tv_engine::{Level, LogFile};
 use windows::core::{w, Interface, Result};
 use windows::Win32::Foundation::{FILETIME, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -19,21 +19,21 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory, ID2D1Factory1, ID2D1RenderTarget, ID2D1SolidColorBrush,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_PRESENT_OPTIONS_IMMEDIATELY, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
     D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+};
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11CreateDevice, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_MEASURING_MODE_GDI_CLASSIC, DWRITE_TEXT_ALIGNMENT_TRAILING,
     DWRITE_WORD_WRAPPING_NO_WRAP,
-};
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -66,8 +66,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRect, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
     LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
     CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, SW_SHOW, WINDOW_EX_STYLE, WM_DESTROY, WM_QUIT,
-    WS_EX_TOPMOST,
-    WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    WNDCLASSW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 
 const FONT_SIZE: f32 = 13.0;
@@ -191,11 +190,18 @@ fn parse_args() -> Option<Options> {
 }
 
 fn ms_since_process_start() -> f64 {
-    let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    let ticks =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
     let (mut created, mut exited, mut kernel, mut user) = Default::default();
     // SAFETY: the pseudo-handle is always valid and each pointer is a live local.
     let now = unsafe {
-        let _ = GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user);
+        let _ = GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        );
         GetSystemTimeAsFileTime()
     };
     ticks(now).saturating_sub(ticks(created)) as f64 / 10_000.0
@@ -248,7 +254,11 @@ fn create_window(size: (i32, i32), topmost: bool) -> Result<HWND> {
         };
         AdjustWindowRect(&mut bounds, WS_OVERLAPPEDWINDOW, false)?;
         let window = CreateWindowExW(
-            if topmost { WS_EX_TOPMOST } else { WINDOW_EX_STYLE(0) },
+            if topmost {
+                WS_EX_TOPMOST
+            } else {
+                WINDOW_EX_STYLE(0)
+            },
             class_name,
             w!("TraceView Direct2D probe"),
             WS_OVERLAPPEDWINDOW,
@@ -305,90 +315,104 @@ impl Renderer {
                 dpiY: 96.0,
                 ..Default::default()
             };
-            let (target, bitmap, swap_chain, width, height): (ID2D1RenderTarget, _, _, _, _) = match surface {
-                Surface::Window(window) => {
-                    let mut client = RECT::default();
-                    GetClientRect(window, &mut client)?;
-                    let hwnd_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                        hwnd: window,
-                        pixelSize: D2D_SIZE_U {
-                            width: client.right as u32,
-                            height: client.bottom as u32,
-                        },
-                        presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
-                    };
-                    let target = factory.CreateHwndRenderTarget(&properties, &hwnd_properties)?;
-                    (target.cast()?, None, None, client.right, client.bottom)
-                }
-                Surface::Flip(window, device_kind) => {
-                    let mut client = RECT::default();
-                    GetClientRect(window, &mut client)?;
-                    let mut device = None;
-                    D3D11CreateDevice(
-                        None,
-                        match device_kind {
-                            Device::Hardware => D3D_DRIVER_TYPE_HARDWARE,
-                            Device::Warp => D3D_DRIVER_TYPE_WARP,
-                        },
-                        HMODULE::default(),
-                        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                        None,
-                        D3D11_SDK_VERSION,
-                        Some(&mut device),
-                        None,
-                        None,
-                    )?;
-                    let device = device.ok_or_else(windows::core::Error::empty)?;
-                    let dxgi_device: IDXGIDevice = device.cast()?;
-                    let dxgi_factory: IDXGIFactory2 = dxgi_device.GetAdapter()?.GetParent()?;
-                    let description = DXGI_SWAP_CHAIN_DESC1 {
-                        Width: client.right as u32,
-                        Height: client.bottom as u32,
-                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                        SampleDesc: DXGI_SAMPLE_DESC {
-                            Count: 1,
-                            Quality: 0,
-                        },
-                        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                        BufferCount: 2,
-                        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                        AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                        ..Default::default()
-                    };
-                    let swap_chain =
-                        dxgi_factory.CreateSwapChainForHwnd(&device, window, &description, None, None)?;
-                    let context = factory
-                        .cast::<ID2D1Factory1>()?
-                        .CreateDevice(&dxgi_device)?
-                        .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-                    context.SetDpi(96.0, 96.0);
-                    let back_buffer: IDXGISurface = swap_chain.GetBuffer(0)?;
-                    let bitmap_properties = D2D1_BITMAP_PROPERTIES1 {
-                        pixelFormat: properties.pixelFormat,
-                        dpiX: 96.0,
-                        dpiY: 96.0,
-                        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                        colorContext: std::mem::ManuallyDrop::new(None),
-                    };
-                    let target_bitmap =
-                        context.CreateBitmapFromDxgiSurface(&back_buffer, Some(&bitmap_properties))?;
-                    context.SetTarget(&target_bitmap);
-                    (context.cast()?, None, Some(swap_chain), client.right, client.bottom)
-                }
-                Surface::Offscreen(width, height) => {
-                    CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-                    let imaging: IWICImagingFactory =
-                        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-                    let bitmap = imaging.CreateBitmap(
-                        width as u32,
-                        height as u32,
-                        &GUID_WICPixelFormat32bppBGR,
-                        WICBitmapCacheOnLoad,
-                    )?;
-                    let target = factory.CreateWicBitmapRenderTarget(&bitmap, &properties)?;
-                    (target, Some(bitmap), None, width, height)
-                }
-            };
+            let (target, bitmap, swap_chain, width, height): (ID2D1RenderTarget, _, _, _, _) =
+                match surface {
+                    Surface::Window(window) => {
+                        let mut client = RECT::default();
+                        GetClientRect(window, &mut client)?;
+                        let hwnd_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                            hwnd: window,
+                            pixelSize: D2D_SIZE_U {
+                                width: client.right as u32,
+                                height: client.bottom as u32,
+                            },
+                            presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
+                        };
+                        let target =
+                            factory.CreateHwndRenderTarget(&properties, &hwnd_properties)?;
+                        (target.cast()?, None, None, client.right, client.bottom)
+                    }
+                    Surface::Flip(window, device_kind) => {
+                        let mut client = RECT::default();
+                        GetClientRect(window, &mut client)?;
+                        let mut device = None;
+                        D3D11CreateDevice(
+                            None,
+                            match device_kind {
+                                Device::Hardware => D3D_DRIVER_TYPE_HARDWARE,
+                                Device::Warp => D3D_DRIVER_TYPE_WARP,
+                            },
+                            HMODULE::default(),
+                            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                            None,
+                            D3D11_SDK_VERSION,
+                            Some(&mut device),
+                            None,
+                            None,
+                        )?;
+                        let device = device.ok_or_else(windows::core::Error::empty)?;
+                        let dxgi_device: IDXGIDevice = device.cast()?;
+                        let dxgi_factory: IDXGIFactory2 = dxgi_device.GetAdapter()?.GetParent()?;
+                        let description = DXGI_SWAP_CHAIN_DESC1 {
+                            Width: client.right as u32,
+                            Height: client.bottom as u32,
+                            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            SampleDesc: DXGI_SAMPLE_DESC {
+                                Count: 1,
+                                Quality: 0,
+                            },
+                            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                            BufferCount: 2,
+                            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+                            ..Default::default()
+                        };
+                        let swap_chain = dxgi_factory.CreateSwapChainForHwnd(
+                            &device,
+                            window,
+                            &description,
+                            None,
+                            None,
+                        )?;
+                        let context = factory
+                            .cast::<ID2D1Factory1>()?
+                            .CreateDevice(&dxgi_device)?
+                            .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+                        context.SetDpi(96.0, 96.0);
+                        let back_buffer: IDXGISurface = swap_chain.GetBuffer(0)?;
+                        let bitmap_properties = D2D1_BITMAP_PROPERTIES1 {
+                            pixelFormat: properties.pixelFormat,
+                            dpiX: 96.0,
+                            dpiY: 96.0,
+                            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET
+                                | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                            colorContext: std::mem::ManuallyDrop::new(None),
+                        };
+                        let target_bitmap = context
+                            .CreateBitmapFromDxgiSurface(&back_buffer, Some(&bitmap_properties))?;
+                        context.SetTarget(&target_bitmap);
+                        (
+                            context.cast()?,
+                            None,
+                            Some(swap_chain),
+                            client.right,
+                            client.bottom,
+                        )
+                    }
+                    Surface::Offscreen(width, height) => {
+                        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+                        let imaging: IWICImagingFactory =
+                            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+                        let bitmap = imaging.CreateBitmap(
+                            width as u32,
+                            height as u32,
+                            &GUID_WICPixelFormat32bppBGR,
+                            WICBitmapCacheOnLoad,
+                        )?;
+                        let target = factory.CreateWicBitmapRenderTarget(&bitmap, &properties)?;
+                        (target, Some(bitmap), None, width, height)
+                    }
+                };
             target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
             let brush = target.CreateSolidColorBrush(&palette.text, None)?;
 
@@ -554,20 +578,19 @@ impl Renderer {
                     windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED,
                 );
             }
-            for slot in 0..count {
-                let row = first + slot;
-                if row >= log.rows() {
-                    break;
-                }
+            let mut buffer = Vec::new();
+            let mut row_text = Vec::new();
+            let read = log.read_rows(first..first + count, &mut buffer, |row, raw, _| {
+                let slot = row - first;
                 let y = (header_bottom + slot as f32 * ROW_HEIGHT - offset).round();
                 let bottom = y + ROW_HEIGHT;
                 match log.level(row) {
-                    Level::Info => {}
+                    Level::Debug | Level::Info | Level::Notice => {}
                     Level::Warning => self.fill(0.0, y, body_right, bottom, &palette.warning),
                     Level::Error => self.fill(0.0, y, body_right, bottom, &palette.error),
                     Level::Critical => self.fill(0.0, y, body_right, bottom, &palette.critical),
                 }
-                let fields = parse::fields(log.format(), log.row_bytes(row));
+                let fields = log.fields(log.text(raw, &mut row_text));
                 let text_top = y + 1.0;
 
                 line_number.clear();
@@ -581,11 +604,9 @@ impl Renderer {
                     scratch,
                 );
                 time.clear();
-                time.extend_from_slice(fields.date);
-                if !fields.date.is_empty() {
-                    time.push(b' ');
+                if let Some(stamp) = fields.stamp {
+                    time.extend_from_slice(stamp.to_string().as_bytes());
                 }
-                time.extend_from_slice(fields.time);
                 self.text(
                     &time,
                     &self.left_format,
@@ -607,23 +628,44 @@ impl Renderer {
                     &palette.text,
                     scratch,
                 );
-            }
+            });
             // SAFETY: matches the push above.
             unsafe { self.target.PopAxisAlignedClip() };
+            read.map_err(|_| windows::core::Error::empty())?;
 
-            self.fill(body_right, header_bottom, self.width, body_bottom, &palette.scrollbar);
+            self.fill(
+                body_right,
+                header_bottom,
+                self.width,
+                body_bottom,
+                &palette.scrollbar,
+            );
             let max_top = (log.rows() as f64 - self.visible_rows()).max(1.0);
             let travel = body_bottom - header_bottom - 28.0;
             let thumb = header_bottom + (top_row / max_top) as f32 * travel;
-            self.fill(body_right + 2.0, thumb, self.width - 2.0, thumb + 28.0, &palette.thumb);
+            self.fill(
+                body_right + 2.0,
+                thumb,
+                self.width - 2.0,
+                thumb + 28.0,
+                &palette.thumb,
+            );
         }
 
         self.fill(0.0, header_top, self.width, header_bottom, &palette.header);
         for (title, format, bounds) in [
             (&b"Line"[..], &self.right_format, (0.0, line_right)),
             (&b"Time"[..], &self.left_format, (time_left, component_left)),
-            (&b"Component"[..], &self.left_format, (component_left, message_left)),
-            (&b"Message"[..], &self.left_format, (message_left, body_right)),
+            (
+                &b"Component"[..],
+                &self.left_format,
+                (component_left, message_left),
+            ),
+            (
+                &b"Message"[..],
+                &self.left_format,
+                (message_left, body_right),
+            ),
         ] {
             self.text(
                 title,
@@ -677,7 +719,7 @@ fn save_frame(
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     // SAFETY: the buffer holds exactly `height` rows of `width * 4` bytes.
     unsafe { bitmap.CopyPixels(std::ptr::null(), width * 4, &mut pixels)? };
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
@@ -708,7 +750,17 @@ fn capture_desktop(
         let memory = CreateCompatibleDC(Some(screen));
         let bitmap = CreateCompatibleBitmap(screen, width, height);
         let previous = SelectObject(memory, bitmap.into());
-        let copied = BitBlt(memory, 0, 0, width, height, Some(screen), origin.x, origin.y, SRCCOPY);
+        let copied = BitBlt(
+            memory,
+            0,
+            0,
+            width,
+            height,
+            Some(screen),
+            origin.x,
+            origin.y,
+            SRCCOPY,
+        );
         let mut info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -738,7 +790,7 @@ fn capture_desktop(
         copied?;
         (width as u32, height as u32, pixels)
     };
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
@@ -829,7 +881,10 @@ fn run(options: &Options) -> std::result::Result<(), Box<dyn std::error::Error>>
                 wait_for_frame_end(started);
             }
         }
-        stages.push(format!("    \"{name}\": {{ \"frame_ms\": {} }}", summary(frame_ms)));
+        stages.push(format!(
+            "    \"{name}\": {{ \"frame_ms\": {} }}",
+            summary(frame_ms)
+        ));
     }
     // A second frame proves rows were still fully drawn at the end of the run.
     let after_run = options.bench.with_extension("").display().to_string() + "-end.png";
@@ -852,7 +907,7 @@ fn run(options: &Options) -> std::result::Result<(), Box<dyn std::error::Error>>
             },
             log.rows(),
             stats.seconds,
-            stats.cache_hit,
+            stats.cache == tv_engine::CacheUse::Hit,
             private_mb(),
             stages.join(",\n"),
         ),

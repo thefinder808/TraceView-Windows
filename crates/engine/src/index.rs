@@ -1,66 +1,46 @@
-//! Row index: one packed file offset and one severity byte per row.
-//!
-//! A row is a physical line in plain logs. In SCCM logs a row is a whole
-//! `<![LOG[...]LOG]!>` entry, because messages can span several lines.
+//! Row index: compact arrays with one file offset, severity and timestamp per
+//! row. A row is a line in plain logs and a whole `<![LOG[...]LOG]!>` entry in
+//! SCCM logs, because SCCM messages can span several lines.
 
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use memchr::memmem;
+use crate::encoding::Encoding;
+use crate::level::Level;
+use crate::parse::{self, Format, ParseContext};
+use crate::reader;
+use crate::time::Stamp;
+use memchr::memmem::Finder;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const CHUNK_SIZE: usize = 16 * 1024 * 1024;
-const SCCM_START: &[u8] = b"<![LOG[";
-const SCCM_END: &[u8] = b"]LOG]!>";
-const SCCM_NEXT: &[u8] = b"\n<![LOG[";
+/// How far past its chunk a row is read to analyze it. Longer rows are still
+/// indexed correctly, but their level and time come from this much of the row.
+const LOOKAHEAD: usize = 1024 * 1024;
 
 /// Packed offsets address up to 1 TiB, which is checked when a file is opened.
 pub const MAX_FILE_LEN: u64 = 1 << 40;
+/// Bytes of index memory per row: offset, level and time.
+pub const BYTES_PER_ROW: usize = 5 + 1 + 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum Format {
-    Plain = 0,
-    Sccm = 1,
-}
-
-impl Format {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Format::Plain),
-            1 => Some(Format::Sccm),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum Level {
-    Info = 0,
-    Warning = 1,
-    Error = 2,
-    Critical = 3,
-}
-
-impl Level {
-    pub fn from_u8(value: u8) -> Self {
-        match value {
-            1 => Level::Warning,
-            2 => Level::Error,
-            3 => Level::Critical,
-            _ => Level::Info,
-        }
-    }
-}
-
-pub struct RowIndex {
+/// How a file's bytes are laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub encoding: Encoding,
     pub format: Format,
+    /// Where text starts, after any byte order mark.
+    pub body_offset: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct RowArrays {
     pub(crate) offsets: Vec<[u8; 5]>,
     pub(crate) levels: Vec<u8>,
+    /// Seconds since 2000-01-01 plus one, with zero meaning no timestamp.
+    pub(crate) times: Vec<u32>,
 }
 
-impl RowIndex {
+impl RowArrays {
     pub fn rows(&self) -> usize {
         self.offsets.len()
     }
@@ -69,240 +49,417 @@ impl RowIndex {
         Level::from_u8(self.levels[row])
     }
 
-    pub fn memory_bytes(&self) -> usize {
-        self.offsets.len() * 5 + self.levels.len()
+    pub fn stamp_seconds(&self, row: usize) -> Option<u32> {
+        self.times[row].checked_sub(1)
     }
 
-    /// Byte range of a row, clamped so a damaged cache can never read out of bounds.
-    pub fn range(&self, row: usize, file_len: usize) -> (usize, usize) {
-        let start = unpack(self.offsets[row]).min(file_len);
-        let end = self
-            .offsets
-            .get(row + 1)
-            .map_or(file_len, |next| unpack(*next).min(file_len));
-        (start, end.max(start))
+    pub fn offset(&self, row: usize) -> u64 {
+        unpack(self.offsets[row])
+    }
+
+    pub fn memory_bytes(&self) -> usize {
+        self.rows() * BYTES_PER_ROW
+    }
+
+    fn append(&mut self, other: RowArrays) {
+        self.offsets.extend_from_slice(&other.offsets);
+        self.levels.extend_from_slice(&other.levels);
+        self.times.extend_from_slice(&other.times);
+    }
+
+    pub(crate) fn truncate(&mut self, rows: usize) {
+        self.offsets.truncate(rows);
+        self.levels.truncate(rows);
+        self.times.truncate(rows);
+    }
+
+    pub(crate) fn extend(&mut self, other: RowArrays) {
+        self.append(other);
+    }
+
+    fn push(&mut self, offset: u64, level: Level, stamp: Option<Stamp>) {
+        self.offsets.push(pack(offset));
+        self.levels.push(level as u8);
+        self.times
+            .push(stamp.map_or(0, |stamp| stamp.seconds.saturating_add(1)));
     }
 }
 
-fn pack(offset: usize) -> [u8; 5] {
-    let bytes = (offset as u64).to_le_bytes();
+fn pack(offset: u64) -> [u8; 5] {
+    let bytes = offset.to_le_bytes();
     [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]]
 }
 
-fn unpack(packed: [u8; 5]) -> usize {
-    u64::from_le_bytes([packed[0], packed[1], packed[2], packed[3], packed[4], 0, 0, 0]) as usize
+fn unpack(packed: [u8; 5]) -> u64 {
+    u64::from_le_bytes([
+        packed[0], packed[1], packed[2], packed[3], packed[4], 0, 0, 0,
+    ])
 }
 
-/// Treats a file as SCCM only when its head contains a complete entry.
-pub fn detect_format(bytes: &[u8]) -> Format {
-    let head = &bytes[..bytes.len().min(64 * 1024)];
-    let starts_entry = head.starts_with(SCCM_START)
-        || head.starts_with(b"\xEF\xBB\xBF<![LOG[")
-        || memmem::find(head, SCCM_NEXT).is_some();
-    if starts_entry && memmem::find(head, SCCM_END).is_some() {
-        Format::Sccm
-    } else {
-        Format::Plain
-    }
-}
-
-pub fn build(bytes: &[u8], progress: &AtomicU64) -> RowIndex {
-    build_with_chunk_size(bytes, CHUNK_SIZE, progress)
-}
-
-pub(crate) fn build_with_chunk_size(
-    bytes: &[u8],
+/// Everything a chunk needs in order to find and analyze rows.
+struct Scanner<'a> {
+    file: &'a File,
+    len: u64,
+    layout: Layout,
+    context: ParseContext,
+    from: u64,
     chunk_size: usize,
+    lookahead: usize,
+    separator: Finder<'static>,
+    newline_len: usize,
+}
+
+impl Scanner<'_> {
+    /// Finds the next separator at a code-unit boundary. `base` is the file
+    /// offset of `buffer[0]`, and the search starts at `start` in the buffer.
+    fn find_separator(&self, buffer: &[u8], base: u64, start: usize) -> Option<usize> {
+        let unit = self.layout.encoding.unit() as u64;
+        let mut search = start;
+        loop {
+            let found = search + self.separator.find(buffer.get(search..)?)?;
+            let offset = base + found as u64;
+            if offset
+                .saturating_sub(self.layout.body_offset)
+                .is_multiple_of(unit)
+            {
+                return Some(found);
+            }
+            search = found + 1;
+        }
+    }
+
+    fn scan_chunk(
+        &self,
+        chunk: usize,
+        buffer: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+    ) -> io::Result<RowArrays> {
+        let unit = self.layout.encoding.unit() as u64;
+        let start = self.from + (chunk * self.chunk_size) as u64;
+        let end = (start + self.chunk_size as u64).min(self.len);
+        // Start one unit early, so a separator ending right before this chunk
+        // is seen and the row starting exactly here is claimed.
+        let read_start = if chunk == 0 { start } else { start - unit };
+        let read_end = (end + self.lookahead as u64).min(self.len);
+        buffer.resize((read_end - read_start) as usize, 0);
+        let filled = reader::read_at(self.file, read_start, buffer)?;
+        buffer.truncate(filled);
+
+        let mut rows = RowArrays::default();
+        let mut position = if chunk == 0 {
+            0
+        } else {
+            match self.find_separator(buffer, read_start, 0) {
+                Some(found) => found + self.newline_len,
+                None => return Ok(rows),
+            }
+        };
+        let end_in_buffer = (end - read_start) as usize;
+        let at_file_end = read_start + filled as u64 >= self.len;
+        while position < end_in_buffer && position < buffer.len() {
+            let next = self.find_separator(buffer, read_start, position);
+            let row_end = next.map_or(buffer.len(), |found| found + self.newline_len);
+            let raw = &buffer[position..row_end];
+            let text = self.layout.encoding.to_utf8(raw, scratch);
+            let fields = parse::fields(self.layout.format, text, &self.context);
+            rows.push(read_start + position as u64, fields.level, fields.stamp);
+            if next.is_none() {
+                debug_assert!(at_file_end || row_end >= end_in_buffer);
+                break;
+            }
+            position = row_end;
+        }
+        Ok(rows)
+    }
+}
+
+/// Reads and analyzes rows from `from` to `len` in parallel. `from` must be the
+/// start of a row.
+pub(crate) fn scan(
+    file: &File,
+    len: u64,
+    layout: Layout,
+    context: ParseContext,
+    from: u64,
     progress: &AtomicU64,
-) -> RowIndex {
-    let format = detect_format(bytes);
-    let keywords = severity_keywords();
-    let chunks: Vec<(Vec<[u8; 5]>, Vec<u8>)> = (0..bytes.len().div_ceil(chunk_size))
+) -> io::Result<RowArrays> {
+    scan_with_sizes(
+        file, len, layout, context, from, progress, CHUNK_SIZE, LOOKAHEAD,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_with_sizes(
+    file: &File,
+    len: u64,
+    layout: Layout,
+    context: ParseContext,
+    from: u64,
+    progress: &AtomicU64,
+    chunk_size: usize,
+    lookahead: usize,
+) -> io::Result<RowArrays> {
+    let encoding = layout.encoding;
+    let separator = match layout.format {
+        Format::Plain => encoding.encode_ascii(b"\n"),
+        Format::Sccm => encoding.encode_ascii(b"\n<![LOG["),
+    };
+    let scanner = Scanner {
+        file,
+        len,
+        layout,
+        context,
+        from,
+        chunk_size,
+        lookahead,
+        separator: Finder::new(&separator).into_owned(),
+        newline_len: encoding.unit(),
+    };
+    let chunks = (len.saturating_sub(from) as usize).div_ceil(chunk_size);
+    let parts: Vec<RowArrays> = (0..chunks)
         .into_par_iter()
-        .map(|chunk| {
-            let start = chunk * chunk_size;
-            let end = (start + chunk_size).min(bytes.len());
-            let rows = match format {
-                Format::Plain => scan_plain(bytes, start, end, &keywords),
-                Format::Sccm => scan_sccm(bytes, start, end),
-            };
-            progress.fetch_add((end - start) as u64, Ordering::Relaxed);
-            rows
-        })
-        .collect();
+        .map_init(
+            || (Vec::new(), Vec::new()),
+            |(buffer, scratch), chunk| {
+                let rows = scanner.scan_chunk(chunk, buffer, scratch)?;
+                progress.fetch_add(chunk_size as u64, Ordering::Relaxed);
+                Ok(rows)
+            },
+        )
+        .collect::<io::Result<_>>()?;
 
-    let rows = chunks.iter().map(|(offsets, _)| offsets.len()).sum();
-    let mut offsets = Vec::with_capacity(rows);
-    let mut levels = Vec::with_capacity(rows);
-    for (chunk_offsets, chunk_levels) in chunks {
-        offsets.extend_from_slice(&chunk_offsets);
-        levels.extend_from_slice(&chunk_levels);
-    }
-    RowIndex {
-        format,
-        offsets,
-        levels,
-    }
-}
-
-/// Indexes the rows that start inside `start..end`. A row can run past `end`,
-/// and the chunk that holds its first byte owns it.
-fn scan_plain(
-    bytes: &[u8],
-    start: usize,
-    end: usize,
-    keywords: &AhoCorasick,
-) -> (Vec<[u8; 5]>, Vec<u8>) {
-    let mut offsets = Vec::new();
-    let mut levels = Vec::new();
-    let mut pos = if start == 0 {
-        0
-    } else {
-        match memchr::memchr(b'\n', &bytes[start - 1..]) {
-            Some(found) => start + found,
-            None => return (offsets, levels),
-        }
+    let total = parts.iter().map(RowArrays::rows).sum();
+    let mut rows = RowArrays {
+        offsets: Vec::with_capacity(total),
+        levels: Vec::with_capacity(total),
+        times: Vec::with_capacity(total),
     };
-    while pos < end {
-        let line_end = memchr::memchr(b'\n', &bytes[pos..]).map_or(bytes.len(), |found| pos + found);
-        offsets.push(pack(pos));
-        levels.push(plain_level(&bytes[pos..line_end], keywords) as u8);
-        pos = line_end + 1;
+    for part in parts {
+        rows.append(part);
     }
-    (offsets, levels)
-}
-
-fn scan_sccm(bytes: &[u8], start: usize, end: usize) -> (Vec<[u8; 5]>, Vec<u8>) {
-    let next_entry = memmem::Finder::new(SCCM_NEXT);
-    let mut offsets = Vec::new();
-    let mut levels = Vec::new();
-    let mut pos = if start == 0 {
-        0
-    } else {
-        match next_entry.find(&bytes[start - 1..]) {
-            Some(found) => start + found,
-            None => return (offsets, levels),
-        }
-    };
-    while pos < end {
-        let entry_end = next_entry
-            .find(&bytes[pos..])
-            .map_or(bytes.len(), |found| pos + found + 1);
-        offsets.push(pack(pos));
-        levels.push(sccm_level(&bytes[pos..entry_end]) as u8);
-        pos = entry_end;
-    }
-    (offsets, levels)
-}
-
-fn severity_keywords() -> AhoCorasick {
-    AhoCorasickBuilder::new()
-        .ascii_case_insensitive(true)
-        .match_kind(MatchKind::LeftmostFirst)
-        .build(["critical", "fatal", "error", "fail", "warn"])
-        .expect("static severity keywords always compile")
-}
-
-fn plain_level(line: &[u8], keywords: &AhoCorasick) -> Level {
-    keywords
-        .find_iter(line)
-        .map(|found| match found.pattern().as_usize() {
-            0 | 1 => Level::Critical,
-            2 | 3 => Level::Error,
-            _ => Level::Warning,
-        })
-        .max()
-        .unwrap_or(Level::Info)
-}
-
-/// The attribute sits after the message, so searching from the tail avoids
-/// matching `type="3"` text inside a message.
-fn sccm_level(entry: &[u8]) -> Level {
-    let tail = &entry[entry.len().saturating_sub(512)..];
-    let digit = memmem::rfind(tail, b" type=\"").and_then(|found| tail.get(found + 7));
-    match digit {
-        Some(b'2') => Level::Warning,
-        Some(b'3') => Level::Error,
-        _ => Level::Info,
-    }
+    Ok(rows)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::YearHint;
+    use proptest::prelude::*;
+    use std::io::Write;
 
-    fn rows(bytes: &[u8], chunk_size: usize) -> Vec<Vec<u8>> {
-        let index = build_with_chunk_size(bytes, chunk_size, &AtomicU64::new(0));
-        (0..index.rows())
+    const CONTEXT: ParseContext = ParseContext {
+        year_hint: YearHint {
+            year: 2026,
+            month: 6,
+        },
+    };
+
+    /// Returns each row's bytes after scanning with the given chunk size.
+    fn scan_bytes(
+        bytes: &[u8],
+        encoding: Encoding,
+        format: Format,
+        body_offset: u64,
+        chunk_size: usize,
+        lookahead: usize,
+    ) -> (RowArrays, Vec<Vec<u8>>) {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        temp.write_all(bytes).unwrap();
+        let file = temp.reopen().unwrap();
+        let layout = Layout {
+            encoding,
+            format,
+            body_offset,
+        };
+        let rows = scan_with_sizes(
+            &file,
+            bytes.len() as u64,
+            layout,
+            CONTEXT,
+            body_offset,
+            &AtomicU64::new(0),
+            chunk_size,
+            lookahead,
+        )
+        .unwrap();
+        let contents = (0..rows.rows())
             .map(|row| {
-                let (start, end) = index.range(row, bytes.len());
+                let start = rows.offset(row) as usize;
+                let end = if row + 1 < rows.rows() {
+                    rows.offset(row + 1) as usize
+                } else {
+                    bytes.len()
+                };
                 bytes[start..end].to_vec()
             })
-            .collect()
+            .collect();
+        (rows, contents)
+    }
+
+    fn plain_rows(bytes: &[u8], chunk_size: usize) -> Vec<Vec<u8>> {
+        scan_bytes(bytes, Encoding::Utf8, Format::Plain, 0, chunk_size, 8).1
     }
 
     #[test]
     fn chunk_size_never_changes_plain_rows() {
         let log = b"one\r\n\nthree error\nfour";
-        let expected = rows(log, 1024);
+        let expected = plain_rows(log, 1024);
         assert_eq!(expected.len(), 4);
         assert_eq!(expected[1], b"\n");
         for chunk_size in 1..log.len() {
-            assert_eq!(rows(log, chunk_size), expected, "chunk size {chunk_size}");
+            assert_eq!(
+                plain_rows(log, chunk_size),
+                expected,
+                "chunk size {chunk_size}"
+            );
         }
     }
 
     #[test]
     fn trailing_newline_does_not_add_a_row() {
-        assert_eq!(rows(b"one\ntwo\n", 3).len(), 2);
+        assert_eq!(plain_rows(b"one\ntwo\n", 3).len(), 2);
     }
 
     #[test]
     fn empty_input_has_no_rows() {
-        assert_eq!(rows(b"", 3).len(), 0);
+        assert_eq!(plain_rows(b"", 3).len(), 0);
+    }
+
+    #[test]
+    fn rows_longer_than_the_lookahead_stay_whole() {
+        let mut log = vec![b'x'; 5000];
+        log.extend_from_slice(b"\nshort\n");
+        for chunk_size in [16, 100, 1000, 4096, 5000, 5001, 5002] {
+            let rows = scan_bytes(&log, Encoding::Utf8, Format::Plain, 0, chunk_size, 32).1;
+            assert_eq!(rows.len(), 2, "chunk size {chunk_size}");
+            assert_eq!(rows[0].len(), 5001, "chunk size {chunk_size}");
+            assert_eq!(rows[1], b"short\n", "chunk size {chunk_size}");
+        }
     }
 
     #[test]
     fn sccm_multiline_entry_is_one_row() {
         let log = b"<![LOG[first\r\nsecond]LOG]!><time=\"1\" type=\"3\" thread=\"1\">\r\n<![LOG[next]LOG]!><time=\"2\" type=\"2\" thread=\"1\">\r\n";
-        let expected = rows(log, 1024);
+        let scan = |chunk_size| scan_bytes(log, Encoding::Utf8, Format::Sccm, 0, chunk_size, 1024);
+        let (rows, expected) = scan(1024);
         assert_eq!(expected.len(), 2);
-        assert!(expected[0].windows(6).any(|window| window == b"second"));
+        assert_eq!(rows.level(0), Level::Error);
+        assert_eq!(rows.level(1), Level::Warning);
         for chunk_size in 1..log.len() {
-            assert_eq!(rows(log, chunk_size), expected, "chunk size {chunk_size}");
+            let (rows, contents) = scan(chunk_size);
+            assert_eq!(contents, expected, "chunk size {chunk_size}");
+            assert_eq!(rows.level(0), Level::Error, "chunk size {chunk_size}");
         }
-        let index = build_with_chunk_size(log, 7, &AtomicU64::new(0));
-        assert_eq!(index.level(0), Level::Error);
-        assert_eq!(index.level(1), Level::Warning);
     }
 
     #[test]
-    fn sccm_level_ignores_type_text_inside_the_message() {
-        let entry = b"<![LOG[saw type=\"3\" here]LOG]!><time=\"1\" type=\"1\" thread=\"1\">";
-        assert_eq!(sccm_level(entry), Level::Info);
+    fn timestamps_are_stored_per_row() {
+        let (rows, _) = scan_bytes(
+            b"2026-01-01 10:00:00 hello\nno time here\n",
+            Encoding::Utf8,
+            Format::Plain,
+            0,
+            1024,
+            1024,
+        );
+        assert!(rows.stamp_seconds(0).is_some());
+        assert_eq!(rows.stamp_seconds(1), None);
     }
 
     #[test]
-    fn plain_level_keeps_the_highest_severity() {
-        let keywords = severity_keywords();
-        assert_eq!(plain_level(b"warn then FATAL", &keywords), Level::Critical);
-        assert_eq!(plain_level(b"retry warning", &keywords), Level::Warning);
-        assert_eq!(plain_level(b"all fine", &keywords), Level::Info);
+    fn utf16_rows_split_only_on_real_newlines() {
+        // U+0A00 and U+010A contain the byte 0x0A at the wrong alignment.
+        let text = "\u{0A00}first \u{010A} error\nsecond\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        for chunk_size in [2, 4, 8, 16, 1024] {
+            let (rows, contents) = scan_bytes(
+                &bytes,
+                Encoding::Utf16Le,
+                Format::Plain,
+                2,
+                chunk_size,
+                1024,
+            );
+            assert_eq!(contents.len(), 2, "chunk size {chunk_size}");
+            assert_eq!(rows.level(0), Level::Error, "chunk size {chunk_size}");
+            assert_eq!(rows.level(1), Level::Info, "chunk size {chunk_size}");
+        }
     }
 
     #[test]
-    fn range_clamps_offsets_past_the_end() {
-        let index = RowIndex {
-            format: Format::Plain,
-            offsets: vec![pack(100), pack(200)],
-            levels: vec![0, 0],
-        };
-        assert_eq!(index.range(0, 10), (10, 10));
+    fn big_endian_utf16_is_scanned_too() {
+        let mut bytes = vec![0xFE, 0xFF];
+        bytes.extend("one\ntwo\n".encode_utf16().flat_map(u16::to_be_bytes));
+        let (_, contents) = scan_bytes(&bytes, Encoding::Utf16Be, Format::Plain, 2, 4, 64);
+        assert_eq!(contents.len(), 2);
     }
 
     #[test]
     fn offsets_round_trip_at_the_size_limit() {
-        let largest = (MAX_FILE_LEN - 1) as usize;
-        assert_eq!(unpack(pack(largest)), largest);
+        assert_eq!(unpack(pack(MAX_FILE_LEN - 1)), MAX_FILE_LEN - 1);
+    }
+
+    proptest! {
+        /// Any bytes split into rows must rejoin into exactly the original
+        /// bytes, and chunking must never change where rows fall.
+        #[test]
+        fn rows_cover_any_input_exactly(
+            bytes in proptest::collection::vec(any::<u8>(), 0..600),
+            chunk_size in 1usize..64,
+        ) {
+            let rows = plain_rows(&bytes, chunk_size);
+            prop_assert_eq!(rows.concat(), bytes.clone());
+            prop_assert_eq!(rows, plain_rows(&bytes, 4096));
+        }
+
+        #[test]
+        fn line_heavy_input_matches_a_simple_split(
+            bytes in proptest::collection::vec(prop_oneof![Just(b'\n'), Just(b'\r'), Just(b'a')], 0..300),
+            chunk_size in 1usize..32,
+        ) {
+            let expected: Vec<Vec<u8>> = bytes
+                .split_inclusive(|byte| *byte == b'\n')
+                .map(<[u8]>::to_vec)
+                .collect();
+            prop_assert_eq!(plain_rows(&bytes, chunk_size), expected);
+        }
+
+        #[test]
+        fn sccm_scanning_covers_any_input_exactly(
+            pieces in proptest::collection::vec(
+                prop_oneof![
+                    Just(&b"\n<![LOG["[..]),
+                    Just(&b"]LOG]!>"[..]),
+                    Just(&b"<time=\"1\" type=\"3\">"[..]),
+                    Just(&b"text\r\n"[..]),
+                ],
+                0..40,
+            ),
+            chunk_size in 1usize..64,
+        ) {
+            let bytes = pieces.concat();
+            let scan = |size| scan_bytes(&bytes, Encoding::Utf8, Format::Sccm, 0, size, 4096).1;
+            let rows = scan(chunk_size);
+            prop_assert_eq!(rows.concat(), bytes.clone());
+            prop_assert_eq!(rows, scan(4096));
+        }
+
+        #[test]
+        fn utf16_scanning_covers_any_input_exactly(
+            units in proptest::collection::vec(
+                prop_oneof![Just(0x000Au16), Just(0x0A00), Just(0x010A), Just(0x0061)],
+                0..200,
+            ),
+            chunk_units in 1usize..32,
+        ) {
+            let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+            let scan = |size| scan_bytes(&bytes, Encoding::Utf16Le, Format::Plain, 0, size, 4096).1;
+            let rows = scan(chunk_units * 2);
+            prop_assert_eq!(rows.concat(), bytes.clone());
+            prop_assert_eq!(rows.len(), units
+                .split_inclusive(|unit| *unit == 0x000A)
+                .count());
+        }
     }
 }

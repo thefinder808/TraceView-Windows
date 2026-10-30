@@ -1,0 +1,29 @@
+[package]
+name = "tv-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tempfile = "3"
+tv-engine = { path = "../crates/engine" }
+
+[[bin]]
+name = "parse_row"
+path = "fuzz_targets/parse_row.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_file"
+path = "fuzz_targets/open_file.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

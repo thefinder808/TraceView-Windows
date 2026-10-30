@@ -66,7 +66,9 @@ fn main() -> std::io::Result<()> {
             std::process::exit(2);
         }
     };
-    let target = (gigabytes.parse::<f64>().expect("gigabytes must be a number")
+    let target = (gigabytes
+        .parse::<f64>()
+        .expect("gigabytes must be a number")
         * 1024.0
         * 1024.0
         * 1024.0) as u64;
@@ -97,16 +99,20 @@ fn main() -> std::io::Result<()> {
         line.clear();
         if sccm {
             // Real SCCM logs have occasional multi-line messages.
-            let extra = if rows % 1000 == 999 { "\r\ncontinuation line" } else { "" };
+            let extra = if rows % 1000 == 999 {
+                "\r\ncontinuation line"
+            } else {
+                ""
+            };
             write!(
                 line,
                 "<![LOG[{message}{extra}]LOG]!><time=\"{hour:02}:{minute:02}:{sec:02}.{millis:03}+000\" date=\"{month:02}-{day:02}-2026\" component=\"{component}\" context=\"\" type=\"{severity}\" thread=\"{thread}\" file=\"{}.cpp\">\r\n",
                 component.to_lowercase()
             )?;
         } else {
-            write!(
+            writeln!(
                 line,
-                "2026-{month:02}-{day:02} {hour:02}:{minute:02}:{sec:02}.{millis:03}-05 host01 {component}[{thread}]: {message}\n"
+                "2026-{month:02}-{day:02} {hour:02}:{minute:02}:{sec:02}.{millis:03}-05 host01 {component}[{thread}]: {message}"
             )?;
         }
         out.write_all(&line)?;

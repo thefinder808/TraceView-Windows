@@ -1,6 +1,6 @@
 # Spike results: Rust and egui for TraceView on Windows
 
-Date: 2026-10-30. Branch: `spike/egui`.
+Date: 2026-10-30. This is a historical record of the tests that chose the stack. The egui app and its benchmark scripts were removed once the choice was made, and they remain on the `spike/egui` and `spike/presentation` branches. The current engine's numbers are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Verdict
 
@@ -118,4 +118,4 @@ target/release/examples/gen_log.exe sccm 5 test-data/perf/sccm-5gb.log
 target/release/examples/gen_log.exe plain 5 test-data/perf/plain-5gb.log
 ```
 
-Then run `scripts/run-spike-bench.ps1` for engine and egui numbers, and `scripts/run-ui-compare.ps1` for the head-to-head. Reports go to `spike-output/`, which isn't committed.
+On the `spike/presentation` branch, run `scripts/run-spike-bench.ps1` for engine and egui numbers, and `scripts/run-ui-compare.ps1` for the head-to-head. `scripts/run-presentation-test.ps1` is still current, and needs a visible RDP session. Reports go to `spike-output/`, which isn't committed.

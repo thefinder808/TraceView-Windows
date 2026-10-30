@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/app", "crates/d2d-probe"]
+members = ["crates/engine", "crates/traceview", "crates/d2d-probe"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"
