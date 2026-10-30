@@ -1,0 +1,4 @@
+/target
+# Generated multi-gigabyte logs. Recreate them with the gen_log example.
+/test-data/perf/
+/spike-output/

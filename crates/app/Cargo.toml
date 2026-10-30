@@ -1,0 +1,11 @@
+[package]
+name = "traceview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "glow", "accesskit", "default_fonts"] }
+png = "0.18.1"
+tv-engine = { path = "../engine" }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
