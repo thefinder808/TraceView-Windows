@@ -32,7 +32,7 @@ Test logs came from `gen_log`, 5 GiB each:
 
 \* Drawing cost, measured by rendering to a memory bitmap and reading the pixels back. See "What wasn't verified".
 
-The GPU row and both launch rows ran in a session whose display wasn't being drawn, so they exclude getting pixels to a screen. The text results were judged by eye from screenshots. The 3840x2100 run kept 13 px text, so it shows far more rows than a real 200%-scaled 4K display would.
+This table's runs mostly came from a session whose display wasn't being drawn, so its frame times can exclude getting pixels to a screen. Later runs on a visible display confirmed the picture, with egui at about 125 ms on software rendering and Direct2D at 1.2-2.1 ms. The text results were judged by eye from screenshots. The 3840x2100 run kept 13 px text, so it shows far more rows than a real 200%-scaled 4K display would.
 
 The memory comparison isn't exactly like for like, because the egui run also ran filters and the probe has no controls. Of the probe's memory, 154 MB is the row index.
 
@@ -61,10 +61,35 @@ The UI stayed responsive during filtering. The slowest p99 frame across runs was
 4. **`f32` scroll positions fail at this scale.** The grid keeps its own `f64` position.
 5. **Static CRT linking works.** The EXE then needs only DLLs that ship with Windows, with no VC++ redistributable.
 
+## Getting frames to the screen over RDP
+
+Measured on a live, visible RDP session with `scripts/run-presentation-test.ps1`. Each path scrolled at 60 Hz for 10 seconds, over two rounds. RDP's own counters recorded what it sent. Idle traffic was about 0.75 KB/s.
+
+| Path | Launch | Frame p50 / p99 | RDP data | CPU per 10 s scrolling | Private memory |
+|---|---|---|---|---|---|
+| **Flip-model swap chain, WARP** (chosen) | 60 ms | 1.5 / 2.0 ms | 744-761 KB/s | 3.7-4.1 s | 177 MB |
+| Flip-model swap chain, WARP, scroll hints | 60 ms | 1.5 / 2.0 ms | 722-747 KB/s | 3.3-3.7 s | 177 MB |
+| Flip-model swap chain, hardware | 250 ms | 1.2 / 1.6 ms | 734-779 KB/s | 1.7-1.9 s | 225 MB |
+| Flip-model swap chain, hardware, scroll hints | 250 ms | 1.2 / 1.6 ms | 753-763 KB/s | 1.8 s | 225 MB |
+| HWND target, software | 62 ms | 2.4 / 7.9 ms | 884-972 KB/s | 3.0-3.3 s | 182 MB |
+| HWND target, default | 248 ms | 1.3 / 1.8 ms | 735-739 KB/s | 1.9 s | 227 MB |
+
+The 5 GiB SCCM log was open for all of these, and 154 MB of the memory is its row index.
+
+Every path delivered 32 frames per second over RDP, with no frames skipped and quality at 100. RDP's rate stayed at 32 fps even though the app drew at 60 Hz, so that appears to be this session's limit.
+
+What this shows:
+
+- **WARP removes the launch penalty.** A software D3D11 device launches as fast as the plain software target, and it avoids that target's 7-8 ms frame spikes. It also sends about 20% less data.
+- **D3D11's software path is far better than D3D12's for this work.** Direct2D on D3D11 WARP takes about 1.5 ms per frame. egui on wgpu's D3D12 software adapter took about 125 ms on the same visible session. They're different renderers, so this doesn't isolate the API.
+- **Hardware's advantage is CPU.** It uses about half the CPU while scrolling, but it costs 190 ms of launch. Neither path draws anything while idle.
+- **Scroll hints showed no measurable benefit.** Differences stayed within round-to-round noise, even though Microsoft describes savings over Remote Desktop. They add complexity, so they're left out for now.
+- **Pixels are correct.** Captures from the desktop matched at the expected row (row 1801 after 600 frames of 3 rows). The only differences were the window's antialiased rounded corners, which blend with what's behind them, and the antialiased edge of the scrollbar thumb. All text matched exactly across all paths.
+
 ## What wasn't verified
 
-- **Real RDP delivery.** This whole spike ran inside an RDP session whose display wasn't being drawn, apparently because the client was minimized. Desktop capture failed with "handle is invalid". Frame times therefore exclude getting pixels to a visible screen. egui's slow result is real rendering work (926 CPU-seconds), but Direct2D's windowed numbers aren't proof of what a person would see. Run `scripts/run-visible-check.ps1` with the RDP window visible to close this.
-- **A real no-GPU VM.** Windows Sandbox isn't installed here. egui's result used the D3D12 software adapter, which is the fallback such a VM would be expected to use. Direct2D's software path doesn't use a GPU by design.
+- **Slow or lossy RDP links.** The test connection skipped no frames, and its link speed wasn't recorded. Scroll hints might still help on a constrained link.
+- **A real no-GPU VM.** Windows Sandbox isn't installed here. The software paths were forced on a machine that has a GPU, and RDP's encoder may behave differently on a VM without one.
 - **Slower hardware.** NVMe only. A cold open can't beat the disk's read speed, so a 5 GiB log needs about 10 s at 500 MB/s and much longer on a hard drive.
 - **Real workloads.** Generated logs only, with no live tail, UTF-16 logs (rejected with a clear error for now), or high-DPI displays.
 - **Frame-time parity.** egui is measured frame to frame, and the probe around each draw call. The probe also draws no filter box or status text.

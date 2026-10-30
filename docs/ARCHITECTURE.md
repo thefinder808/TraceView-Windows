@@ -52,7 +52,9 @@ docs/          this file and the spike results
 | File access | Positional reads (planned) | Memory maps block a writer's truncate and were slower cold. The spike engine still maps |
 | Text | DirectWrite | Windows's own text stack: system fonts, ClearType, shaping and fallback |
 | Drawing | Direct2D behind a renderer boundary | About 80x faster than egui without a GPU, 49 ms launch, about 3.8 ms at 4K. The boundary keeps the choice below reversible |
-| Presenting frames | To be measured | The spike's HWND render target is the simple path. Flip-model swap chains support dirty and scroll rectangles, which Microsoft says help most over Remote Desktop, but they need a D3D11 device, and GPU device setup cost about 190 ms of launch in the probe |
+| Presenting frames | Flip-model swap chain on a D3D11 WARP device | Measured over real RDP: 60 ms launch, about 1.5 ms per frame, no skipped frames. Same behavior on every machine, with no GPU driver dependency. If WARP can't be created, fall back to the HWND software target (untested) |
+| GPU use | None in v1, possible later behind the renderer boundary | Hardware halves CPU while scrolling but adds about 190 ms to launch. One option is to start on WARP and move to hardware in the background |
+| Scroll and dirty hints | Not used | No measurable benefit over RDP in testing, and they add complexity. Worth retesting on a slow link |
 | Controls | Our own themeable toolkit, native only for OS dialogs | Full control of theming, with accessibility and input built in from the start |
 | C runtime | Static | The EXE runs without the VC++ redistributable |
 
