@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/traceview", "crates/d2d-probe"]
+members = ["crates/engine", "crates/traceview", "crates/d2d-probe", "crates/tv-ui", "crates/tv-render", "crates/tv-platform"]
 exclude = ["fuzz"]
 
 [workspace.package]

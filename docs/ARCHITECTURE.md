@@ -2,7 +2,7 @@
 
 TraceView for Windows is a fast, customizable log viewer in the spirit of CMTrace. It's the Windows counterpart to the [macOS TraceView](https://github.com/thefinder808/TraceView), and it shares that app's behavior and spec but not its code.
 
-**Status:** the engine and headless CLI are built (milestone 1). There's no GUI yet, only a grid probe used for rendering tests. The stack was agreed on 2026-10-30, and the evidence for it is in [spike-results.md](spike-results.md). WinPE is out of scope for v1, because logs from WinPE are normally moved elsewhere to read. It can be revisited for v2, and a GDI renderer might be needed then.
+**Status:** the engine, headless CLI and foundations of the GUI are built (milestones 1 and 2). The GUI opens a log and shows it in a fast, accessible grid, but it has no live tail, search or tabs yet. The stack was agreed on 2026-10-30, and the evidence for it is in [spike-results.md](spike-results.md). WinPE is out of scope for v1, because logs from WinPE are normally moved elsewhere to read. It can be revisited for v2, and a GDI renderer might be needed then.
 
 ## Goals, in priority order
 
@@ -28,11 +28,20 @@ crates/
     summary.rs    severity counts, repeated message patterns, error spikes
     examples/     gen_log (test data), evict_cache (cold-disk testing)
     tests/        robustness (random input), perf_budgets (speed limits)
-  traceview/    the EXE: headless CLI today, GUI and MCP server later
-  d2d-probe/    the log grid in Direct2D, for rendering tests. Not the final GUI
+  tv-ui/        toolkit base: geometry, the Canvas interface, theme tokens, input, scroll bar. No unsafe, no Windows
+  tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
+  tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling
+  traceview/    the EXE. No unsafe
+    cli.rs        query and summarize
+    gui/          app (ties it together), log_view (grid), row_cache (background row loading),
+                  accessibility (screen reader tree), bench (scripted checks, feature-gated)
+  d2d-probe/    an earlier grid, kept only for run-presentation-test.ps1
 fuzz/           coverage-guided fuzz targets, run on Linux in CI
-scripts/        check-perf.ps1, run-presentation-test.ps1
+scripts/        check-perf.ps1 (engine budgets), check-gui-perf.ps1 (GUI budgets),
+                check-gui.ps1 (end to end), run-presentation-test.ps1 (RDP delivery)
 ```
+
+The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIGN.md).
 
 ## How a log is opened
 
@@ -147,10 +156,11 @@ The upside is that no framework limits theming or layout on anything we draw our
 
 ## Quality gates
 
-- **Every push:** formatting, lint with warnings as errors, and all tests, in GitHub Actions on Windows.
+- **Every push:** formatting, lint with warnings as errors, and all tests, in GitHub Actions on Windows. That includes real frames drawn into memory and checked pixel by pixel.
 - **Robustness:** random and log-shaped bytes go through the whole pipeline on every test run. Set `PROPTEST_CASES` for longer runs.
 - **Fuzzing:** coverage-guided on Linux in CI, because `libFuzzer` doesn't link with the MSVC toolchain here. The logic it covers isn't platform-specific, except for file access.
-- **Performance:** `scripts/check-perf.ps1`, run locally, because shared CI machines are too variable for timing limits.
+- **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits.
+- **End to end:** `scripts/check-gui.ps1`, run locally, drives the real window through UI Automation.
 
 ## AI-agent access
 

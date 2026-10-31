@@ -167,8 +167,7 @@ fn incorrect_usage_exits_with_code_two() {
     let (_dir, path) = sample_log();
     let path = path.to_str().unwrap();
     for args in [
-        &[][..],
-        &["frobnicate"],
+        &["frobnicate"][..],
         &["query"],
         &["query", path, "--nope"],
         &["query", path, "extra"],

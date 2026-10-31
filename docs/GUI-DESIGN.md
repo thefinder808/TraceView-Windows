@@ -1,6 +1,6 @@
 # GUI design
 
-**Status:** draft for review. Nothing here is built yet. This builds on [ARCHITECTURE.md](ARCHITECTURE.md), and it ports the behavior of the [macOS app](https://github.com/thefinder808/TraceView) rather than its code.
+**Status:** agreed, with milestone 2 built. See [Where milestone 2 landed](#where-milestone-2-landed) for what's proven and what's still open. This builds on [ARCHITECTURE.md](ARCHITECTURE.md), and it ports the behavior of the [macOS app](https://github.com/thefinder808/TraceView) rather than its code.
 
 ## What success looks like
 
@@ -159,6 +159,43 @@ These are the biggest unknowns, and each gets a small test before anything depen
 | IME input in a custom text field | Type Japanese and Chinese into a prototype through the Text Services Framework | Fall back to the older IMM32 messages, or a native `EDIT` control for input only |
 | WARP unavailable | Force device creation to fail | Fall back to the HWND software target |
 | Real no-GPU VM over RDP | Run the probe in a Hyper-V VM | Tune, or reconsider the presentation path |
+
+## Where milestone 2 landed
+
+**Budgets, measured on a live RDP session at 200% scale with a 5 GiB, 26.9M-row log:**
+
+| Measure | Limit | Measured |
+|---|---|---|
+| Launch to first frame | 100 ms | 48 ms |
+| Worst frame, 2400x1520 | 8 ms | 2.9 ms |
+| Worst frame, 3460x2100 | 8 ms | 5.1 ms |
+| CPU while idle | 0% | 0 ms used over 5 s |
+| Memory beyond the row index | 50 MB | 40-48 MB, growing with window size |
+| EXE size | 5 MB | 2.3 MB |
+| Frames showing a loading row | | 1 of 2,400 across all scroll stages |
+
+The launch figure has no log open. A log with a cached index adds about 50-110 ms, in the background. A first open of a 5 GiB log takes 1-3 s, also in the background, with progress shown.
+
+`scripts/check-gui-perf.ps1` enforces these. `scripts/check-gui.ps1` drives the real EXE from outside through UI Automation.
+
+**Risk tests:**
+
+| Risk | Result |
+|---|---|
+| One EXE on Windows 11 24H2+ | **Passed.** No console from Explorer, a shell returns in about 90 ms, and CLI pipes work |
+| Console flash on older Windows | **Not tested.** Needs a VM with Windows 10 or Server 2022 |
+| AccessKit with a virtual grid | **Passed through UI Automation, with one change.** Its Windows adapter gives table rows no selection support, so the grid is exposed as a list. Names, focus and selection all read correctly. Nobody has tried it with Narrator yet |
+| IME in a custom text field | **Moved to milestone 3.** There's no text field until then, and testing needs an IME installed |
+| WARP unavailable | **Fallback logic tested,** by simulating the failure. Not yet seen on a machine that really lacks it |
+| Real no-GPU VM over RDP | **Not tested.** Needs a VM |
+
+**Differences from this design, so far:**
+
+- **No text layout cache.** Drawing text directly already fits the budget, so it isn't needed yet.
+- **Rows scroll whole, not by pixels,** which keeps text sharp and matches CMTrace.
+- **`crates/d2d-probe` is still here,** because `scripts/run-presentation-test.ps1` uses it. It goes once that test moves to the real app.
+
+**Not covered by automation, so these need a person:** the file dialog, drag and drop, mouse dragging, how scrolling feels, and Narrator.
 
 ## Milestones
 
