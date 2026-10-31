@@ -180,9 +180,8 @@ The goal is one engine with several front ends in the same EXE:
 
 ## Open questions
 
-- **GUI and CLI in one EXE.** Windows treats an EXE as either a console or a GUI program. A console EXE flashes a console window when launched as a GUI, and a GUI EXE doesn't make a shell wait for it or show its output. Options include a `.com` console stub beside the EXE, as Visual Studio does, or attaching to the parent console. This needs deciding when the GUI starts, and it affects the single-EXE goal.
+- **The GUI** is designed in [GUI-DESIGN.md](GUI-DESIGN.md), including how one EXE can serve both the CLI and GUI, and what triggers `refresh`.
 - **A real no-GPU VM and slow RDP links** are still untested.
-- **Live file watching.** `refresh` detects changes when called. What triggers it (`ReadDirectoryChangesW` or a timer) is decided with the GUI's live tail.
 - **Error-code database.** The Mac app's is built around macOS domains. Windows needs HRESULT, Win32, NTSTATUS and SCCM codes.
 - **Time zones,** which correlating across files will need.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.
