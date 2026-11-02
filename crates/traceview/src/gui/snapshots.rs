@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tv_platform::{Commands, Waker};
 use tv_render::Renderer;
 use tv_ui::recording::RecordingCanvas;
-use tv_ui::{Color, Event, Key, Modifiers, Rect};
+use tv_ui::{Color, Event, Key, Modifiers, Rect, Theme};
 
 const NONE: Modifiers = Modifiers {
     ctrl: false,
@@ -214,28 +214,25 @@ fn check_theme(choice: ThemeChoice, name: &str, dpi: f32) {
 }
 
 #[test]
-fn classic_theme_renders_correctly() {
-    check_theme(ThemeChoice::Classic, "classic-100", 96.0);
-}
-
-#[test]
-fn console_theme_renders_correctly() {
-    check_theme(ThemeChoice::Console, "console-100", 96.0);
+fn every_theme_renders_correctly() {
+    for theme in Theme::ALL {
+        check_theme(ThemeChoice::Fixed(theme), &format!("{}-100", theme.name.to_lowercase()), 96.0);
+    }
 }
 
 #[test]
 fn fractional_display_scale_renders_correctly() {
-    check_theme(ThemeChoice::Classic, "classic-125", 120.0);
+    check_theme(ThemeChoice::Fixed(&Theme::CLASSIC), "classic-125", 120.0);
 }
 
 #[test]
 fn high_density_display_renders_correctly() {
-    check_theme(ThemeChoice::Console, "console-200", 192.0);
+    check_theme(ThemeChoice::Fixed(&Theme::DARK), "dark-200", 192.0);
 }
 
 #[test]
 fn find_matches_are_highlighted() {
-    let (_dir, mut workspace) = opened(ThemeChoice::Classic);
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     render(&mut workspace, "find", 96.0, |workspace| {
         workspace.tabs[0].document().is_some()
     });
@@ -256,7 +253,7 @@ fn find_matches_are_highlighted() {
 
 #[test]
 fn an_open_menu_draws_over_the_grid() {
-    let (_dir, mut workspace) = opened(ThemeChoice::Console);
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CONSOLE));
     render(&mut workspace, "menu", 96.0, |workspace| {
         workspace.tabs[0].document().is_some()
     });
@@ -278,7 +275,7 @@ fn an_open_menu_draws_over_the_grid() {
 #[test]
 fn welcome_screen_shows_with_no_log() {
     let mut workspace = Workspace::new(Waker::detached(), 0, false);
-    workspace.theme_choice = ThemeChoice::Classic;
+    workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);
     let frame = render(&mut workspace, "welcome", 96.0, |_| true);
     let grid = workspace.grid_rect();
     let welcome = Rect::new(grid.left, grid.top, grid.left + 400.0, grid.top + 60.0);
@@ -287,7 +284,7 @@ fn welcome_screen_shows_with_no_log() {
 
 #[test]
 fn error_lookup_explains_the_selected_rows_code() {
-    let (_dir, mut workspace) = opened(ThemeChoice::Classic);
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     render(&mut workspace, "lookup", 96.0, |workspace| {
         workspace.tabs[0].document().is_some()
     });

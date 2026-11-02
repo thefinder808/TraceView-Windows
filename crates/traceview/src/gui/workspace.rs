@@ -50,8 +50,8 @@ pub mod command {
     pub const CLEAR_FILTER: u32 = 21;
     pub const DETAILS: u32 = 22;
     pub const THEME_SYSTEM: u32 = 23;
-    pub const THEME_CLASSIC: u32 = 24;
-    pub const THEME_CONSOLE: u32 = 25;
+    /// The themes, in `Theme::ALL` order, from this number on.
+    pub const THEMES: u32 = 40;
     pub const ERROR_LOOKUP: u32 = 30;
     pub const PAUSE: u32 = 31;
     pub const BOOKMARK: u32 = 32;
@@ -66,11 +66,17 @@ pub enum Focus {
     Find,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ThemeChoice {
+    /// Classic in light mode and Dark in dark mode, following Windows.
     System,
-    Classic,
-    Console,
+    Fixed(&'static Theme),
+}
+
+/// The theme a menu command picks, if it picks one.
+fn theme_for_command(id: u32) -> Option<&'static Theme> {
+    id.checked_sub(command::THEMES)
+        .and_then(|index| Theme::ALL.get(index as usize).copied())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -179,11 +185,7 @@ impl Workspace {
     /// Starts from saved settings, and saves changes back through `store`.
     /// `problem` says why the settings file couldn't be used, if it couldn't.
     pub fn use_settings(&mut self, settings: Settings, store: Store, problem: Option<String>) {
-        self.theme_choice = match settings.theme.as_str() {
-            "Classic" => ThemeChoice::Classic,
-            "Console" => ThemeChoice::Console,
-            _ => ThemeChoice::System,
-        };
+        self.theme_choice = Theme::by_name(&settings.theme).map_or(ThemeChoice::System, ThemeChoice::Fixed);
         self.show_details = settings.details_pane;
         self.settings = settings;
         self.store = store;
@@ -197,8 +199,7 @@ impl Workspace {
     fn save_settings(&mut self) {
         self.settings.theme = match self.theme_choice {
             ThemeChoice::System => "System",
-            ThemeChoice::Classic => "Classic",
-            ThemeChoice::Console => "Console",
+            ThemeChoice::Fixed(theme) => theme.name,
         }
         .to_string();
         self.settings.details_pane = self.show_details;
@@ -208,8 +209,7 @@ impl Workspace {
     pub fn theme(&self) -> &'static Theme {
         match self.theme_choice {
             ThemeChoice::System => Theme::for_system(self.system_is_dark),
-            ThemeChoice::Classic => &Theme::CLASSIC,
-            ThemeChoice::Console => &Theme::CONSOLE,
+            ThemeChoice::Fixed(theme) => theme,
         }
     }
 
@@ -305,15 +305,13 @@ impl Workspace {
                         MenuItem::command("Theme: follow Windows", "", command::THEME_SYSTEM),
                         theme == ThemeChoice::System,
                     ),
-                    checked(
-                        MenuItem::command("Theme: Classic", "", command::THEME_CLASSIC),
-                        theme == ThemeChoice::Classic,
-                    ),
-                    checked(
-                        MenuItem::command("Theme: Console", "", command::THEME_CONSOLE),
-                        theme == ThemeChoice::Console,
-                    ),
-                ],
+                ]
+                .into_iter()
+                .chain(Theme::ALL.iter().zip(command::THEMES..).map(|(choice, id)| {
+                    let name = format!("Theme: {}", choice.name);
+                    checked(MenuItem::command(&name, "", id), matches!(theme, ThemeChoice::Fixed(fixed) if fixed.name == choice.name))
+                }))
+                .collect(),
             },
             Menu {
                 title: "Tools".to_string(),
@@ -548,8 +546,9 @@ impl Workspace {
                 }
             }
             command::THEME_SYSTEM => self.theme_choice = ThemeChoice::System,
-            command::THEME_CLASSIC => self.theme_choice = ThemeChoice::Classic,
-            command::THEME_CONSOLE => self.theme_choice = ThemeChoice::Console,
+            id if theme_for_command(id).is_some() => {
+                self.theme_choice = theme_for_command(id).map_or(ThemeChoice::System, ThemeChoice::Fixed);
+            }
             command::ERROR_LOOKUP => {
                 // Start with the selected row's first code, as most lookups are for that.
                 let code = self
@@ -564,7 +563,7 @@ impl Workspace {
             }
             _ => {}
         }
-        if matches!(id, command::DETAILS | command::THEME_SYSTEM | command::THEME_CLASSIC | command::THEME_CONSOLE) {
+        if matches!(id, command::DETAILS | command::THEME_SYSTEM) || theme_for_command(id).is_some() {
             self.save_settings();
         }
         commands.redraw();
@@ -1305,7 +1304,7 @@ mod tests {
         let mut commands = Commands::default();
         workspace.run_command(command::DETAILS, &mut commands);
         assert!(!workspace.show_details);
-        workspace.run_command(command::THEME_CONSOLE, &mut commands);
+        workspace.run_command(command::THEMES + 1, &mut commands);
         assert_eq!(workspace.theme().name, "Console");
     }
 
@@ -1655,7 +1654,7 @@ mod tests {
         let mut first = workspace();
         let (store, settings, problem) = Store::open(Some(file.clone()));
         first.use_settings(settings, store, problem);
-        first.run_command(command::THEME_CONSOLE, &mut Commands::default());
+        first.run_command(command::THEMES + 1, &mut Commands::default());
         first.run_command(command::DETAILS, &mut Commands::default());
         first.open_paths(vec![log.clone()]);
         drop(first);
