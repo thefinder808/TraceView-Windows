@@ -10,7 +10,7 @@ use tv_engine::parse::{self, Format, ParseContext};
 use tv_engine::query::{self, Query};
 use tv_engine::summary::{self, normalize};
 use tv_engine::time::YearHint;
-use tv_engine::{Control, Level, LogFile};
+use tv_engine::{overview, Control, Level, LevelCounts, LogFile};
 
 const CONTEXT: ParseContext = ParseContext {
     year_hint: YearHint {
@@ -183,6 +183,21 @@ fn check_log(bytes: &[u8]) -> Result<(), TestCaseError> {
         + levels.error
         + levels.critical;
     prop_assert_eq!(total, log.rows() as u64);
+
+    // The chips must agree with the summary, and the histogram over the log's
+    // whole range must count every row once.
+    prop_assert_eq!(
+        &overview::level_counts(&log, None, &control).unwrap(),
+        levels
+    );
+    if let Some(range) = overview::time_range(&log, None, &control).unwrap() {
+        let histogram = overview::histogram(&log, None, range, 100, &control).unwrap();
+        let placed: u64 = histogram.buckets.iter().map(LevelCounts::total).sum();
+        prop_assert_eq!(placed, log.rows() as u64);
+        let jump = |seconds| overview::first_row_at(&log, None, seconds, &control).unwrap();
+        prop_assert_eq!(jump(range.first), 0);
+        prop_assert_eq!(jump(range.last.saturating_add(1)), log.rows());
+    }
 
     // Refreshing an untouched file must change nothing.
     let rows_before = log.rows();

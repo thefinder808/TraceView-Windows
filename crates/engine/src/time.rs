@@ -116,13 +116,29 @@ impl Stamp {
     pub fn from_seconds(seconds: u32) -> Self {
         Self { seconds, millis: 0 }
     }
+
+    /// The date, and the seconds into that day.
+    fn civil(&self) -> ((i32, u32, u32), i64) {
+        let total = i64::from(self.seconds);
+        (civil_from_days(total / 86_400 + EPOCH_DAYS), total % 86_400)
+    }
+
+    /// The time to the second, as `2026-01-16 13:40:00`, for labels such as
+    /// the histogram's. The time of day alone starts at character 11.
+    pub fn label(&self) -> String {
+        let ((year, month, day), in_day) = self.civil();
+        format!(
+            "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
+            in_day / 3600,
+            in_day / 60 % 60,
+            in_day % 60,
+        )
+    }
 }
 
 impl fmt::Display for Stamp {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let total = i64::from(self.seconds);
-        let (year, month, day) = civil_from_days(total / 86_400 + EPOCH_DAYS);
-        let in_day = total % 86_400;
+        let ((year, month, day), in_day) = self.civil();
         write!(
             formatter,
             "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}",
@@ -316,6 +332,14 @@ mod tests {
     fn stamps_round_trip_through_display() {
         let stamp = Stamp::from_parts(2026, 3, 1, 13, 40, 14, 100).unwrap();
         assert_eq!(stamp.to_string(), "2026-03-01T13:40:14.100");
+    }
+
+    #[test]
+    fn labels_show_the_time_to_the_second() {
+        let stamp = Stamp::from_parts(2026, 1, 16, 13, 40, 0, 250).unwrap();
+        assert_eq!(stamp.label(), "2026-01-16 13:40:00");
+        assert_eq!(Stamp::from_seconds(0).label(), "2000-01-01 00:00:00");
+        assert_eq!(&stamp.label()[11..], "13:40:00");
     }
 
     #[test]

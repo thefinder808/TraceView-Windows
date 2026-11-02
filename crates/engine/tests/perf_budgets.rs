@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use tv_engine::query::{self, Query};
-use tv_engine::{merge, summary, CacheUse, Control, LogFile};
+use tv_engine::{merge, overview, summary, CacheUse, Control, LevelCounts, LogFile};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -97,6 +97,47 @@ fn index_only_filter_stays_under_100_ms_per_gibibyte() {
     let started = Instant::now();
     query::run(&log, &query, &Control::default()).unwrap();
     check("level filter", started.elapsed(), 0.1 * gibibytes());
+}
+
+/// The severity chips and event histogram come from the index alone, and live
+/// tail counts them again as rows arrive, so they must be quick, with or
+/// without a filter.
+#[test]
+#[ignore = "needs TV_PERF_LOG and a release build"]
+fn chip_counts_and_histogram_stay_under_10_ms_per_gibibyte() {
+    let (log, _) = open_uncached();
+    let control = Control::default();
+    let matcher = query::Matcher::new(&Query {
+        min_level: Some(tv_engine::Level::Warning),
+        ..Query::default()
+    })
+    .unwrap();
+    let warnings = query::matching_rows(&log, &matcher, &control).unwrap();
+    for (name, rows) in [
+        ("chip counts and histogram", None),
+        (
+            "filtered chip counts and histogram",
+            Some(warnings.as_slice()),
+        ),
+    ] {
+        let started = Instant::now();
+        let counts = overview::level_counts(&log, rows, &control).unwrap();
+        let range = overview::time_range(&log, rows, &control)
+            .unwrap()
+            .expect("the log has times");
+        let histogram = overview::histogram(&log, rows, range, 1000, &control).unwrap();
+        let elapsed = started.elapsed();
+        let counted: u64 = histogram.buckets.iter().map(LevelCounts::total).sum();
+        assert_eq!(counts.total(), counted);
+        check(name, elapsed, 0.01 * gibibytes());
+    }
+
+    // Clicking the histogram jumps to the first row at a time.
+    let range = overview::time_range(&log, None, &control).unwrap().unwrap();
+    let middle = range.first + (range.last - range.first) / 2;
+    let started = Instant::now();
+    overview::first_row_at(&log, None, middle, &control).unwrap();
+    check("jump to a time", started.elapsed(), 0.01 * gibibytes());
 }
 
 #[test]

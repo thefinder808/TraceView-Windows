@@ -34,6 +34,47 @@ pub struct LevelCounts {
     pub critical: u64,
 }
 
+impl LevelCounts {
+    /// Counts one more row of `level`.
+    pub fn add(&mut self, level: Level) {
+        match level {
+            Level::Debug => self.debug += 1,
+            Level::Info => self.info += 1,
+            Level::Notice => self.notice += 1,
+            Level::Warning => self.warning += 1,
+            Level::Error => self.error += 1,
+            Level::Critical => self.critical += 1,
+        }
+    }
+
+    /// Adds another set of counts, such as another part of a log or another file.
+    pub fn absorb(&mut self, other: &LevelCounts) {
+        self.debug += other.debug;
+        self.info += other.info;
+        self.notice += other.notice;
+        self.warning += other.warning;
+        self.error += other.error;
+        self.critical += other.critical;
+    }
+
+    /// Rows of one level.
+    pub fn get(&self, level: Level) -> u64 {
+        match level {
+            Level::Debug => self.debug,
+            Level::Info => self.info,
+            Level::Notice => self.notice,
+            Level::Warning => self.warning,
+            Level::Error => self.error,
+            Level::Critical => self.critical,
+        }
+    }
+
+    /// Rows of every level.
+    pub fn total(&self) -> u64 {
+        Level::ALL.iter().map(|level| self.get(*level)).sum()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pattern {
     /// The message with variable parts replaced by `<n>`, `<hex>` or `<guid>`.
@@ -251,14 +292,7 @@ pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary
     let mut current_minute = (u32::MAX, 0u64, 0u64);
     for row in 0..rows {
         let level = log.level(row);
-        match level {
-            Level::Debug => levels.debug += 1,
-            Level::Info => levels.info += 1,
-            Level::Notice => levels.notice += 1,
-            Level::Warning => levels.warning += 1,
-            Level::Error => levels.error += 1,
-            Level::Critical => levels.critical += 1,
-        }
+        levels.add(level);
         if let Some(seconds) = log.stamp_seconds(row) {
             rows_with_timestamps += 1;
             earliest = earliest.min(seconds);
