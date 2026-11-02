@@ -18,3 +18,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  arm64:
+    # Cross-compiles for ARM64 Windows. The build machine can't run the EXE,
+    # so it's kept as an artifact for testing on an ARM64 PC.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add the ARM64 target
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --target aarch64-pc-windows-msvc -p traceview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: traceview-arm64
+          path: target/aarch64-pc-windows-msvc/release/traceview.exe
+          retention-days: 14
