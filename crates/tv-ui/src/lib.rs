@@ -5,11 +5,15 @@
 #![forbid(unsafe_code)]
 
 pub mod canvas;
+pub mod chip_bar;
 pub mod geometry;
 pub mod input;
+pub mod list_view;
 pub mod menu;
+pub mod palette;
 pub mod recording;
 pub mod scrollbar;
+pub mod splitter;
 pub mod tab_bar;
 pub mod text_field;
 pub mod theme;
