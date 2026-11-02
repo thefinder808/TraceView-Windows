@@ -8,6 +8,7 @@
 //! `%APPDATA%` can be redirected to a network share.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -17,6 +18,8 @@ pub const FILE_NAME: &str = "traceview.toml";
 /// Lists are capped so a hand-edited or shared file can't make menus unusable.
 const MOST_RECENT: usize = 20;
 const MOST_PRESETS: usize = 100;
+const MOST_BOOKMARKED_LOGS: usize = 200;
+const MOST_BOOKMARKS_PER_LOG: usize = 10_000;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,6 +31,8 @@ pub struct Settings {
     /// Logs opened lately, newest first.
     pub recent: Vec<String>,
     pub presets: Vec<Preset>,
+    /// Bookmarked rows, by log path in lower case. Rows count from 0.
+    pub bookmarks: BTreeMap<String, Vec<u32>>,
 }
 
 impl Default for Settings {
@@ -37,6 +42,7 @@ impl Default for Settings {
             details_pane: true,
             recent: Vec::new(),
             presets: Vec::new(),
+            bookmarks: BTreeMap::new(),
         }
     }
 }
@@ -48,6 +54,10 @@ pub struct Preset {
     pub name: String,
     /// Filter box text, such as `failed level:warning`.
     pub filter: String,
+}
+
+fn bookmark_key(log: &Path) -> String {
+    log.to_string_lossy().to_lowercase()
 }
 
 /// Windows paths ignore case.
@@ -65,9 +75,29 @@ impl Settings {
         self.recent.truncate(MOST_RECENT);
     }
 
+    pub fn bookmarks_for(&self, log: &Path) -> BTreeSet<u32> {
+        self.bookmarks.get(&bookmark_key(log)).map_or_else(BTreeSet::new, |rows| rows.iter().copied().collect())
+    }
+
+    /// Saves a log's bookmarks, forgetting the log when it has none.
+    pub fn set_bookmarks(&mut self, log: &Path, rows: &BTreeSet<u32>) {
+        let key = bookmark_key(log);
+        if rows.is_empty() {
+            self.bookmarks.remove(&key);
+        } else if self.bookmarks.contains_key(&key) || self.bookmarks.len() < MOST_BOOKMARKED_LOGS {
+            self.bookmarks.insert(key, rows.iter().copied().take(MOST_BOOKMARKS_PER_LOG).collect());
+        }
+    }
+
     fn tidy(&mut self) {
         self.recent.truncate(MOST_RECENT);
         self.presets.truncate(MOST_PRESETS);
+        while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
+            self.bookmarks.pop_last();
+        }
+        for rows in self.bookmarks.values_mut() {
+            rows.truncate(MOST_BOOKMARKS_PER_LOG);
+        }
     }
 }
 

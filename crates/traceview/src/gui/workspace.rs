@@ -51,6 +51,9 @@ pub mod command {
     pub const THEME_CONSOLE: u32 = 25;
     pub const ERROR_LOOKUP: u32 = 30;
     pub const PAUSE: u32 = 31;
+    pub const BOOKMARK: u32 = 32;
+    pub const NEXT_BOOKMARK: u32 = 33;
+    pub const PREVIOUS_BOOKMARK: u32 = 34;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +259,10 @@ impl Workspace {
                     MenuItem::command("Find previous", "Shift+F3", command::FIND_PREVIOUS),
                     MenuItem::command("Next error", "Ctrl+E", command::NEXT_ERROR),
                     MenuItem::command("Previous error", "Ctrl+Shift+E", command::PREVIOUS_ERROR),
+                    MenuItem::Separator,
+                    MenuItem::command("Toggle bookmark", "Ctrl+D", command::BOOKMARK),
+                    MenuItem::command("Next bookmark", "F2", command::NEXT_BOOKMARK),
+                    MenuItem::command("Previous bookmark", "Shift+F2", command::PREVIOUS_BOOKMARK),
                 ],
             },
             Menu {
@@ -419,6 +426,20 @@ impl Workspace {
             command::CLOSE_TAB => self.close_tab(self.active),
             command::EXIT => commands.push(Command::Close),
             command::MERGE => self.merge_open_logs(),
+            command::BOOKMARK => {
+                if let Some((path, rows)) = self.active_tab_mut().and_then(Tab::toggle_bookmark) {
+                    for tab in &mut self.tabs {
+                        tab.update_bookmarks(&path, &rows);
+                    }
+                    self.settings.set_bookmarks(&path, &rows);
+                    self.save_settings();
+                }
+            }
+            command::NEXT_BOOKMARK | command::PREVIOUS_BOOKMARK => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.step_bookmark(id == command::NEXT_BOOKMARK);
+                }
+            }
             command::COPY => self.start_copy(),
             command::SELECT_ALL => {
                 if let Some(tab) = self.active_tab_mut() {
@@ -493,6 +514,9 @@ impl Workspace {
             (Key::Char('F'), true, true) => command::FILTER,
             (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
             (Key::Char('U'), true, false) => command::PAUSE,
+            (Key::Char('D'), true, false) => command::BOOKMARK,
+            (Key::F(2), false, false) => command::NEXT_BOOKMARK,
+            (Key::F(2), false, true) => command::PREVIOUS_BOOKMARK,
             (Key::Char('M'), true, true) => command::MERGE,
             (Key::F(3), false, false) => command::FIND_NEXT,
             (Key::F(3), false, true) => command::FIND_PREVIOUS,
@@ -750,7 +774,7 @@ impl Workspace {
     pub fn woken(&mut self, commands: &mut Commands) {
         let waker = self.waker.clone();
         for tab in &mut self.tabs {
-            tab.poll(&waker);
+            tab.poll(&waker, &self.settings);
         }
         if let Some(panel) = &mut self.lookup {
             panel.poll();
@@ -1017,6 +1041,11 @@ mod tests {
     };
     const CTRL_SHIFT: Modifiers = Modifiers {
         ctrl: true,
+        shift: true,
+        alt: false,
+    };
+    const SHIFT: Modifiers = Modifiers {
+        ctrl: false,
         shift: true,
         alt: false,
     };
@@ -1555,6 +1584,61 @@ mod tests {
         assert_eq!(restored.theme().name, "Console");
         assert!(!restored.show_details);
         assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn bookmarks_toggle_step_and_are_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.open_paths(vec![log.clone()]);
+        settle(&mut first, |workspace| workspace.tabs[0].document().is_some());
+        for row in [40, 10] {
+            first.tabs[0].select_file_row(row);
+            send(&mut first, Event::KeyDown(Key::Char('D'), CTRL));
+        }
+        let rows = first.tabs[0].rows().unwrap();
+        assert!(rows.bookmarked(10) && rows.bookmarked(40) && !rows.bookmarked(11));
+        drop(rows);
+        send(&mut first, Event::KeyDown(Key::F(2), NONE));
+        assert_eq!(first.tabs[0].cursor_file_row(), Some(40));
+        send(&mut first, Event::KeyDown(Key::F(2), NONE));
+        assert_eq!(first.tabs[0].cursor_file_row(), Some(10), "F2 wraps around");
+        send(&mut first, Event::KeyDown(Key::F(2), SHIFT));
+        assert_eq!(first.tabs[0].cursor_file_row(), Some(40));
+        // Ctrl+D again removes a bookmark.
+        send(&mut first, Event::KeyDown(Key::Char('D'), CTRL));
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        second.open_paths(vec![log]);
+        settle(&mut second, |workspace| workspace.tabs[0].document().is_some());
+        let rows = second.tabs[0].rows().unwrap();
+        assert!(rows.bookmarked(10) && !rows.bookmarked(40));
+    }
+
+    #[test]
+    fn a_merged_tab_shares_its_files_bookmarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut workspace = merged(&dir);
+        // Row 3 of the merged timeline is b.log's second row.
+        workspace.tabs[2].select_file_row(3);
+        send(&mut workspace, Event::KeyDown(Key::Char('D'), CTRL));
+        assert!(workspace.tabs[1].rows().unwrap().bookmarked(1), "b.log's own tab shows it");
+        assert!(workspace.tabs[2].rows().unwrap().bookmarked(3));
+        assert!(!workspace.tabs[0].rows().unwrap().bookmarked(1));
+    }
+
+    #[test]
+    fn stepping_with_no_bookmarks_says_how_to_add_one() {
+        let (_dir, mut workspace) = opened(10);
+        send(&mut workspace, Event::KeyDown(Key::F(2), NONE));
+        assert!(workspace.status().contains("Ctrl+D bookmarks a row"));
     }
 
     #[test]

@@ -3,3 +3,4 @@
 /test-data/perf/
 /spike-output/
 target-agent-*/
+/.claude/

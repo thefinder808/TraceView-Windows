@@ -60,7 +60,10 @@ fn physical(rect: Rect, scale: f32) -> AccessRect {
 }
 
 fn row_label(source: &dyn RowSource, row: usize) -> String {
-    let level = level_name(source.level(row));
+    let mut level = level_name(source.level(row)).to_string();
+    if source.bookmarked(row) {
+        level.push_str(", bookmarked");
+    }
     let number = source.file_row(row) + 1;
     match source.cells(row) {
         Some(cells) => {

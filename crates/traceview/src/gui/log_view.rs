@@ -16,6 +16,8 @@ const TIME_CHARS: f32 = 23.0;
 const LEVEL_CHARS: f32 = 4.0;
 const COMPONENT_CHARS: f32 = 22.0;
 const MIN_ROW_NUMBER_CHARS: f32 = 6.0;
+/// The bookmark marker, a bar at the left edge of the row number.
+const BOOKMARK_WIDTH: f32 = 3.0;
 
 /// Where rows come from. The GUI backs this with the row cache.
 pub trait RowSource {
@@ -29,6 +31,10 @@ pub trait RowSource {
     }
     /// True for rows matching the find text, which get the highlight color.
     fn highlighted(&self, _row: usize) -> bool {
+        false
+    }
+    /// True for bookmarked rows, which get a marker beside their number.
+    fn bookmarked(&self, _row: usize) -> bool {
         false
     }
 }
@@ -469,6 +475,10 @@ impl LogView {
         };
         if let Some(color) = background {
             canvas.fill_rect(rect, color);
+        }
+        if source.bookmarked(row) {
+            let marker = Rect::new(layout.body.left, rect.top + 1.0, layout.body.left + BOOKMARK_WIDTH, rect.bottom - 1.0);
+            canvas.fill_rect(marker, if selected { theme.selected_text } else { theme.bookmark });
         }
         let themed = |color: Color| if selected { theme.selected_text } else { color };
         let cell = |left: f32, right: f32| Rect::new(left, rect.top, right, rect.bottom);

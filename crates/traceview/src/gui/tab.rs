@@ -9,8 +9,10 @@ use super::details::{DetailTarget, Details};
 use super::log_view::{LogView, RowSource};
 use super::row_cache::{RowCache, RowCells, SharedLog};
 use super::search::{self, Matches, Target};
+use super::settings::Settings;
 use super::watch::{Applied, Watcher};
 use std::io;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -26,6 +28,8 @@ pub struct Source {
     pub log: SharedLog,
     pub stats: OpenStats,
     pub cache: RowCache,
+    /// Bookmarked rows of this file.
+    pub bookmarks: BTreeSet<u32>,
     watcher: Watcher,
 }
 
@@ -203,6 +207,12 @@ impl RowSource for TabRows<'_> {
         let file_row = self.file_row(row) as u32;
         self.find
             .is_some_and(|matches| matches.binary_search(&file_row).is_ok())
+    }
+
+    fn bookmarked(&self, row: usize) -> bool {
+        self.document
+            .locate(self.file_row(row))
+            .is_some_and(|(source, row)| self.document.sources[source].bookmarks.contains(&(row as u32)))
     }
 }
 
@@ -426,7 +436,7 @@ impl Tab {
     }
 
     /// Picks up finished background work. Returns true if anything changed.
-    pub fn poll(&mut self, waker: &Waker) -> bool {
+    pub fn poll(&mut self, waker: &Waker, settings: &Settings) -> bool {
         let mut changed = self.details.poll_changed();
         if let Content::Opening(opening) = &self.content {
             match opening.result.try_recv() {
@@ -442,6 +452,7 @@ impl Tab {
                                 path: path.clone(),
                                 cache: RowCache::new(log.clone(), move || wake.wake()),
                                 watcher: Watcher::start(log.clone(), waker.clone()),
+                                bookmarks: settings.bookmarks_for(path),
                                 log,
                                 stats,
                             }
@@ -727,6 +738,48 @@ impl Tab {
         {
             Some(index) => Some(format!("{} of {total}", with_commas(index + 1))),
             None => Some(format!("{total} matches")),
+        }
+    }
+
+    /// Bookmarks the row under the cursor, or removes its bookmark. Returns
+    /// that row's file and all its bookmarks, to save.
+    pub fn toggle_bookmark(&mut self) -> Option<(PathBuf, BTreeSet<u32>)> {
+        let row = self.cursor_file_row()?;
+        let document = self.document_mut()?;
+        let (source, row) = document.locate(row)?;
+        let source = &mut document.sources[source];
+        if !source.bookmarks.remove(&(row as u32)) {
+            source.bookmarks.insert(row as u32);
+        }
+        Some((source.path.clone(), source.bookmarks.clone()))
+    }
+
+    /// Uses a file's bookmarks as changed in another tab.
+    pub fn update_bookmarks(&mut self, path: &Path, rows: &BTreeSet<u32>) {
+        if let Some(document) = self.document_mut() {
+            for source in document.sources.iter_mut().filter(|source| source.path == path) {
+                source.bookmarks.clone_from(rows);
+            }
+        }
+    }
+
+    /// Selects the next or previous bookmarked row the filter shows.
+    pub fn step_bookmark(&mut self, forward: bool) {
+        let Some(document) = self.document() else { return };
+        let marked: Vec<u32> = match &document.order {
+            None => document.sources[0].bookmarks.iter().copied().collect(),
+            Some(order) => (0..order.len())
+                .filter(|position| {
+                    let merged = order[*position];
+                    document.sources[usize::from(merged.source)].bookmarks.contains(&merged.row)
+                })
+                .map(|position| position as u32)
+                .collect(),
+        };
+        match search::step_match(&marked, self.filter_rows(), self.cursor_file_row(), forward) {
+            Some(row) => self.select_file_row(row),
+            None if marked.is_empty() => self.message = Some("No bookmarks yet. Ctrl+D bookmarks a row".to_string()),
+            None => self.message = Some("The filter hides every bookmark".to_string()),
         }
     }
 
