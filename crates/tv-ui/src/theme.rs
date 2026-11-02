@@ -119,50 +119,51 @@ impl Theme {
         status_height: 22.0,
     };
 
-    /// The Mac app's dark theme, from its theme specification.
+    /// The Mac app's default, a light theme, from its ConsoleTheme.swift. Its
+    /// light grays are darkened to meet contrast.
     pub const CONSOLE: Theme = Theme {
         name: "Console",
-        is_dark: true,
-        window_background: Color::rgb(0x1A1A1E),
-        grid_background: Color::rgb(0x1E1E22),
-        header_background: Color::rgb(0x232328),
-        status_background: Color::rgb(0x19191D),
-        scrollbar_track: Color::rgb(0x232328),
-        scrollbar_thumb: Color::rgb(0x55555C),
-        border: Color::rgb(0x3A3A3F),
-        primary_text: Color::rgb(0xE5E5EA),
-        secondary_text: Color::rgb(0x8E8E93),
-        tertiary_text: Color::rgb(0x8E8E94),
-        timestamp_text: Color::rgb(0x7EB6FF),
-        component_text: Color::rgb(0xA9A9AE),
-        placeholder_text: Color::rgb(0x55555C),
-        selected_row: Color::rgb(0x1F3A5F),
-        selected_text: Color::rgb(0xFFFFFF),
-        warning_row: Color::rgb(0x33301A),
-        warning_text: Color::rgb(0xFFD60A),
-        error_row: Color::rgb(0x351E1C),
-        error_text: Color::rgb(0xFF6961),
-        critical_row: Color::rgb(0x3D1F1D),
-        critical_text: Color::rgb(0xFF6961),
-        notice_text: Color::rgb(0x7EB6FF),
-        debug_text: Color::rgb(0x8E8E94),
-        accent: Color::rgb(0x4A9EFF),
-        input_background: Color::rgb(0x2C2C31),
-        panel_background: Color::rgb(0x232328),
-        hover_background: Color::rgb(0x34343A),
-        highlight_row: Color::rgb(0x2E2850),
-        text_selection: Color::rgb(0x264F78),
-        sidebar_background: Color::rgb(0x232328),
-        section_text: Color::rgb(0x8E8E93),
-        chip_background: Color::rgb(0x1E1E22),
-        chip_active_background: Color::rgb(0x1F3A5F),
-        chip_active_text: Color::rgb(0xFFFFFF),
-        histogram_background: Color::rgb(0x2E2E33),
-        histogram_info: Color::rgb(0x777779),
-        histogram_warning: Color::rgb(0xFFD60A),
-        histogram_error: Color::rgb(0xFF6961),
-        histogram_window: Color::rgb(0x334258),
-        bookmark: Color::rgb(0x4A9EFF),
+        is_dark: false,
+        window_background: Color::rgb(0xFFFFFF),
+        grid_background: Color::rgb(0xFFFFFF),
+        header_background: Color::rgb(0xF4F4F4),
+        status_background: Color::rgb(0xF4F4F4),
+        scrollbar_track: Color::rgb(0xF6F6F6),
+        scrollbar_thumb: Color::rgb(0x9B9B9B),
+        border: Color::rgb(0xDCDCDC),
+        primary_text: Color::rgb(0x161616),
+        secondary_text: Color::rgb(0x5A5A5A),
+        tertiary_text: Color::rgb(0x767676),
+        timestamp_text: Color::rgb(0x4A4A4A),
+        component_text: Color::rgb(0x5A5A5A),
+        placeholder_text: Color::rgb(0x9B9B9B),
+        selected_row: Color::rgb(0xCCE0F5),
+        selected_text: Color::rgb(0x161616),
+        warning_row: Color::rgb(0xF5F0E6),
+        warning_text: Color::rgb(0x7A5400),
+        error_row: Color::rgb(0xF9E9E8),
+        error_text: Color::rgb(0x9B1D14),
+        critical_row: Color::rgb(0xEFDEDE),
+        critical_text: Color::rgb(0x9B1D14),
+        notice_text: Color::rgb(0x0066CC),
+        debug_text: Color::rgb(0x767676),
+        accent: Color::rgb(0x0066CC),
+        input_background: Color::rgb(0xFFFFFF),
+        panel_background: Color::rgb(0xF6F6F6),
+        hover_background: Color::rgb(0xECECEC),
+        highlight_row: Color::rgb(0xE4D7FF),
+        text_selection: Color::rgb(0xA6C9ED),
+        sidebar_background: Color::rgb(0xFAFAFA),
+        section_text: Color::rgb(0x737373),
+        chip_background: Color::rgb(0xFFFFFF),
+        chip_active_background: Color::rgb(0xCCE0F5),
+        chip_active_text: Color::rgb(0x161616),
+        histogram_background: Color::rgb(0xEBEBEB),
+        histogram_info: Color::rgb(0x878787),
+        histogram_warning: Color::rgb(0x7A5400),
+        histogram_error: Color::rgb(0x9B1D14),
+        histogram_window: Color::rgb(0xC1D3E5),
+        bookmark: Color::rgb(0x0066CC),
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -254,7 +255,7 @@ impl Theme {
         input_background: Color::rgb(0xFFFFFF),
         panel_background: Color::rgb(0xEEEFF1),
         hover_background: Color::rgb(0xE5E5EA),
-        highlight_row: Color::rgb(0xE4D7FF),
+        highlight_row: Color::rgb(0xF4EEFF),
         text_selection: Color::rgb(0xA6D0FF),
         sidebar_background: Color::rgb(0xEEEFF1),
         section_text: Color::rgb(0x6C6C6F),
@@ -338,7 +339,7 @@ impl Theme {
     /// The default theme for the system's light or dark setting.
     pub fn for_system(dark: bool) -> &'static Theme {
         if dark {
-            &Self::CONSOLE
+            &Self::DARK
         } else {
             &Self::CLASSIC
         }
@@ -394,6 +395,7 @@ mod tests {
                 ("panel", theme.primary_text, theme.panel_background),
                 ("hover", theme.primary_text, theme.hover_background),
                 ("find match", theme.primary_text, theme.highlight_row),
+                ("error find match", theme.error_text, theme.highlight_row),
                 ("text selection", theme.primary_text, theme.text_selection),
                 ("menu label", theme.secondary_text, theme.panel_background),
                 ("section", theme.section_text, theme.sidebar_background),
@@ -445,7 +447,7 @@ mod tests {
 
     #[test]
     fn system_setting_picks_the_theme() {
-        assert_eq!(Theme::for_system(true).name, "Console");
+        assert_eq!(Theme::for_system(true).name, "Dark");
         assert_eq!(Theme::for_system(false).name, "Classic");
     }
 
