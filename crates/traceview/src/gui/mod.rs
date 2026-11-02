@@ -10,9 +10,11 @@ mod details;
 mod export;
 mod log_view;
 mod lookup;
+mod places;
 mod row_cache;
 mod search;
 mod settings;
+mod sidebar;
 #[cfg(test)]
 mod snapshots;
 mod tab;

@@ -28,14 +28,14 @@ use windows::Win32::UI::Shell::{DragAcceptFiles, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetMessageW, GetWindowLongPtrW, LoadCursorW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
-    WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND, WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS,
-    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES,
-    WS_OVERLAPPEDWINDOW,
+    RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, IDC_SIZENS,
+    IDC_SIZEWE, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_APP,
+    WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
+    WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
+    WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
 };
 
 const WM_WAKE: u32 = WM_APP + 1;
@@ -58,11 +58,38 @@ pub struct WindowContext {
     pub waker: Waker,
 }
 
+/// The mouse pointer's shape over the window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    #[default]
+    Arrow,
+    /// Over a divider that drags left and right.
+    ResizeColumns,
+    /// Over a divider that drags up and down.
+    ResizeRows,
+}
+
+fn show_cursor(cursor: Cursor) {
+    let shape = match cursor {
+        Cursor::Arrow => IDC_ARROW,
+        Cursor::ResizeColumns => IDC_SIZEWE,
+        Cursor::ResizeRows => IDC_SIZENS,
+    };
+    // SAFETY: system cursors are shared and never freed.
+    unsafe {
+        if let Ok(handle) = LoadCursorW(None, shape) {
+            SetCursor(Some(handle));
+        }
+    }
+}
+
 pub enum Command {
     Redraw,
     OpenFileDialog,
     /// Asks where to save a CSV file, suggesting a name.
-    SaveFileDialog { suggested_name: String },
+    SaveFileDialog {
+        suggested_name: String,
+    },
     SetTitle(String),
     SetClipboard(String),
     SetCaptionColors {
@@ -75,6 +102,7 @@ pub enum Command {
     /// IMEs are turned on only while a text field has focus, so they can't intercept
     /// keys meant for the grid.
     SetImeEnabled(bool),
+    SetCursor(Cursor),
     Close,
 }
 
@@ -133,6 +161,8 @@ struct State {
     high_surrogate: Cell<Option<u16>>,
     /// Where an IME should show its composition, in device-independent pixels.
     ime_position: Cell<Point>,
+    /// The pointer shape the app asked for.
+    cursor: Cell<Cursor>,
 }
 
 /// Runs on UI Automation's threads, so it only queues requests for the UI thread.
@@ -266,6 +296,10 @@ impl State {
                     dark,
                 } => shell::set_caption_colors(self.hwnd.get(), background, text, dark),
                 Command::SetImePosition(point) => self.ime_position.set(point),
+                Command::SetCursor(cursor) => {
+                    self.cursor.set(cursor);
+                    show_cursor(cursor);
+                }
                 Command::SetImeEnabled(enabled) => {
                     // SAFETY: the handle is this window's. A null context turns the
                     // IME off for it, and IACE_DEFAULT restores the default one.
@@ -482,6 +516,10 @@ unsafe extern "system" fn window_proc(
         WM_IME_STARTCOMPOSITION => {
             state.place_ime_windows();
         }
+        WM_SETCURSOR if (lparam.0 as u32 & 0xFFFF) == HTCLIENT => {
+            show_cursor(state.cursor.get());
+            return LRESULT(1);
+        }
         WM_LBUTTONDOWN => {
             state.mouse_down(lparam, MouseButton::Left);
             return LRESULT(0);
@@ -607,6 +645,7 @@ pub fn run(
         scale: Cell::new(1.0),
         high_surrogate: Cell::new(None),
         ime_position: Cell::new(Point::default()),
+        cursor: Cell::new(Cursor::Arrow),
     });
     let state_pointer: *const State = &raw const *state;
 

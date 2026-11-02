@@ -12,8 +12,8 @@ use super::row_cache::{RowCache, RowCells, SharedLog};
 use super::search::{self, Matches, Target};
 use super::settings::Settings;
 use super::watch::{Applied, Watcher};
-use std::io;
 use std::collections::BTreeSet;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -213,7 +213,11 @@ impl RowSource for TabRows<'_> {
     fn bookmarked(&self, row: usize) -> bool {
         self.document
             .locate(self.file_row(row))
-            .is_some_and(|(source, row)| self.document.sources[source].bookmarks.contains(&(row as u32)))
+            .is_some_and(|(source, row)| {
+                self.document.sources[source]
+                    .bookmarks
+                    .contains(&(row as u32))
+            })
     }
 }
 
@@ -752,10 +756,18 @@ impl Tab {
             _ => 0..count,
         };
         Some(Export {
-            logs: document.sources.iter().map(|source| source.log.clone()).collect(),
-            names: document
-                .is_merged()
-                .then(|| document.sources.iter().map(|source| file_name(&source.path)).collect()),
+            logs: document
+                .sources
+                .iter()
+                .map(|source| source.log.clone())
+                .collect(),
+            names: document.is_merged().then(|| {
+                document
+                    .sources
+                    .iter()
+                    .map(|source| file_name(&source.path))
+                    .collect()
+            }),
             order: document.order.clone(),
             filter: self.filter.as_ref().and_then(Matches::shared_rows),
             rows,
@@ -778,7 +790,11 @@ impl Tab {
     /// Uses a file's bookmarks as changed in another tab.
     pub fn update_bookmarks(&mut self, path: &Path, rows: &BTreeSet<u32>) {
         if let Some(document) = self.document_mut() {
-            for source in document.sources.iter_mut().filter(|source| source.path == path) {
+            for source in document
+                .sources
+                .iter_mut()
+                .filter(|source| source.path == path)
+            {
                 source.bookmarks.clone_from(rows);
             }
         }
@@ -786,20 +802,26 @@ impl Tab {
 
     /// Selects the next or previous bookmarked row the filter shows.
     pub fn step_bookmark(&mut self, forward: bool) {
-        let Some(document) = self.document() else { return };
+        let Some(document) = self.document() else {
+            return;
+        };
         let marked: Vec<u32> = match &document.order {
             None => document.sources[0].bookmarks.iter().copied().collect(),
             Some(order) => (0..order.len())
                 .filter(|position| {
                     let merged = order[*position];
-                    document.sources[usize::from(merged.source)].bookmarks.contains(&merged.row)
+                    document.sources[usize::from(merged.source)]
+                        .bookmarks
+                        .contains(&merged.row)
                 })
                 .map(|position| position as u32)
                 .collect(),
         };
         match search::step_match(&marked, self.filter_rows(), self.cursor_file_row(), forward) {
             Some(row) => self.select_file_row(row),
-            None if marked.is_empty() => self.message = Some("No bookmarks yet. Ctrl+D bookmarks a row".to_string()),
+            None if marked.is_empty() => {
+                self.message = Some("No bookmarks yet. Ctrl+D bookmarks a row".to_string())
+            }
             None => self.message = Some("The filter hides every bookmark".to_string()),
         }
     }

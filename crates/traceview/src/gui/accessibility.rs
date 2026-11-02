@@ -12,6 +12,7 @@ use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
 };
 use tv_platform::Commands;
+use tv_ui::list_view::ListItem;
 use tv_ui::menu::MenuItem;
 use tv_ui::Rect;
 
@@ -30,7 +31,10 @@ const LOOKUP_RESULT_ID: NodeId = NodeId(12);
 const FIRST_MENU_ID: u64 = 100;
 const FIRST_MENU_ITEM_ID: u64 = 200;
 const FIRST_TAB_ID: u64 = 300;
-const FIRST_ROW_ID: u64 = 1000;
+const SIDEBAR_ID: NodeId = NodeId(13);
+const FIRST_SIDEBAR_ID: u64 = 10_000;
+/// Rows come last, so any row number fits after this.
+const FIRST_ROW_ID: u64 = 1_000_000;
 /// Screen readers read the details pane's text, so it's capped to stay usable.
 const MAX_DETAIL_CHARS: usize = 2000;
 
@@ -273,6 +277,50 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         window_children.push(LOOKUP_ID);
     }
 
+    // The sidebar's visible entries, with their section headings.
+    let mut sidebar_focus = SIDEBAR_ID;
+    if workspace.show_sidebar {
+        let list = &workspace.sidebar.list;
+        let mut ids = Vec::new();
+        for index in list.visible_items() {
+            let Some(rect) = list.item_rect(index) else {
+                continue;
+            };
+            let id = NodeId(FIRST_SIDEBAR_ID + index as u64);
+            let mut node = match &list.items[index] {
+                ListItem::Heading(text) => {
+                    let mut node = Node::new(Role::Heading);
+                    node.set_label(text.as_str());
+                    node
+                }
+                ListItem::Entry { label, detail, .. } => {
+                    let mut node = Node::new(Role::ListItem);
+                    let label = label.trim();
+                    node.set_label(if detail.is_empty() {
+                        label.to_string()
+                    } else {
+                        format!("{label}, {detail}")
+                    });
+                    node.set_selected(list.selected() == Some(index));
+                    node.add_action(Action::Click);
+                    node.add_action(Action::Focus);
+                    if list.selected() == Some(index) {
+                        sidebar_focus = id;
+                    }
+                    node
+                }
+            };
+            node.set_bounds(physical(rect, scale));
+            ids.push(id);
+            nodes.push((id, node));
+        }
+        let mut sidebar = Node::new(Role::List);
+        sidebar.set_label("Sidebar");
+        sidebar.set_children(ids);
+        nodes.push((SIDEBAR_ID, sidebar));
+        window_children.push(SIDEBAR_ID);
+    }
+
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
     nodes.push((STATUS_ID, status));
@@ -288,6 +336,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .is_some_and(|tab| tab.document().is_some());
     let focus = menu_focus.unwrap_or(match workspace.focus {
         _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
+        Focus::Sidebar if workspace.show_sidebar => sidebar_focus,
         Focus::Filter if has_fields => FILTER_ID,
         Focus::Find if has_fields => FIND_ID,
         _ => grid_focus,
@@ -309,6 +358,12 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 if let Some(tab) = workspace.active_tab_mut() {
                     tab.view.select(row, false);
                     tab.following = tab.view.at_bottom();
+                }
+            } else if let Some(index) =
+                in_range(target, FIRST_SIDEBAR_ID, workspace.sidebar.list.items.len())
+            {
+                if let Some(chosen) = workspace.sidebar.target_of(index) {
+                    workspace.choose(chosen, commands);
                 }
             } else if let Some(index) = in_range(target, FIRST_TAB_ID, workspace.tabs.len()) {
                 workspace.active = index;

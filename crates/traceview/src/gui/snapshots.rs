@@ -125,17 +125,22 @@ fn render(
     loop {
         let mut commands = Commands::default();
         workspace.woken(&mut commands);
-        renderer.begin();
-        workspace.draw(&mut renderer, size, scale, &mut commands);
-        renderer.end().unwrap();
+        // Checked before drawing, so the frame kept was drawn with everything loaded.
         let loaded = workspace.active_tab().is_none_or(|tab| {
-            let rows_ready = tab
-                .rows()
-                .is_some_and(|rows| tab.view.visible_rows().all(|row| rows.cells(row).is_some()));
+            // An empty view right after opening hasn't been laid out yet, so it doesn't count.
+            let rows_ready = tab.rows().is_some_and(|rows| {
+                let mut visible = tab.view.visible_rows().peekable();
+                rows.row_count() == 0
+                    || (visible.peek().is_some() && visible.all(|row| rows.cells(row).is_some()))
+            });
             let details_ready = tab.cursor_file_row().is_none() || tab.details.shown().is_some();
             rows_ready && details_ready
         });
-        if loaded && done(workspace) {
+        let finished = loaded && done(workspace);
+        renderer.begin();
+        workspace.draw(&mut renderer, size, scale, &mut commands);
+        renderer.end().unwrap();
+        if finished {
             break;
         }
         assert!(
@@ -216,7 +221,11 @@ fn check_theme(choice: ThemeChoice, name: &str, dpi: f32) {
 #[test]
 fn every_theme_renders_correctly() {
     for theme in Theme::ALL {
-        check_theme(ThemeChoice::Fixed(theme), &format!("{}-100", theme.name.to_lowercase()), 96.0);
+        check_theme(
+            ThemeChoice::Fixed(theme),
+            &format!("{}-100", theme.name.to_lowercase()),
+            96.0,
+        );
     }
 }
 
@@ -316,5 +325,23 @@ fn error_lookup_explains_the_selected_rows_code() {
     assert!(
         frame.has_ink(result, theme.panel_background),
         "the result didn't draw"
+    );
+}
+
+#[test]
+fn the_sidebar_draws_beside_the_logs() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    workspace.show_sidebar = true;
+    let frame = render(&mut workspace, "sidebar", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some() && workspace.sidebar.list.items.len() > 3
+    });
+    let theme = workspace.theme();
+    let grid = workspace.grid_rect();
+    assert!(grid.left >= workspace.sidebar.width());
+    assert_eq!(frame.at(4.0, 600.0), theme.sidebar_background);
+    let first = workspace.sidebar.list.item_rect(1).unwrap();
+    assert!(
+        frame.has_ink(first, theme.sidebar_background),
+        "the first entry's text drew"
     );
 }

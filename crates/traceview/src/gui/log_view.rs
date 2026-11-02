@@ -477,12 +477,30 @@ impl LogView {
             canvas.fill_rect(rect, color);
         }
         if source.bookmarked(row) {
-            let marker = Rect::new(layout.body.left, rect.top + 1.0, layout.body.left + BOOKMARK_WIDTH, rect.bottom - 1.0);
-            canvas.fill_rect(marker, if selected { theme.selected_text } else { theme.bookmark });
+            let marker = Rect::new(
+                layout.body.left,
+                rect.top + 1.0,
+                layout.body.left + BOOKMARK_WIDTH,
+                rect.bottom - 1.0,
+            );
+            canvas.fill_rect(
+                marker,
+                if selected {
+                    theme.selected_text
+                } else {
+                    theme.bookmark
+                },
+            );
         }
         // A colored row draws every column in its text color, as CMTrace does,
         // so each one keeps its contrast against the row.
-        let themed = |color: Color| if background.is_some() { message_color } else { color };
+        let themed = |color: Color| {
+            if background.is_some() {
+                message_color
+            } else {
+                color
+            }
+        };
         let cell = |left: f32, right: f32| Rect::new(left, rect.top, right, rect.bottom);
 
         let number = (source.file_row(row) + 1).to_string();

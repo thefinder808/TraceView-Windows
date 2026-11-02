@@ -81,12 +81,16 @@ impl Export {
         let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
         let mut shown = self.rows.start;
         while shown < self.rows.end {
-            let Some((number, source, first)) = self.locate(shown) else { break };
+            let Some((number, source, first)) = self.locate(shown) else {
+                break;
+            };
             // Rows that follow each other in one file are read together.
             let mut numbers = vec![number];
             while shown + numbers.len() < self.rows.end && numbers.len() < MOST_RUN_ROWS {
                 match self.locate(shown + numbers.len()) {
-                    Some((next, next_source, next_row)) if next_source == source && next_row == first + numbers.len() => {
+                    Some((next, next_source, next_row))
+                        if next_source == source && next_row == first + numbers.len() =>
+                    {
                         numbers.push(next);
                     }
                     _ => break,
@@ -160,7 +164,11 @@ mod tests {
     #[test]
     fn rows_become_csv_that_excel_reads_as_utf8() {
         let dir = tempfile::tempdir().unwrap();
-        let log = open(&dir, "a.log", "2026-01-01 10:00:00 host app[1]: ERROR: disk full, again\nplain \"quoted\" café\n");
+        let log = open(
+            &dir,
+            "a.log",
+            "2026-01-01 10:00:00 host app[1]: ERROR: disk full, again\nplain \"quoted\" café\n",
+        );
         assert_eq!(
             csv(&whole(log, 0..2)),
             "\u{FEFF}Row,Time,Level,Component,Thread,Message\r\n\
@@ -176,7 +184,10 @@ mod tests {
             cell(value, &mut output);
             output.push('|');
         }
-        assert_eq!(output, "\"'=HYPERLINK(\"\"http://x\"\")\"|\"'+1\"|\"'-2+3\"|\"'@SUM(A1)\"|safe|");
+        assert_eq!(
+            output,
+            "\"'=HYPERLINK(\"\"http://x\"\")\"|\"'+1\"|\"'-2+3\"|\"'@SUM(A1)\"|safe|"
+        );
     }
 
     #[test]
@@ -200,7 +211,14 @@ mod tests {
         export.write(&mut bytes, &done).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         let lines: Vec<&str> = text.lines().skip(1).collect();
-        assert_eq!(lines, ["5,,Information,,,line 4", "6,,Information,,,line 5", "901,,Information,,,line 900"]);
+        assert_eq!(
+            lines,
+            [
+                "5,,Information,,,line 4",
+                "6,,Information,,,line 5",
+                "901,,Information,,,line 900"
+            ]
+        );
         assert_eq!(done.load(Ordering::Relaxed), 3);
     }
 
@@ -223,8 +241,18 @@ mod tests {
         };
         let text = csv(&export);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "\u{FEFF}Row,File,Time,Level,Component,Thread,Message");
-        assert_eq!(&lines[1..], ["1,a.log,,Information,,,a0", "2,b.log,,Information,,,b0", "3,a.log,,Information,,,a1"]);
+        assert_eq!(
+            lines[0],
+            "\u{FEFF}Row,File,Time,Level,Component,Thread,Message"
+        );
+        assert_eq!(
+            &lines[1..],
+            [
+                "1,a.log,,Information,,,a0",
+                "2,b.log,,Information,,,b0",
+                "3,a.log,,Information,,,a1"
+            ]
+        );
     }
 
     #[test]

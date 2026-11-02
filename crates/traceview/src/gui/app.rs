@@ -3,9 +3,9 @@
 //! something's ready, so the UI thread never waits.
 
 use super::accessibility;
-use super::settings::{self, Store};
 #[cfg(feature = "bench")]
 use super::bench::{Bench, Options as BenchOptions};
+use super::settings::{self, Store};
 use super::workspace::Workspace;
 use accesskit::{ActionRequest, TreeUpdate};
 use std::path::PathBuf;

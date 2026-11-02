@@ -135,7 +135,8 @@ pub(crate) fn choose_save_path(hwnd: HWND, suggested_name: &str) -> Option<PathB
     // SAFETY: COM was initialized on this thread by `run`. All pointers are live
     // for their call, and the returned path is freed after being copied.
     unsafe {
-        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let dialog: IFileSaveDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let filters = [COMDLG_FILTERSPEC {
             pszName: w!("CSV files (*.csv)"),
             pszSpec: w!("*.csv"),
@@ -149,7 +150,11 @@ pub(crate) fn choose_save_path(hwnd: HWND, suggested_name: &str) -> Option<PathB
         dialog.SetFileName(&HSTRING::from(suggested_name)).ok()?;
         dialog.SetTitle(&HSTRING::from("Export rows")).ok()?;
         dialog.Show(Some(hwnd)).ok()?;
-        let path: PWSTR = dialog.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path: PWSTR = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
         let chosen = wide_to_path(path.as_wide());
         CoTaskMemFree(Some(path.0.cast()));
         Some(chosen)

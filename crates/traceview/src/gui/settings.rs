@@ -28,6 +28,8 @@ pub struct Settings {
     /// "System", to follow Windows' light or dark setting, or a theme's name.
     pub theme: String,
     pub details_pane: bool,
+    pub sidebar: bool,
+    pub sidebar_width: f32,
     /// Logs opened lately, newest first.
     pub recent: Vec<String>,
     pub presets: Vec<Preset>,
@@ -40,6 +42,8 @@ impl Default for Settings {
         Self {
             theme: "System".to_string(),
             details_pane: true,
+            sidebar: false,
+            sidebar_width: super::sidebar::DEFAULT_WIDTH,
             recent: Vec::new(),
             presets: Vec::new(),
             bookmarks: BTreeMap::new(),
@@ -76,7 +80,9 @@ impl Settings {
     }
 
     pub fn bookmarks_for(&self, log: &Path) -> BTreeSet<u32> {
-        self.bookmarks.get(&bookmark_key(log)).map_or_else(BTreeSet::new, |rows| rows.iter().copied().collect())
+        self.bookmarks
+            .get(&bookmark_key(log))
+            .map_or_else(BTreeSet::new, |rows| rows.iter().copied().collect())
     }
 
     /// Saves a log's bookmarks, forgetting the log when it has none.
@@ -85,7 +91,10 @@ impl Settings {
         if rows.is_empty() {
             self.bookmarks.remove(&key);
         } else if self.bookmarks.contains_key(&key) || self.bookmarks.len() < MOST_BOOKMARKED_LOGS {
-            self.bookmarks.insert(key, rows.iter().copied().take(MOST_BOOKMARKS_PER_LOG).collect());
+            self.bookmarks.insert(
+                key,
+                rows.iter().copied().take(MOST_BOOKMARKS_PER_LOG).collect(),
+            );
         }
     }
 
@@ -105,7 +114,9 @@ impl Settings {
 /// are ignored, so files from older and newer versions both load.
 pub fn parse(text: &str) -> Result<Settings, String> {
     let mut settings: Settings = toml::from_str(text).map_err(|error| {
-        let line = error.span().map_or(0, |span| text[..span.start.min(text.len())].lines().count().max(1));
+        let line = error.span().map_or(0, |span| {
+            text[..span.start.min(text.len())].lines().count().max(1)
+        });
         format!("line {line}: {}", error.message().trim())
     })?;
     settings.tidy();
@@ -160,11 +171,16 @@ impl Store {
             Ok(text) => match parse(&text) {
                 Ok(settings) => (Self::writing_to(path), settings, None),
                 Err(error) => {
-                    let message = format!("Settings weren't loaded ({error}). Fix {} and restart", path.display());
+                    let message = format!(
+                        "Settings weren't loaded ({error}). Fix {} and restart",
+                        path.display()
+                    );
                     (Self::disabled(), Settings::default(), Some(message))
                 }
             },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (Self::writing_to(path), Settings::default(), None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                (Self::writing_to(path), Settings::default(), None)
+            }
             Err(error) => {
                 let message = format!("Settings weren't loaded: {error}");
                 (Self::disabled(), Settings::default(), Some(message))
@@ -278,7 +294,9 @@ mod tests {
 
     #[test]
     fn huge_lists_are_cut_to_size() {
-        let text: String = (0..500).map(|number| format!("[[presets]]\nname = \"{number}\"\nfilter = \"x\"\n")).collect();
+        let text: String = (0..500)
+            .map(|number| format!("[[presets]]\nname = \"{number}\"\nfilter = \"x\"\n"))
+            .collect();
         assert_eq!(parse(&text).unwrap().presets.len(), MOST_PRESETS);
     }
 
@@ -292,7 +310,12 @@ mod tests {
             store.save(&settings);
         }
         drop(store);
-        assert_eq!(parse(&std::fs::read_to_string(&path).unwrap()).unwrap().theme, "Theme 99");
+        assert_eq!(
+            parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .theme,
+            "Theme 99"
+        );
     }
 
     #[test]

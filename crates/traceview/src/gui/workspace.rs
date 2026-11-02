@@ -5,15 +5,16 @@
 use super::details::PANE_HEIGHT;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
-use super::settings::{Settings, Store};
 use super::row_cache::{cells_from_row, SharedLog};
+use super::settings::{Settings, Store};
+use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
-use tv_platform::{Command, Commands, Waker};
+use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
 use tv_ui::text_field::FieldResponse;
@@ -50,6 +51,7 @@ pub mod command {
     pub const CLEAR_FILTER: u32 = 21;
     pub const DETAILS: u32 = 22;
     pub const THEME_SYSTEM: u32 = 23;
+    pub const SIDEBAR: u32 = 26;
     /// The themes, in `Theme::ALL` order, from this number on.
     pub const THEMES: u32 = 40;
     pub const ERROR_LOOKUP: u32 = 30;
@@ -64,6 +66,7 @@ pub enum Focus {
     Grid,
     Filter,
     Find,
+    Sidebar,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +113,12 @@ pub struct Workspace {
     pub active: usize,
     pub focus: Focus,
     pub show_details: bool,
+    pub show_sidebar: bool,
+    pub sidebar: Sidebar,
+    /// Where the mouse was last seen, since wheel events don't say.
+    pointer: Point,
+    /// The pointer shape last asked for.
+    cursor: Cursor,
     pub theme_choice: ThemeChoice,
     pub system_is_dark: bool,
     /// The Error Lookup panel, while it's open.
@@ -165,6 +174,10 @@ impl Workspace {
             active: 0,
             focus: Focus::Grid,
             show_details: true,
+            show_sidebar: false,
+            sidebar: Sidebar::new(sidebar::DEFAULT_WIDTH, &waker),
+            pointer: Point::default(),
+            cursor: Cursor::Arrow,
             theme_choice: ThemeChoice::System,
             system_is_dark,
             lookup: None,
@@ -185,13 +198,17 @@ impl Workspace {
     /// Starts from saved settings, and saves changes back through `store`.
     /// `problem` says why the settings file couldn't be used, if it couldn't.
     pub fn use_settings(&mut self, settings: Settings, store: Store, problem: Option<String>) {
-        self.theme_choice = Theme::by_name(&settings.theme).map_or(ThemeChoice::System, ThemeChoice::Fixed);
+        self.theme_choice =
+            Theme::by_name(&settings.theme).map_or(ThemeChoice::System, ThemeChoice::Fixed);
         self.show_details = settings.details_pane;
+        self.show_sidebar = settings.sidebar;
+        self.sidebar.set_width(settings.sidebar_width);
         self.settings = settings;
         self.store = store;
         self.notice = problem;
     }
 
+    #[cfg(test)]
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -203,6 +220,8 @@ impl Workspace {
         }
         .to_string();
         self.settings.details_pane = self.show_details;
+        self.settings.sidebar = self.show_sidebar;
+        self.settings.sidebar_width = self.sidebar.width();
         self.store.save(&self.settings);
     }
 
@@ -292,6 +311,7 @@ impl Workspace {
                     MenuItem::command("Filter...", "Ctrl+Shift+F", command::FILTER),
                     MenuItem::command("Clear filter", "", command::CLEAR_FILTER),
                     MenuItem::Separator,
+                    checked(MenuItem::command("Sidebar", "Ctrl+B", command::SIDEBAR), self.show_sidebar),
                     checked(
                         MenuItem::command("Details pane", "", command::DETAILS),
                         self.show_details,
@@ -347,12 +367,19 @@ impl Workspace {
     /// Exports the active tab's rows to a CSV file, in the background. The file
     /// appears only once it's complete.
     pub fn export_to(&mut self, path: PathBuf) {
-        let Some(export) = self.active_tab().and_then(Tab::export) else { return };
+        let Some(export) = self.active_tab().and_then(Tab::export) else {
+            return;
+        };
         let total = export.rows.len();
         let done = Arc::new(AtomicUsize::new(0));
         let finished = Arc::new(AtomicBool::new(false));
         let (sender, result) = channel();
-        let (job_done, job_finished, waker, target) = (done.clone(), finished.clone(), self.waker.clone(), path.clone());
+        let (job_done, job_finished, waker, target) = (
+            done.clone(),
+            finished.clone(),
+            self.waker.clone(),
+            path.clone(),
+        );
         std::thread::spawn(move || {
             let partial = target.with_extension("csv.part");
             let outcome = std::fs::File::create(&partial)
@@ -426,7 +453,7 @@ impl Workspace {
                 match focus {
                     Focus::Filter => tab.filter_field.select_all(),
                     Focus::Find => tab.find_field.select_all(),
-                    Focus::Grid => {}
+                    Focus::Grid | Focus::Sidebar => {}
                 }
             }
         }
@@ -486,7 +513,9 @@ impl Workspace {
             command::EXPORT => {
                 if let Some(tab) = self.active_tab().filter(|tab| tab.document().is_some()) {
                     let name = match tab.paths.as_slice() {
-                        [path] => path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+                        [path] => path
+                            .file_stem()
+                            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
                         _ => "Merged logs".to_string(),
                     };
                     commands.push(Command::SaveFileDialog {
@@ -539,6 +568,12 @@ impl Workspace {
                 }
             }
             command::DETAILS => self.show_details = !self.show_details,
+            command::SIDEBAR => {
+                self.show_sidebar = !self.show_sidebar;
+                if !self.show_sidebar && self.focus == Focus::Sidebar {
+                    self.set_focus(Focus::Grid, commands);
+                }
+            }
             command::PAUSE => {
                 if let Some(tab) = self.active_tab_mut() {
                     let paused = !tab.is_paused();
@@ -547,7 +582,8 @@ impl Workspace {
             }
             command::THEME_SYSTEM => self.theme_choice = ThemeChoice::System,
             id if theme_for_command(id).is_some() => {
-                self.theme_choice = theme_for_command(id).map_or(ThemeChoice::System, ThemeChoice::Fixed);
+                self.theme_choice =
+                    theme_for_command(id).map_or(ThemeChoice::System, ThemeChoice::Fixed);
             }
             command::ERROR_LOOKUP => {
                 // Start with the selected row's first code, as most lookups are for that.
@@ -563,7 +599,11 @@ impl Workspace {
             }
             _ => {}
         }
-        if matches!(id, command::DETAILS | command::THEME_SYSTEM) || theme_for_command(id).is_some() {
+        if matches!(
+            id,
+            command::DETAILS | command::SIDEBAR | command::THEME_SYSTEM
+        ) || theme_for_command(id).is_some()
+        {
             self.save_settings();
         }
         commands.redraw();
@@ -583,6 +623,7 @@ impl Workspace {
             (Key::Char('F'), true, true) => command::FILTER,
             (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
             (Key::Char('U'), true, false) => command::PAUSE,
+            (Key::Char('B'), true, false) => command::SIDEBAR,
             (Key::Char('D'), true, false) => command::BOOKMARK,
             (Key::F(2), false, false) => command::NEXT_BOOKMARK,
             (Key::F(2), false, true) => command::PREVIOUS_BOOKMARK,
@@ -628,7 +669,7 @@ impl Workspace {
                     match focus {
                         Focus::Filter => tab.filter_field.insert(&text),
                         Focus::Find => tab.find_field.insert(&text),
-                        Focus::Grid => false,
+                        Focus::Grid | Focus::Sidebar => false,
                     };
                 }
             }
@@ -641,7 +682,7 @@ impl Workspace {
                 match focus {
                     Focus::Filter => tab.apply_filter(&waker),
                     Focus::Find => tab.find_next(!shift, &waker),
-                    Focus::Grid => {}
+                    Focus::Grid | Focus::Sidebar => {}
                 }
             }
         }
@@ -725,6 +766,68 @@ impl Workspace {
         }
     }
 
+    /// Offers an event to the sidebar. Returns true if the sidebar used it up.
+    /// Every mouse move and release reaches it, so hover clears and a divider
+    /// drag ends wherever the mouse goes.
+    fn sidebar_event(&mut self, event: Event, commands: &mut Commands) -> bool {
+        let consumed = match event {
+            Event::MouseDown(point, ..) => self.sidebar.contains(point),
+            Event::MouseMove(_) | Event::MouseUp(..) => self.sidebar.is_dragging(),
+            Event::Wheel(_) => self.sidebar.contains(self.pointer),
+            Event::KeyDown(Key::Escape, _) if self.focus == Focus::Sidebar => {
+                self.set_focus(Focus::Grid, commands);
+                return true;
+            }
+            Event::KeyDown(..) | Event::Char(_) => self.focus == Focus::Sidebar,
+        };
+        if !consumed && !matches!(event, Event::MouseMove(_) | Event::MouseUp(..)) {
+            return false;
+        }
+        let response = self.sidebar.handle(event);
+        let cursor = if self.sidebar.shows_resize_cursor() {
+            Cursor::ResizeColumns
+        } else {
+            Cursor::Arrow
+        };
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            commands.push(Command::SetCursor(cursor));
+        }
+        if let Event::MouseDown(point, MouseButton::Left, _) = event {
+            if consumed && !self.sidebar.is_dragging() && self.sidebar.list.contains(point) {
+                self.set_focus(Focus::Sidebar, commands);
+            }
+        }
+        if response.resized.is_some() {
+            self.save_settings();
+        }
+        if let Some(target) = response.chosen {
+            self.choose(target, commands);
+        }
+        if response.redraw || consumed {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+        consumed
+    }
+
+    /// Does what a sidebar entry stands for.
+    pub fn choose(&mut self, target: Target, commands: &mut Commands) {
+        match target {
+            Target::Tab(index) if index < self.tabs.len() => self.active = index,
+            Target::Bookmark { tab, row } if tab < self.tabs.len() => {
+                self.active = tab;
+                self.tabs[tab].select_file_row(row);
+                self.set_focus(Focus::Grid, commands);
+            }
+            Target::Open(path) => self.open_paths(vec![path]),
+            Target::Place(index) => self.sidebar.toggle_place(index, &self.waker),
+            Target::Tab(_) | Target::Bookmark { .. } => {}
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
     fn menu_wants(&self, event: &Event) -> bool {
         let open = self.menu.open_menu().is_some();
         match event {
@@ -760,15 +863,35 @@ impl Workspace {
                 return;
             }
             if key == Key::Tab && !modifiers.ctrl && self.focus != Focus::Grid {
+                let sidebar = if self.show_sidebar {
+                    Focus::Sidebar
+                } else {
+                    Focus::Grid
+                };
                 let next = match (self.focus, modifiers.shift) {
-                    (Focus::Filter, false) | (Focus::Grid, true) => Focus::Find,
-                    (Focus::Find, false) => Focus::Grid,
-                    (Focus::Find, true) | (Focus::Grid, false) => Focus::Filter,
+                    (Focus::Filter, false) => Focus::Find,
+                    (Focus::Find, false) => sidebar,
+                    (Focus::Sidebar, false) => Focus::Grid,
+                    (Focus::Grid, false) | (Focus::Find, true) => Focus::Filter,
                     (Focus::Filter, true) => Focus::Grid,
+                    (Focus::Sidebar, true) => Focus::Find,
+                    (Focus::Grid, true) => {
+                        if self.show_sidebar {
+                            Focus::Sidebar
+                        } else {
+                            Focus::Find
+                        }
+                    }
                 };
                 self.set_focus(next, commands);
                 return;
             }
+        }
+        if let Event::MouseMove(point) = event {
+            self.pointer = point;
+        }
+        if self.show_sidebar && self.sidebar_event(event, commands) {
+            return;
         }
 
         let layout = self.layout;
@@ -823,7 +946,7 @@ impl Workspace {
             let response = match focus {
                 Focus::Filter => tab.filter_field.handle(event, canvas, layout.filter),
                 Focus::Find => tab.find_field.handle(event, canvas, layout.find),
-                Focus::Grid => FieldResponse::default(),
+                Focus::Grid | Focus::Sidebar => FieldResponse::default(),
             };
             self.handle_field(focus, response, commands);
             return;
@@ -848,11 +971,19 @@ impl Workspace {
         if let Some(panel) = &mut self.lookup {
             panel.poll();
         }
-        let exported = self.exporting.as_ref().and_then(|exporting| match exporting.result.try_recv() {
-            Ok(outcome) => Some(outcome.map(|()| (exporting.total, exporting.name.clone()))),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err(io::Error::other("the export stopped"))),
-        });
+        self.sidebar.poll();
+        let exported =
+            self.exporting
+                .as_ref()
+                .and_then(|exporting| match exporting.result.try_recv() {
+                    Ok(outcome) => {
+                        Some(outcome.map(|()| (exporting.total, exporting.name.clone())))
+                    }
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => {
+                        Some(Err(io::Error::other("the export stopped")))
+                    }
+                });
         if let Some(outcome) = exported {
             self.exporting = None;
             self.notice = Some(match outcome {
@@ -891,6 +1022,11 @@ impl Workspace {
         let menu_bar = area.take_top(snap(menu::BAR_HEIGHT, scale));
         self.menu.menus = self.build_menus();
         self.menu.arrange(menu_bar, canvas);
+        if self.show_sidebar {
+            self.sidebar
+                .rebuild(&self.tabs, self.active, &self.settings, &self.waker);
+            area = self.sidebar.arrange(area);
+        }
         let labels: Vec<TabLabel> = self.tab_labels();
         let tabs = if self.tabs.is_empty() {
             Rect::default()
@@ -1038,7 +1174,7 @@ impl Workspace {
                     caret = match focus {
                         Focus::Filter => Some(filter_caret),
                         Focus::Find => Some(find_caret),
-                        Focus::Grid => None,
+                        Focus::Grid | Focus::Sidebar => None,
                     };
                     if let Some(summary) = tab.find_summary() {
                         canvas.text(&summary, layout.find_count, UI_LEFT, theme.secondary_text);
@@ -1073,6 +1209,9 @@ impl Workspace {
             theme.secondary_text,
         );
 
+        if self.show_sidebar {
+            self.sidebar.draw(canvas, theme, focus == Focus::Sidebar);
+        }
         if let Some(panel) = &mut self.lookup {
             caret = Some(panel.draw(canvas, theme));
         }
@@ -1676,7 +1815,9 @@ mod tests {
         let (store, settings, problem) = Store::open(Some(file.clone()));
         first.use_settings(settings, store, problem);
         first.open_paths(vec![log.clone()]);
-        settle(&mut first, |workspace| workspace.tabs[0].document().is_some());
+        settle(&mut first, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
         for row in [40, 10] {
             first.tabs[0].select_file_row(row);
             send(&mut first, Event::KeyDown(Key::Char('D'), CTRL));
@@ -1698,7 +1839,9 @@ mod tests {
         let (store, settings, problem) = Store::open(Some(file));
         second.use_settings(settings, store, problem);
         second.open_paths(vec![log]);
-        settle(&mut second, |workspace| workspace.tabs[0].document().is_some());
+        settle(&mut second, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
         let rows = second.tabs[0].rows().unwrap();
         assert!(rows.bookmarked(10) && !rows.bookmarked(40));
     }
@@ -1710,7 +1853,10 @@ mod tests {
         // Row 3 of the merged timeline is b.log's second row.
         workspace.tabs[2].select_file_row(3);
         send(&mut workspace, Event::KeyDown(Key::Char('D'), CTRL));
-        assert!(workspace.tabs[1].rows().unwrap().bookmarked(1), "b.log's own tab shows it");
+        assert!(
+            workspace.tabs[1].rows().unwrap().bookmarked(1),
+            "b.log's own tab shows it"
+        );
         assert!(workspace.tabs[2].rows().unwrap().bookmarked(3));
         assert!(!workspace.tabs[0].rows().unwrap().bookmarked(1));
     }
@@ -1731,12 +1877,147 @@ mod tests {
 
         let path = dir.path().join("errors.csv");
         workspace.export_to(path.clone());
-        settle(&mut workspace, |workspace| workspace.status().contains("Exported"));
-        assert!(workspace.status().contains("Exported 10 rows to errors.csv"));
+        settle(&mut workspace, |workspace| {
+            workspace.status().contains("Exported")
+        });
+        assert!(workspace
+            .status()
+            .contains("Exported 10 rows to errors.csv"));
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 11);
-        assert!(text.lines().nth(1).unwrap().starts_with("4,2026-01-01 10:00:03.000,Error,"));
+        assert!(text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("4,2026-01-01 10:00:03.000,Error,"));
         assert!(!dir.path().join("errors.csv.part").exists());
+    }
+
+    fn sidebar_labels(workspace: &Workspace) -> Vec<String> {
+        workspace
+            .sidebar
+            .list
+            .items
+            .iter()
+            .map(|item| match item {
+                tv_ui::list_view::ListItem::Heading(text) => text.clone(),
+                tv_ui::list_view::ListItem::Entry { label, .. } => label.trim().to_string(),
+            })
+            .collect()
+    }
+
+    fn click_sidebar(workspace: &mut Workspace, label: &str) {
+        let index = sidebar_labels(workspace)
+            .iter()
+            .position(|item| item == label)
+            .unwrap();
+        workspace.sidebar.list.reveal(index);
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        let rect = workspace.sidebar.list.item_rect(index).unwrap();
+        let point = Point::new(rect.left + 10.0, rect.top + rect.height() / 2.0);
+        send(workspace, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(workspace, Event::MouseUp(point, MouseButton::Left));
+    }
+
+    #[test]
+    fn ctrl_b_shows_open_nearby_and_recent_logs_in_the_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = log_file(&dir, "app.log", 10);
+        log_file(&dir, "other.log", 5);
+        let mut workspace = workspace();
+        workspace.open_paths(vec![first]);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        send(&mut workspace, Event::KeyDown(Key::Char('B'), CTRL));
+        assert!(workspace.show_sidebar);
+        settle(&mut workspace, |workspace| {
+            sidebar_labels(workspace).contains(&"other.log".to_string())
+        });
+        let labels = sidebar_labels(&workspace);
+        for heading in ["OPEN", "NEARBY", "RECENT"] {
+            assert!(labels.contains(&heading.to_string()), "{labels:?}");
+        }
+        assert!(workspace.grid_rect().left >= sidebar::DEFAULT_WIDTH);
+
+        click_sidebar(&mut workspace, "other.log");
+        assert_eq!(workspace.tab_titles(), ["app.log", "other.log"]);
+        assert_eq!(workspace.active, 1);
+        assert_eq!(
+            workspace.focus,
+            Focus::Grid,
+            "an opened log is ready to read"
+        );
+
+        // Choosing an open tab keeps the sidebar focused, and Escape leaves it.
+        click_sidebar(&mut workspace, "app.log");
+        assert_eq!((workspace.active, workspace.focus), (0, Focus::Sidebar));
+        send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        assert_eq!(workspace.focus, Focus::Grid);
+    }
+
+    #[test]
+    fn sidebar_bookmarks_jump_to_their_row() {
+        let (_dir, mut workspace) = opened(100);
+        workspace.tabs[0].select_file_row(41);
+        send(&mut workspace, Event::KeyDown(Key::Char('D'), CTRL));
+        workspace.tabs[0].select_file_row(0);
+        send(&mut workspace, Event::KeyDown(Key::Char('B'), CTRL));
+        settle(&mut workspace, |workspace| {
+            sidebar_labels(workspace).contains(&"BOOKMARKS".to_string())
+        });
+        let bookmark = sidebar_labels(&workspace)
+            .into_iter()
+            .find(|label| label == "Row 42" || label.starts_with("42: "))
+            .expect("the bookmark is listed by its row and message");
+        click_sidebar(&mut workspace, &bookmark);
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(41));
+        assert_eq!(workspace.focus, Focus::Grid);
+    }
+
+    #[test]
+    fn dragging_the_sidebar_edge_resizes_it() {
+        let (_dir, mut workspace) = opened(10);
+        send(&mut workspace, Event::KeyDown(Key::Char('B'), CTRL));
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        let edge = workspace.sidebar.width();
+        let start = Point::new(edge + 1.0, 300.0);
+        let end = Point::new(edge + 101.0, 300.0);
+        let mut commands = Commands::default();
+        workspace.event(
+            Event::MouseMove(start),
+            &mut RecordingCanvas::new(),
+            &mut commands,
+        );
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, Command::SetCursor(Cursor::ResizeColumns))));
+        send(
+            &mut workspace,
+            Event::MouseDown(start, MouseButton::Left, NONE),
+        );
+        send(&mut workspace, Event::MouseMove(end));
+        send(&mut workspace, Event::MouseUp(end, MouseButton::Left));
+        assert!(
+            (workspace.sidebar.width() - (edge + 100.0)).abs() < 1.0,
+            "{}",
+            workspace.sidebar.width()
+        );
+        assert_eq!(
+            workspace.tabs[0].view.cursor(),
+            None,
+            "the drag didn't reach the grid"
+        );
     }
 
     #[test]
