@@ -21,6 +21,7 @@ use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
 use tv_ui::palette::PaletteItem;
+use tv_ui::splitter::{Orientation, Splitter};
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
 use tv_ui::text_field::FieldResponse;
 use tv_ui::{
@@ -30,6 +31,8 @@ use tv_ui::{
 const TOOLBAR_HEIGHT: f32 = 34.0;
 const FIELD_HEIGHT: f32 = 24.0;
 const MARGIN: f32 = 8.0;
+/// Each pane of a split view keeps at least this much width.
+const MIN_PANE: f32 = 240.0;
 const UI_LEFT: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
 /// More than this many rows in one copy would make a clipboard entry too large
 /// for most apps to accept anyway.
@@ -66,6 +69,8 @@ pub mod command {
     pub const PALETTE: u32 = 35;
     pub const GO_TO_ROW: u32 = 36;
     pub const SAVE_PRESET: u32 = 37;
+    pub const SPLIT: u32 = 38;
+    pub const SYNC: u32 = 39;
     pub const BOOKMARK: u32 = 32;
     pub const NEXT_BOOKMARK: u32 = 33;
     pub const PREVIOUS_BOOKMARK: u32 = 34;
@@ -104,6 +109,154 @@ struct Layout {
     grid: Rect,
     details: Rect,
     status: Rect,
+    /// The focused pane, and in split view the other one.
+    focused_area: Rect,
+    other: Option<PaneLayout>,
+}
+
+/// Where one pane's parts go.
+#[derive(Clone, Copy, Debug, Default)]
+struct PaneLayout {
+    area: Rect,
+    filter: Rect,
+    find: Rect,
+    find_count: Rect,
+    chips: Rect,
+    histogram: Rect,
+    grid: Rect,
+}
+
+/// Lays out a pane: the filter and find boxes, the chips and histogram, and
+/// the grid in what's left.
+fn pane_layout(
+    mut area: Rect,
+    ready: bool,
+    chips: bool,
+    histogram: bool,
+    scale: f32,
+) -> PaneLayout {
+    let mut pane = PaneLayout {
+        area,
+        ..PaneLayout::default()
+    };
+    if ready {
+        let toolbar = area.take_top(snap(TOOLBAR_HEIGHT, scale));
+        let field_top = toolbar.top + (toolbar.height() - FIELD_HEIGHT) / 2.0;
+        let width = toolbar.width();
+        let filter_right =
+            toolbar.left + MARGIN + (width * 0.5).max(160.0).min(width - 2.0 * MARGIN);
+        pane.filter = Rect::new(
+            toolbar.left + MARGIN,
+            field_top,
+            filter_right,
+            field_top + FIELD_HEIGHT,
+        );
+        let find_right =
+            (filter_right + MARGIN + (width * 0.28).max(120.0)).min(toolbar.right - MARGIN);
+        pane.find = Rect::new(
+            filter_right + MARGIN,
+            field_top,
+            find_right.max(filter_right + MARGIN),
+            field_top + FIELD_HEIGHT,
+        );
+        pane.find_count = Rect::new(
+            find_right + MARGIN,
+            toolbar.top,
+            toolbar.right - MARGIN,
+            toolbar.bottom,
+        );
+        if chips {
+            pane.chips = area.take_top(snap(chip_bar::BAR_HEIGHT, scale));
+        }
+        if histogram {
+            pane.histogram =
+                area.take_top(snap(overview::BAR_HEIGHT + overview::LABEL_HEIGHT, scale));
+        }
+    }
+    pane.grid = area;
+    pane
+}
+
+/// Draws a pane: its grid, boxes, chips and histogram. Returns the caret of
+/// the box with focus, if one has it, for the IME. An unfocused pane passes
+/// no focus.
+fn draw_pane(
+    canvas: &mut dyn Canvas,
+    tab: &mut Tab,
+    pane: &PaneLayout,
+    theme: &Theme,
+    focus: Option<Focus>,
+    (chip_bar, chips): (&ChipBar, &[Chip]),
+    hover: Option<usize>,
+) -> Option<Point> {
+    match tab.rows() {
+        Some(rows) => tab.view.draw(canvas, &rows, theme),
+        None => canvas.text(
+            &tab.status(),
+            Rect::new(
+                pane.grid.left + 24.0,
+                pane.grid.top + 20.0,
+                pane.grid.right,
+                pane.grid.top + 60.0,
+            ),
+            UI_LEFT,
+            theme.secondary_text,
+        ),
+    }
+    tab.document()?;
+    let filter_caret = tab.filter_field.draw(
+        canvas,
+        pane.filter,
+        theme,
+        focus == Some(Focus::Filter),
+        FILTER_HINT,
+    );
+    let find_caret = tab.find_field.draw(
+        canvas,
+        pane.find,
+        theme,
+        focus == Some(Focus::Find),
+        FIND_HINT,
+    );
+    if let Some(summary) = tab.find_summary() {
+        canvas.text(&summary, pane.find_count, UI_LEFT, theme.secondary_text);
+    }
+    if pane.chips.height() > 0.0 {
+        chip_bar.draw(canvas, pane.chips, chips, theme, false);
+    }
+    if let (true, Some(histogram)) = (
+        pane.histogram.height() > 0.0,
+        &tab.overview.counts.histogram,
+    ) {
+        overview::draw_histogram(
+            canvas,
+            pane.histogram,
+            histogram,
+            &tab.overview.shadows,
+            hover,
+            theme,
+        );
+    }
+    match focus {
+        Some(Focus::Filter) => Some(filter_caret),
+        Some(Focus::Find) => Some(find_caret),
+        _ => None,
+    }
+}
+
+/// Two logs side by side, as in the Mac app.
+pub struct Split {
+    /// The tab in the pane without focus.
+    pub other: usize,
+    /// True when the focused pane is the right-hand one.
+    pub focus_right: bool,
+    /// Scrolling the focused pane lines the other up at the same time.
+    pub sync: bool,
+    splitter: Splitter,
+    /// The tab the focused pane showed last frame, to notice a switch.
+    focused_tab: usize,
+    /// The focused tab and its top row when the panes were last lined up.
+    synced: Option<(usize, usize)>,
 }
 
 /// An export to CSV running on another thread.
@@ -138,6 +291,12 @@ pub struct Workspace {
     /// The level each chip filters to.
     chip_filters: Vec<Option<Level>>,
     histogram_hover: Option<usize>,
+    /// Two logs side by side, when on.
+    pub split: Option<Split>,
+    other_chip_bar: ChipBar,
+    other_chips: Vec<Chip>,
+    /// The window's size at the last layout.
+    size: (f32, f32),
     pub theme_choice: ThemeChoice,
     pub system_is_dark: bool,
     /// The Error Lookup panel, while it's open.
@@ -205,6 +364,10 @@ impl Workspace {
             chips: Vec::new(),
             chip_filters: Vec::new(),
             histogram_hover: None,
+            split: None,
+            other_chip_bar: ChipBar::default(),
+            other_chips: Vec::new(),
+            size: (0.0, 0.0),
             theme_choice: ThemeChoice::System,
             system_is_dark,
             lookup: None,
@@ -347,6 +510,8 @@ impl Workspace {
                     MenuItem::command("Command palette...", "Ctrl+K", command::PALETTE),
                     MenuItem::Separator,
                     checked(MenuItem::command("Sidebar", "Ctrl+B", command::SIDEBAR), self.show_sidebar),
+                    checked(MenuItem::command("Split view", "Ctrl+\\", command::SPLIT), self.split.is_some()),
+                    checked(MenuItem::command("Sync split panes", "Ctrl+Shift+S", command::SYNC), self.split.as_ref().is_some_and(|split| split.sync)),
                     checked(MenuItem::command("Severity chips", "", command::CHIPS), self.show_chips),
                     checked(MenuItem::command("Histogram", "", command::HISTOGRAM), self.show_histogram),
                     checked(
@@ -482,6 +647,16 @@ impl Workspace {
     }
 
     fn close_tab(&mut self, index: usize) {
+        if let Some(split) = &mut self.split {
+            if split.other > index {
+                split.other -= 1;
+            } else if split.other == index {
+                split.other = usize::MAX;
+            }
+            if split.focused_tab > index {
+                split.focused_tab -= 1;
+            }
+        }
         if index < self.tabs.len() {
             self.tabs.remove(index);
             if self.active >= self.tabs.len() {
@@ -561,6 +736,29 @@ impl Workspace {
             command::EXIT => commands.push(Command::Close),
             command::MERGE => self.merge_open_logs(),
             command::PALETTE => self.open_palette(Mode::Everything, "", commands),
+            command::SPLIT => {
+                if self.split.take().is_none() {
+                    if self.tabs.len() >= 2 {
+                        self.split = Some(Split {
+                            other: (self.active + 1) % self.tabs.len(),
+                            focus_right: false,
+                            sync: false,
+                            splitter: Splitter::new(Orientation::Vertical, 0.0, MIN_PANE, MIN_PANE),
+                            focused_tab: self.active,
+                            synced: None,
+                        });
+                    } else {
+                        self.notice = Some("Open two logs to see them side by side".to_string());
+                    }
+                }
+            }
+            command::SYNC => match &mut self.split {
+                Some(split) => {
+                    split.sync = !split.sync;
+                    split.synced = None;
+                }
+                None => self.notice = Some("Split the view first, with Ctrl+\\".to_string()),
+            },
             command::GO_TO_ROW => self.open_palette(Mode::Everything, ":", commands),
             command::SAVE_PRESET => {
                 let has_filter = self.active_tab().is_some_and(|tab| {
@@ -696,6 +894,8 @@ impl Workspace {
             (Key::Char('U'), true, false) => command::PAUSE,
             (Key::Char('B'), true, false) => command::SIDEBAR,
             (Key::Char('K'), true, false) => command::PALETTE,
+            (Key::Char('\\'), true, false) => command::SPLIT,
+            (Key::Char('S'), true, true) => command::SYNC,
             (Key::Char('G'), true, false) => command::GO_TO_ROW,
             (Key::Char('D'), true, false) => command::BOOKMARK,
             (Key::F(2), false, false) => command::NEXT_BOOKMARK,
@@ -857,15 +1057,7 @@ impl Workspace {
             return false;
         }
         let response = self.sidebar.handle(event);
-        let cursor = if self.sidebar.shows_resize_cursor() {
-            Cursor::ResizeColumns
-        } else {
-            Cursor::Arrow
-        };
-        if cursor != self.cursor {
-            self.cursor = cursor;
-            commands.push(Command::SetCursor(cursor));
-        }
+        self.update_cursor(commands);
         if let Event::MouseDown(point, MouseButton::Left, _) = event {
             if consumed && !self.sidebar.is_dragging() && self.sidebar.list.contains(point) {
                 self.set_focus(Focus::Sidebar, commands);
@@ -882,6 +1074,77 @@ impl Workspace {
             commands.accessibility_changed();
         }
         consumed
+    }
+
+    /// Shows the resize cursor over either divider.
+    fn update_cursor(&mut self, commands: &mut Commands) {
+        let resize = (self.show_sidebar && self.sidebar.shows_resize_cursor())
+            || self
+                .split
+                .as_ref()
+                .is_some_and(|split| split.splitter.shows_resize_cursor());
+        let cursor = if resize {
+            Cursor::ResizeColumns
+        } else {
+            Cursor::Arrow
+        };
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            commands.push(Command::SetCursor(cursor));
+        }
+    }
+
+    /// Offers an event to the split view. Dragging the divider resizes the
+    /// panes, and the wheel scrolls the pane under the mouse. A click in the
+    /// other pane moves focus there, and then goes on as a click in that pane.
+    fn split_event(
+        &mut self,
+        event: Event,
+        canvas: &mut dyn Canvas,
+        commands: &mut Commands,
+    ) -> bool {
+        let Some(split) = &mut self.split else {
+            return false;
+        };
+        let to_divider = match event {
+            Event::MouseDown(point, ..) => split.splitter.contains(point),
+            Event::MouseMove(_) | Event::MouseUp(..) => true,
+            _ => false,
+        };
+        if to_divider {
+            let dragging = split.splitter.is_dragging();
+            let response = split.splitter.handle(event);
+            if response.redraw {
+                commands.redraw();
+            }
+            self.update_cursor(commands);
+            if dragging || matches!(event, Event::MouseDown(..)) {
+                return true;
+            }
+        }
+        let Some(other) = self.layout.other else {
+            return false;
+        };
+        let other_tab = self.split.as_ref().map_or(usize::MAX, |split| split.other);
+        match event {
+            Event::Wheel(_) if other.grid.contains(self.pointer) => {
+                if let Some(tab) = self.tabs.get_mut(other_tab) {
+                    tab.view.handle(event);
+                    tab.following = tab.view.at_bottom();
+                }
+                commands.redraw();
+                true
+            }
+            Event::MouseDown(point, ..) if other.area.contains(point) => {
+                self.active = other_tab;
+                let (size, scale) = (self.size, self.scale);
+                self.arrange(canvas, size, scale);
+                commands.redraw();
+                commands.accessibility_changed();
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Does what a sidebar entry stands for.
@@ -1134,6 +1397,9 @@ impl Workspace {
         if self.show_sidebar && self.sidebar_event(event, commands) {
             return;
         }
+        if self.split.is_some() && self.split_event(event, canvas, commands) {
+            return;
+        }
 
         let layout = self.layout;
         if let Event::MouseDown(point, button, _) = event {
@@ -1311,69 +1577,80 @@ impl Workspace {
             area.take_top(snap(tab_bar::BAR_HEIGHT, scale))
         };
         self.tab_bar.arrange(tabs, &labels, canvas);
-        let ready = self
-            .active_tab()
-            .is_some_and(|tab| tab.document().is_some());
+        let ready = |tab: Option<&Tab>| tab.is_some_and(|tab| tab.document().is_some());
+        let show_histogram = self.show_histogram;
+        let with_histogram = |tab: Option<&Tab>| {
+            show_histogram && tab.is_some_and(|tab| tab.overview.counts.histogram.is_some())
+        };
         let status = area.take_bottom(snap(theme.status_height, scale));
-        let (mut filter, mut find, mut find_count, mut details) = Default::default();
-        let (mut chips, mut histogram) = (Rect::default(), Rect::default());
-        if ready {
-            let toolbar = area.take_top(snap(TOOLBAR_HEIGHT, scale));
-            let field_top = toolbar.top + (toolbar.height() - FIELD_HEIGHT) / 2.0;
-            let width = toolbar.width();
-            let filter_right = toolbar.left + MARGIN + (width * 0.5).max(240.0);
-            filter = Rect::new(
-                toolbar.left + MARGIN,
-                field_top,
-                filter_right,
-                field_top + FIELD_HEIGHT,
-            );
-            let find_right =
-                (filter_right + MARGIN + (width * 0.28).max(180.0)).min(toolbar.right - MARGIN);
-            find = Rect::new(
-                filter_right + MARGIN,
-                field_top,
-                find_right,
-                field_top + FIELD_HEIGHT,
-            );
-            find_count = Rect::new(
-                find_right + MARGIN,
-                toolbar.top,
-                toolbar.right - MARGIN,
-                toolbar.bottom,
-            );
-            if self.show_chips {
-                chips = area.take_top(snap(chip_bar::BAR_HEIGHT, scale));
-            }
-            let has_histogram = self
-                .active_tab()
-                .is_some_and(|tab| tab.overview.counts.histogram.is_some());
-            if self.show_histogram && has_histogram {
-                histogram =
-                    area.take_top(snap(overview::BAR_HEIGHT + overview::LABEL_HEIGHT, scale));
-            }
-            if self.show_details {
-                details = area.take_bottom(snap(PANE_HEIGHT, scale));
-            }
+        let mut details = Rect::default();
+        if self.show_details && ready(self.active_tab()) {
+            details = area.take_bottom(snap(PANE_HEIGHT, scale));
         }
+
+        self.check_split();
+        let other_tab = self
+            .split
+            .as_ref()
+            .and_then(|split| self.tabs.get(split.other));
+        let (other_ready, other_histogram) = (ready(other_tab), with_histogram(other_tab));
+        let (focused_area, other_area) = match &mut self.split {
+            Some(split) => {
+                if split.splitter.position() <= 0.0 {
+                    split.splitter.set_position(area.width() / 2.0);
+                }
+                split.splitter.arrange(area);
+                let (left, right) = (split.splitter.first_rect(), split.splitter.second_rect());
+                if split.focus_right {
+                    (right, Some(left))
+                } else {
+                    (left, Some(right))
+                }
+            }
+            None => (area, None),
+        };
+        let focused = pane_layout(
+            focused_area,
+            ready(self.active_tab()),
+            self.show_chips,
+            with_histogram(self.active_tab()),
+            scale,
+        );
+        let other = other_area
+            .map(|area| pane_layout(area, other_ready, self.show_chips, other_histogram, scale));
+
         let (chip_list, filters) = match self.active_tab() {
             Some(tab) => overview::chips(&tab.overview.counts.levels, tab.chip, theme),
             None => (Vec::new(), Vec::new()),
         };
-        self.chip_bar.arrange(chips, &chip_list, canvas);
+        self.chip_bar.arrange(focused.chips, &chip_list, canvas);
         self.chips = chip_list;
         self.chip_filters = filters;
+        let other_chips = match (other, other_tab) {
+            (Some(_), Some(tab)) => overview::chips(&tab.overview.counts.levels, tab.chip, theme).0,
+            _ => Vec::new(),
+        };
+        self.other_chip_bar.arrange(
+            other.map_or_else(Rect::default, |pane| pane.chips),
+            &other_chips,
+            canvas,
+        );
+        self.other_chips = other_chips;
+
+        self.size = size;
         self.layout = Layout {
             menu: menu_bar,
             tabs,
-            filter,
-            find,
-            find_count,
-            chips,
-            histogram,
-            grid: area,
+            filter: focused.filter,
+            find: focused.find,
+            find_count: focused.find_count,
+            chips: focused.chips,
+            histogram: focused.histogram,
+            grid: focused.grid,
             details,
             status,
+            focused_area,
+            other,
         };
         let row_height = snap(theme.row_height, scale);
         let metrics = Metrics {
@@ -1387,12 +1664,65 @@ impl Workspace {
         if let Some(palette) = &mut self.palette {
             palette.arrange(Rect::new(0.0, self.layout.menu.bottom, size.0, size.1));
         }
-        if let Some(tab) = self.tabs.get_mut(self.active) {
-            let count = tab.rows().map_or(0, |rows| rows.row_count());
-            tab.view.arrange(grid, count, metrics, theme, scale);
-            if tab.following {
-                tab.view.scroll_to_end();
+        let other_index = self.split.as_ref().map(|split| split.other);
+        for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
+            let (Some(index), Some(pane)) = (index, pane) else {
+                continue;
+            };
+            if let Some(tab) = self.tabs.get_mut(index) {
+                let count = tab.rows().map_or(0, |rows| rows.row_count());
+                tab.view.arrange(pane.grid, count, metrics, theme, scale);
+                if tab.following {
+                    tab.view.scroll_to_end();
+                }
             }
+        }
+        self.line_up();
+    }
+
+    /// Keeps the split view's tabs valid. Choosing the tab the other pane
+    /// shows, by clicking that pane or its tab, moves focus to that pane.
+    fn check_split(&mut self) {
+        if self.tabs.len() < 2 {
+            self.split = None;
+        }
+        let Some(split) = &mut self.split else { return };
+        let count = self.tabs.len();
+        if split.other >= count {
+            split.other = (self.active + 1) % count;
+        }
+        if split.other == self.active {
+            split.other = if split.focused_tab < count && split.focused_tab != self.active {
+                split.focused_tab
+            } else {
+                (self.active + 1) % count
+            };
+            split.focus_right = !split.focus_right;
+        }
+        split.focused_tab = self.active;
+    }
+
+    /// With sync on, scrolls the other pane to the time at the top of the
+    /// focused one, and follows new rows when it does.
+    fn line_up(&mut self) {
+        let Some(split) = &self.split else { return };
+        let Some(tab) = self.tabs.get(self.active).filter(|_| split.sync) else {
+            return;
+        };
+        let top = tab.view.top_row();
+        if split.synced == Some((self.active, top)) {
+            return;
+        }
+        let (other, following) = (split.other, tab.following);
+        let Some(seconds) = tab.time_at(top) else {
+            return;
+        };
+        if let Some(other) = self.tabs.get_mut(other) {
+            other.scroll_to_time(seconds);
+            other.following = following;
+        }
+        if let Some(split) = &mut self.split {
+            split.synced = Some((self.active, top));
         }
     }
 
@@ -1442,65 +1772,43 @@ impl Workspace {
             ),
             Some(tab) => {
                 tab.request_rows(&waker);
-                match tab.rows() {
-                    Some(rows) => tab.view.draw(canvas, &rows, theme),
-                    None => canvas.text(
-                        &tab.status(),
-                        Rect::new(
-                            layout.grid.left + 24.0,
-                            layout.grid.top + 20.0,
-                            layout.grid.right,
-                            layout.grid.top + 60.0,
-                        ),
-                        UI_LEFT,
-                        theme.secondary_text,
-                    ),
-                }
-                if tab.document().is_some() {
-                    let filter_caret = tab.filter_field.draw(
-                        canvas,
-                        layout.filter,
-                        theme,
-                        focus == Focus::Filter,
-                        FILTER_HINT,
-                    );
-                    let find_caret = tab.find_field.draw(
-                        canvas,
-                        layout.find,
-                        theme,
-                        focus == Focus::Find,
-                        FIND_HINT,
-                    );
-                    caret = match focus {
-                        Focus::Filter => Some(filter_caret),
-                        Focus::Find => Some(find_caret),
-                        Focus::Grid | Focus::Sidebar => None,
-                    };
-                    if let Some(summary) = tab.find_summary() {
-                        canvas.text(&summary, layout.find_count, UI_LEFT, theme.secondary_text);
-                    }
-                    if layout.chips.height() > 0.0 {
-                        self.chip_bar
-                            .draw(canvas, layout.chips, &self.chips, theme, false);
-                    }
-                    if let (true, Some(histogram)) = (
-                        layout.histogram.height() > 0.0,
-                        &tab.overview.counts.histogram,
-                    ) {
-                        overview::draw_histogram(
-                            canvas,
-                            layout.histogram,
-                            histogram,
-                            &tab.overview.shadows,
-                            self.histogram_hover,
-                            theme,
-                        );
-                    }
-                    if self.show_details {
-                        tab.details.draw(canvas, layout.details, theme);
-                    }
+                let pane = PaneLayout {
+                    area: layout.focused_area,
+                    filter: layout.filter,
+                    find: layout.find,
+                    find_count: layout.find_count,
+                    chips: layout.chips,
+                    histogram: layout.histogram,
+                    grid: layout.grid,
+                };
+                let chips = (&self.chip_bar, self.chips.as_slice());
+                caret = draw_pane(
+                    canvas,
+                    tab,
+                    &pane,
+                    theme,
+                    Some(focus),
+                    chips,
+                    self.histogram_hover,
+                );
+                if self.show_details && tab.document().is_some() {
+                    tab.details.draw(canvas, layout.details, theme);
                 }
             }
+        }
+        if let (Some(split), Some(other)) = (&self.split, layout.other) {
+            if let Some(tab) = self.tabs.get_mut(split.other) {
+                tab.request_rows(&waker);
+                let chips = (&self.other_chip_bar, self.other_chips.as_slice());
+                draw_pane(canvas, tab, &other, theme, None, chips, None);
+            }
+            split.splitter.draw(canvas, theme, false);
+            // The focused pane is marked, as in the Mac app.
+            let focused = layout.focused_area;
+            canvas.fill_rect(
+                Rect::new(focused.left, focused.top, focused.right, focused.top + 2.0),
+                theme.accent,
+            );
         }
 
         let status = self.status();
@@ -2494,6 +2802,103 @@ mod tests {
         send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
         settle(&mut workspace, |workspace| row_count(workspace) == 1);
         assert_eq!(workspace.tabs[0].chip, Some(Level::Error));
+    }
+
+    fn two_hour_logs() -> (tempfile::TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let logs: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let rows: Vec<(u32, String)> = (0..60)
+                    .map(|minute| (minute, format!("{name}{minute}")))
+                    .collect();
+                let path = dir.path().join(format!("{name}.log"));
+                let text: String = rows
+                    .iter()
+                    .map(|(minute, message)| {
+                        format!("2026-01-01 10:{minute:02}:00 host app[1]: INFO: {message}\n")
+                    })
+                    .collect();
+                std::fs::write(&path, text).unwrap();
+                path
+            })
+            .collect();
+        let mut workspace = workspace();
+        workspace.open_paths(logs);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs.iter().all(|tab| tab.document().is_some())
+        });
+        for tab in &mut workspace.tabs {
+            tab.following = false;
+        }
+        (dir, workspace)
+    }
+
+    #[test]
+    fn ctrl_backslash_splits_the_view_and_a_click_moves_focus() {
+        let (_dir, mut workspace) = two_hour_logs();
+        assert_eq!(workspace.active, 1);
+        send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+        settle(&mut workspace, |workspace| workspace.layout.other.is_some());
+        let other = workspace.layout.other.unwrap();
+        assert!(
+            workspace.grid_rect().right <= other.grid.left,
+            "the focused pane is on the left"
+        );
+
+        // Clicking a row in the right pane focuses it and selects the row.
+        let row = workspace.tabs[0].view.row_rect(3);
+        let point = Point::new(other.grid.left + 40.0, row.top + row.height() / 2.0);
+        send(
+            &mut workspace,
+            Event::MouseDown(point, MouseButton::Left, NONE),
+        );
+        send(&mut workspace, Event::MouseUp(point, MouseButton::Left));
+        assert_eq!(workspace.active, 0);
+        assert!(workspace.split.as_ref().unwrap().focus_right);
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(3));
+
+        send(&mut workspace, Event::KeyDown(Key::Char('W'), CTRL));
+        assert!(workspace.tabs.len() == 1);
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        assert!(workspace.split.is_none(), "one log can't be split");
+    }
+
+    #[test]
+    fn synced_panes_line_up_by_time() {
+        let (_dir, mut workspace) = two_hour_logs();
+        send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+        send(&mut workspace, Event::KeyDown(Key::Char('S'), CTRL_SHIFT));
+        assert!(workspace.split.as_ref().unwrap().sync);
+        workspace.tabs[1].view.scroll_to(30.0);
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        assert_eq!(workspace.tabs[0].view.top_row(), 30);
+        workspace.tabs[1].view.scroll_to(12.0);
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        assert_eq!(workspace.tabs[0].view.top_row(), 12);
+    }
+
+    #[test]
+    fn one_log_cannot_be_split() {
+        let (_dir, mut workspace) = opened(10);
+        send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+        assert!(workspace.split.is_none());
+        assert!(workspace.status().contains("Open two logs"));
     }
 
     #[test]

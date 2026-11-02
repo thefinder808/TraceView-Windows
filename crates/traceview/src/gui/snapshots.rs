@@ -393,3 +393,43 @@ fn the_command_palette_draws_over_everything() {
     assert!(frame.has_ink(first, frame.at(first.right - 2.0, first.top + 2.0)));
     let _ = theme;
 }
+
+#[test]
+fn split_view_draws_two_logs_and_marks_the_focused_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = sample_log(&dir);
+    let second = dir.path().join("Second.log");
+    std::fs::copy(&first, &second).unwrap();
+    let mut workspace = Workspace::new(Waker::detached(), 0, false);
+    workspace.theme_choice = ThemeChoice::Fixed(&Theme::CONSOLE);
+    workspace.open_paths(vec![first, second]);
+    render(&mut workspace, "split", 96.0, |workspace| {
+        workspace.tabs.iter().all(|tab| tab.document().is_some())
+    });
+    for tab in &mut workspace.tabs {
+        tab.following = false;
+        tab.view.scroll_to(0.0);
+    }
+    send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+    let frame = render(&mut workspace, "split", 96.0, |workspace| {
+        workspace.split.is_some()
+    });
+    let theme = workspace.theme();
+    let focused = workspace.tabs[workspace.active].view.row_rect(2);
+    assert_eq!(
+        frame.at(focused.left + 200.0, focused.top + 8.0),
+        theme.error_row,
+        "the focused pane's error row"
+    );
+    let other = workspace.tabs[0].view.row_rect(2);
+    assert_eq!(
+        frame.at(other.left + 200.0, other.top + 8.0),
+        theme.error_row,
+        "the other pane's error row"
+    );
+    assert_eq!(
+        frame.at(20.0, 52.0 + 1.0),
+        theme.accent,
+        "the focused pane is marked"
+    );
+}

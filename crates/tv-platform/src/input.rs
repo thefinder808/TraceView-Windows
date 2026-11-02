@@ -3,7 +3,8 @@
 use tv_ui::{Key, Modifiers};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F24,
-    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_5, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB,
+    VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -39,6 +40,8 @@ pub(crate) fn key_from_virtual(code: u16) -> Option<Key> {
         VK_TAB => Key::Tab,
         VK_BACK => Key::Backspace,
         VK_DELETE => Key::Delete,
+        // The backslash key on US keyboards, for Ctrl+\.
+        VK_OEM_5 => Key::Char('\\'),
         _ if (VK_F1.0..=VK_F24.0).contains(&code) => Key::F((code - VK_F1.0 + 1) as u8),
         // Virtual codes for letters and digits equal their uppercase ASCII values.
         _ if code.to_le_bytes()[1] == 0 && (code as u8).is_ascii_alphanumeric() => {

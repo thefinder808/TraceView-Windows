@@ -718,6 +718,38 @@ impl Tab {
         self.apply_filter(waker);
     }
 
+    /// Where the first row at or after a time is, in the file or merged
+    /// timeline. A merged position is the sum of each file's.
+    fn position_at(&self, seconds: u32) -> usize {
+        let Some(document) = self.document() else {
+            return 0;
+        };
+        document
+            .sources
+            .iter()
+            .filter_map(|source| {
+                let log = source.log.read().ok()?;
+                counting::first_row_at(&log, None, seconds, &Control::default()).ok()
+            })
+            .sum()
+    }
+
+    /// The time of a view row, or of the nearest timed row above it.
+    pub fn time_at(&self, row: usize) -> Option<u32> {
+        let rows = self.rows()?;
+        let document = self.document()?;
+        (0..=row).rev().take(1000).find_map(|row| {
+            let (source, row) = document.locate(rows.file_row(row))?;
+            rows.logs[source].stamp_seconds(row)
+        })
+    }
+
+    /// Scrolls so the first row at or after a time is at the top.
+    pub fn scroll_to_time(&mut self, seconds: u32) {
+        let position = search::view_position(self.filter_rows(), self.position_at(seconds));
+        self.view.scroll_to(position as f64);
+    }
+
     /// Selects the most severe row in a histogram bucket: its first error, or
     /// else its first warning, or else its first row. Following stops, so the
     /// row stays in view.
@@ -729,21 +761,7 @@ impl Tab {
             histogram.bucket_start(bucket),
             histogram.bucket_start(bucket + 1),
         );
-        let Some(document) = self.document() else {
-            return;
-        };
-        // A merged position is the sum of each file's.
-        let position = |seconds: u32| -> usize {
-            document
-                .sources
-                .iter()
-                .filter_map(|source| {
-                    let log = source.log.read().ok()?;
-                    counting::first_row_at(&log, None, seconds, &Control::default()).ok()
-                })
-                .sum()
-        };
-        let (first, last) = (position(start), position(end));
+        let (first, last) = (self.position_at(start), self.position_at(end));
         let Some(rows) = self.rows() else { return };
         let count = rows.row_count();
         let filter = self.filter_rows();
