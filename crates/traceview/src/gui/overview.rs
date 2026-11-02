@@ -73,13 +73,19 @@ fn count(logs: &[SharedLog], control: &Control) -> Result<Counts, String> {
     Ok(Counts { levels, histogram })
 }
 
+/// A count running on another thread.
+struct CountJob {
+    control: Arc<Control>,
+    result: Receiver<Result<Counts, String>>,
+}
+
 /// Keeps a tab's counts current.
 pub struct Overview {
     pub counts: Counts,
     /// For each bucket, the height an earlier spike reached there, or 0.
     pub shadows: Vec<u64>,
     spikes: SpikeMemory,
-    job: Option<(Arc<Control>, Receiver<Result<Counts, String>>)>,
+    job: Option<CountJob>,
     stale: bool,
     counted_at: Option<Instant>,
     /// A wake is already set for when a recount is allowed.
@@ -102,8 +108,8 @@ impl Default for Overview {
 
 impl Drop for Overview {
     fn drop(&mut self) {
-        if let Some((control, _)) = &self.job {
-            control
+        if let Some(job) = &self.job {
+            job.control
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -146,7 +152,7 @@ impl Overview {
             let _ = sender.send(count(&logs, &job_control));
             waker.wake();
         });
-        self.job = Some((control, result));
+        self.job = Some(CountJob { control, result });
         self.stale = false;
         self.wake_set = false;
         self.counted_at = Some(Instant::now());
@@ -154,10 +160,10 @@ impl Overview {
 
     /// Picks up a finished count. Returns true if the counts changed.
     pub fn poll(&mut self) -> bool {
-        let Some((_, result)) = &self.job else {
+        let Some(job) = &self.job else {
             return false;
         };
-        let outcome = match result.try_recv() {
+        let outcome = match job.result.try_recv() {
             Ok(outcome) => outcome,
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => Err("The count stopped".to_string()),
