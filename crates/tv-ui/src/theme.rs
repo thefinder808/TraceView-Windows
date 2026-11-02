@@ -152,16 +152,16 @@ impl Theme {
         hover_background: Color::rgb(0x34343A),
         highlight_row: Color::rgb(0x2E2850),
         text_selection: Color::rgb(0x264F78),
-        sidebar_background: Color::rgb(0x1C1C20),
+        sidebar_background: Color::rgb(0x232328),
         section_text: Color::rgb(0x8E8E93),
-        chip_background: Color::rgb(0x2C2C31),
+        chip_background: Color::rgb(0x1E1E22),
         chip_active_background: Color::rgb(0x1F3A5F),
         chip_active_text: Color::rgb(0xFFFFFF),
-        histogram_background: Color::rgb(0x19191D),
-        histogram_info: Color::rgb(0x6E6E76),
+        histogram_background: Color::rgb(0x2E2E33),
+        histogram_info: Color::rgb(0x777779),
         histogram_warning: Color::rgb(0xFFD60A),
         histogram_error: Color::rgb(0xFF6961),
-        histogram_window: Color::rgb(0x2A3442),
+        histogram_window: Color::rgb(0x334258),
         bookmark: Color::rgb(0x4A9EFF),
         ui_font_size: 12.0,
         grid_font_size: 13.0,
@@ -170,6 +170,171 @@ impl Theme {
         status_height: 22.0,
     };
 
+    /// The Mac app's Dark theme, from its DarkTheme.swift. Its dim grays are
+    /// lightened to meet contrast.
+    pub const DARK: Theme = Theme {
+        name: "Dark",
+        is_dark: true,
+        window_background: Color::rgb(0x1A1A1E),
+        grid_background: Color::rgb(0x1E1E22),
+        header_background: Color::rgb(0x19191D),
+        status_background: Color::rgb(0x19191D),
+        scrollbar_track: Color::rgb(0x232328),
+        scrollbar_thumb: Color::rgb(0x636366),
+        border: Color::rgb(0x3A3A3F),
+        primary_text: Color::rgb(0xE5E5EA),
+        secondary_text: Color::rgb(0x8E8E93),
+        tertiary_text: Color::rgb(0x858587),
+        timestamp_text: Color::rgb(0x7EB6FF),
+        component_text: Color::rgb(0xA9A9AE),
+        placeholder_text: Color::rgb(0x636366),
+        selected_row: Color::rgb(0x27384E),
+        selected_text: Color::rgb(0xE5E5EA),
+        warning_row: Color::rgb(0x33301A),
+        warning_text: Color::rgb(0xFFD60A),
+        error_row: Color::rgb(0x351E1C),
+        error_text: Color::rgb(0xFF6961),
+        critical_row: Color::rgb(0x3D1F1D),
+        critical_text: Color::rgb(0xFF6961),
+        notice_text: Color::rgb(0x7EB6FF),
+        debug_text: Color::rgb(0x858587),
+        accent: Color::rgb(0x4A9EFF),
+        input_background: Color::rgb(0x2C2C31),
+        panel_background: Color::rgb(0x232328),
+        hover_background: Color::rgb(0x2C2C31),
+        highlight_row: Color::rgb(0x2E2850),
+        text_selection: Color::rgb(0x375479),
+        sidebar_background: Color::rgb(0x232328),
+        section_text: Color::rgb(0x8A8A8C),
+        chip_background: Color::rgb(0x1E1E22),
+        chip_active_background: Color::rgb(0x27384E),
+        chip_active_text: Color::rgb(0xE5E5EA),
+        histogram_background: Color::rgb(0x2E2E33),
+        histogram_info: Color::rgb(0x777779),
+        histogram_warning: Color::rgb(0xFFD60A),
+        histogram_error: Color::rgb(0xFF6961),
+        histogram_window: Color::rgb(0x334258),
+        bookmark: Color::rgb(0x4A9EFF),
+        ui_font_size: 12.0,
+        grid_font_size: 13.0,
+        row_height: 18.0,
+        header_height: 22.0,
+        status_height: 22.0,
+    };
+
+    /// The Mac app's Light theme, from its LightTheme.swift. Its light grays
+    /// are darkened to meet contrast.
+    pub const LIGHT: Theme = Theme {
+        name: "Light",
+        is_dark: false,
+        window_background: Color::rgb(0xF5F5F7),
+        grid_background: Color::rgb(0xFFFFFF),
+        header_background: Color::rgb(0xE8E8ED),
+        status_background: Color::rgb(0xE8E8ED),
+        scrollbar_track: Color::rgb(0xEEEFF1),
+        scrollbar_thumb: Color::rgb(0xAEAEB2),
+        border: Color::rgb(0xD1D1D6),
+        primary_text: Color::rgb(0x1D1D1F),
+        secondary_text: Color::rgb(0x68686C),
+        tertiary_text: Color::rgb(0x767679),
+        timestamp_text: Color::rgb(0x0060CC),
+        component_text: Color::rgb(0x6E6E73),
+        placeholder_text: Color::rgb(0xAEAEB2),
+        selected_row: Color::rgb(0xCCE4FF),
+        selected_text: Color::rgb(0x1D1D1F),
+        warning_row: Color::rgb(0xFFF3E0),
+        warning_text: Color::rgb(0x996300),
+        error_row: Color::rgb(0xFFEDEC),
+        error_text: Color::rgb(0xD02E2E),
+        critical_row: Color::rgb(0xFFE4E2),
+        critical_text: Color::rgb(0xC5221F),
+        notice_text: Color::rgb(0x0072EF),
+        debug_text: Color::rgb(0x767679),
+        accent: Color::rgb(0x007AFF),
+        input_background: Color::rgb(0xFFFFFF),
+        panel_background: Color::rgb(0xEEEFF1),
+        hover_background: Color::rgb(0xE5E5EA),
+        highlight_row: Color::rgb(0xE4D7FF),
+        text_selection: Color::rgb(0xA6D0FF),
+        sidebar_background: Color::rgb(0xEEEFF1),
+        section_text: Color::rgb(0x6C6C6F),
+        chip_background: Color::rgb(0xFFFFFF),
+        chip_active_background: Color::rgb(0xCCE4FF),
+        chip_active_text: Color::rgb(0x1D1D1F),
+        histogram_background: Color::rgb(0xE5E5EA),
+        histogram_info: Color::rgb(0x838386),
+        histogram_warning: Color::rgb(0x996300),
+        histogram_error: Color::rgb(0xD32F2F),
+        histogram_window: Color::rgb(0xBCD2EE),
+        bookmark: Color::rgb(0x007AFF),
+        ui_font_size: 12.0,
+        grid_font_size: 13.0,
+        row_height: 18.0,
+        header_height: 22.0,
+        status_height: 22.0,
+    };
+
+    /// The Mac app's Neon theme, from its NeonTheme.swift: cyan on near-black.
+    /// Its dim grays are lightened to meet contrast.
+    pub const NEON: Theme = Theme {
+        name: "Neon",
+        is_dark: true,
+        window_background: Color::rgb(0x0D0D12),
+        grid_background: Color::rgb(0x0F0F16),
+        header_background: Color::rgb(0x0A0A10),
+        status_background: Color::rgb(0x0A0A10),
+        scrollbar_track: Color::rgb(0x12121A),
+        scrollbar_thumb: Color::rgb(0x4A4A6A),
+        border: Color::rgb(0x2A2A40),
+        primary_text: Color::rgb(0xE0E0F0),
+        secondary_text: Color::rgb(0x7A7AA1),
+        tertiary_text: Color::rgb(0x797991),
+        timestamp_text: Color::rgb(0x00D4FF),
+        component_text: Color::rgb(0x9898C0),
+        placeholder_text: Color::rgb(0x4A4A6A),
+        selected_row: Color::rgb(0x0C3645),
+        selected_text: Color::rgb(0xE0E0F0),
+        warning_row: Color::rgb(0x2C2813),
+        warning_text: Color::rgb(0xFFE000),
+        error_row: Color::rgb(0x310D1C),
+        error_text: Color::rgb(0xFF4070),
+        critical_row: Color::rgb(0x3F0C1E),
+        critical_text: Color::rgb(0xFF4070),
+        notice_text: Color::rgb(0x00D4FF),
+        debug_text: Color::rgb(0x797991),
+        accent: Color::rgb(0x00D4FF),
+        input_background: Color::rgb(0x1A1A2E),
+        panel_background: Color::rgb(0x12121A),
+        hover_background: Color::rgb(0x1A1A2E),
+        highlight_row: Color::rgb(0x2B0B50),
+        text_selection: Color::rgb(0x115B77),
+        sidebar_background: Color::rgb(0x12121A),
+        section_text: Color::rgb(0x7B7B92),
+        chip_background: Color::rgb(0x0F0F16),
+        chip_active_background: Color::rgb(0x0C3645),
+        chip_active_text: Color::rgb(0xE0E0F0),
+        histogram_background: Color::rgb(0x1E1E30),
+        histogram_info: Color::rgb(0x696979),
+        histogram_warning: Color::rgb(0xFFE000),
+        histogram_error: Color::rgb(0xFF4070),
+        histogram_window: Color::rgb(0x193F55),
+        bookmark: Color::rgb(0x00D4FF),
+        ui_font_size: 12.0,
+        grid_font_size: 13.0,
+        row_height: 18.0,
+        header_height: 22.0,
+        status_height: 22.0,
+    };
+
+    /// Every built-in theme, in the order a theme picker lists them.
+    pub const ALL: [&'static Theme; 5] = [
+        &Self::CLASSIC,
+        &Self::CONSOLE,
+        &Self::DARK,
+        &Self::LIGHT,
+        &Self::NEON,
+    ];
+
     /// The default theme for the system's light or dark setting.
     pub fn for_system(dark: bool) -> &'static Theme {
         if dark {
@@ -177,6 +342,13 @@ impl Theme {
         } else {
             &Self::CLASSIC
         }
+    }
+
+    /// Finds a built-in theme by name, ignoring case, as saved in settings.
+    pub fn by_name(name: &str) -> Option<&'static Theme> {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -203,7 +375,7 @@ mod tests {
 
     #[test]
     fn log_text_meets_contrast_requirements_in_every_theme() {
-        for theme in [Theme::CLASSIC, Theme::CONSOLE] {
+        for theme in Theme::ALL {
             for (name, text, background) in [
                 ("primary", theme.primary_text, theme.grid_background),
                 ("secondary", theme.secondary_text, theme.grid_background),
@@ -224,6 +396,14 @@ mod tests {
                 ("find match", theme.primary_text, theme.highlight_row),
                 ("text selection", theme.primary_text, theme.text_selection),
                 ("menu label", theme.secondary_text, theme.panel_background),
+                ("section", theme.section_text, theme.sidebar_background),
+                ("sidebar", theme.primary_text, theme.sidebar_background),
+                ("chip", theme.primary_text, theme.chip_background),
+                (
+                    "active chip",
+                    theme.chip_active_text,
+                    theme.chip_active_background,
+                ),
             ] {
                 let ratio = contrast(text, background);
                 assert!(
@@ -235,9 +415,48 @@ mod tests {
         }
     }
 
+    /// Bars and markers are not text, so WCAG 1.4.11 asks for 3:1.
+    #[test]
+    fn histogram_bars_and_bookmarks_stand_out_in_every_theme() {
+        for theme in Theme::ALL {
+            for (name, mark, background) in [
+                ("info bar", theme.histogram_info, theme.histogram_background),
+                (
+                    "warning bar",
+                    theme.histogram_warning,
+                    theme.histogram_background,
+                ),
+                (
+                    "error bar",
+                    theme.histogram_error,
+                    theme.histogram_background,
+                ),
+                ("bookmark", theme.bookmark, theme.grid_background),
+            ] {
+                let ratio = contrast(mark, background);
+                assert!(
+                    ratio >= 3.0,
+                    "{} theme, {name}: {ratio:.2} is below 3",
+                    theme.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn system_setting_picks_the_theme() {
         assert_eq!(Theme::for_system(true).name, "Console");
         assert_eq!(Theme::for_system(false).name, "Classic");
+    }
+
+    #[test]
+    fn themes_are_found_by_name_in_any_case() {
+        assert_eq!(Theme::ALL[0].name, "Classic");
+        for theme in Theme::ALL {
+            assert_eq!(Theme::by_name(theme.name), Some(theme));
+            assert_eq!(Theme::by_name(&theme.name.to_uppercase()), Some(theme));
+        }
+        assert_eq!(Theme::by_name("neon").map(|theme| theme.name), Some("Neon"));
+        assert_eq!(Theme::by_name("Solarized"), None);
     }
 }
