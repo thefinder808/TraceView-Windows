@@ -3,6 +3,7 @@
 //! something's ready, so the UI thread never waits.
 
 use super::accessibility;
+use super::settings::{self, Store};
 #[cfg(feature = "bench")]
 use super::bench::{Bench, Options as BenchOptions};
 use super::workspace::Workspace;
@@ -95,6 +96,16 @@ impl App {
             renderer.set_vsync(false);
         }
         let mut workspace = Workspace::new(context.waker, context.hwnd, context.system_is_dark);
+        // A benchmark runs with defaults, so saved settings can't change its
+        // results and it never writes to them.
+        #[cfg(feature = "bench")]
+        let use_saved = bench.is_none();
+        #[cfg(not(feature = "bench"))]
+        let use_saved = true;
+        if use_saved {
+            let (store, settings, problem) = Store::open(settings::location());
+            workspace.use_settings(settings, store, problem);
+        }
         renderer.set_fonts(fonts_for(workspace.theme()));
         if let Some(path) = path {
             workspace.open_paths(vec![path]);

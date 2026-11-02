@@ -12,6 +12,7 @@ bench = []
 accesskit = "0.25"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 tv-engine = { path = "../engine" }
 tv-errors = { path = "../tv-errors" }
 tv-platform = { path = "../tv-platform" }

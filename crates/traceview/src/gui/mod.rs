@@ -11,6 +11,7 @@ mod log_view;
 mod lookup;
 mod row_cache;
 mod search;
+mod settings;
 #[cfg(test)]
 mod snapshots;
 mod tab;

@@ -5,6 +5,7 @@
 use super::details::PANE_HEIGHT;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
+use super::settings::{Settings, Store};
 use super::row_cache::{cells_from_row, SharedLog};
 use super::tab::{with_commas, Tab};
 use std::io;
@@ -93,6 +94,8 @@ pub struct Workspace {
     pub system_is_dark: bool,
     /// The Error Lookup panel, while it's open.
     pub lookup: Option<LookupPanel>,
+    settings: Settings,
+    store: Store,
     menu: MenuBar,
     tab_bar: TabBar,
     layout: Layout,
@@ -144,6 +147,8 @@ impl Workspace {
             theme_choice: ThemeChoice::System,
             system_is_dark,
             lookup: None,
+            settings: Settings::default(),
+            store: Store::disabled(),
             menu: MenuBar::default(),
             tab_bar: TabBar::default(),
             layout: Layout::default(),
@@ -153,6 +158,35 @@ impl Workspace {
             notice: None,
             scale: 1.0,
         }
+    }
+
+    /// Starts from saved settings, and saves changes back through `store`.
+    /// `problem` says why the settings file couldn't be used, if it couldn't.
+    pub fn use_settings(&mut self, settings: Settings, store: Store, problem: Option<String>) {
+        self.theme_choice = match settings.theme.as_str() {
+            "Classic" => ThemeChoice::Classic,
+            "Console" => ThemeChoice::Console,
+            _ => ThemeChoice::System,
+        };
+        self.show_details = settings.details_pane;
+        self.settings = settings;
+        self.store = store;
+        self.notice = problem;
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    fn save_settings(&mut self) {
+        self.settings.theme = match self.theme_choice {
+            ThemeChoice::System => "System",
+            ThemeChoice::Classic => "Classic",
+            ThemeChoice::Console => "Console",
+        }
+        .to_string();
+        self.settings.details_pane = self.show_details;
+        self.store.save(&self.settings);
     }
 
     pub fn theme(&self) -> &'static Theme {
@@ -268,6 +302,7 @@ impl Workspace {
     pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
         for path in paths {
             let absolute = std::path::absolute(&path).unwrap_or(path);
+            self.settings.add_recent(&absolute);
             if let Some(index) = self
                 .tabs
                 .iter()
@@ -280,6 +315,7 @@ impl Workspace {
             self.active = self.tabs.len() - 1;
         }
         self.focus = Focus::Grid;
+        self.save_settings();
     }
 
     /// Opens a tab with every open log merged into one timeline.
@@ -436,6 +472,9 @@ impl Workspace {
                 commands.push(Command::SetImeEnabled(true));
             }
             _ => {}
+        }
+        if matches!(id, command::DETAILS | command::THEME_SYSTEM | command::THEME_CLASSIC | command::THEME_CONSOLE) {
+            self.save_settings();
         }
         commands.redraw();
         commands.accessibility_changed();
@@ -1495,6 +1534,27 @@ mod tests {
         send(&mut workspace, Event::KeyDown(Key::Char('M'), CTRL_SHIFT));
         assert_eq!(workspace.tabs.len(), 1);
         assert!(workspace.status().contains("Open two or more logs"));
+    }
+
+    #[test]
+    fn choices_are_saved_and_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 5);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.run_command(command::THEME_CONSOLE, &mut Commands::default());
+        first.run_command(command::DETAILS, &mut Commands::default());
+        first.open_paths(vec![log.clone()]);
+        drop(first);
+
+        let mut restored = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        restored.use_settings(settings, store, problem);
+        assert_eq!(restored.theme().name, "Console");
+        assert!(!restored.show_details);
+        assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
     }
 
     #[test]
