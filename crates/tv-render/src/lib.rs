@@ -665,10 +665,26 @@ impl Canvas for Renderer {
         };
         self.utf16.clear();
         self.utf16.extend(text.encode_utf16());
+        let gdi_classic = self.measuring_mode() == DWRITE_MEASURING_MODE_GDI_CLASSIC;
         // SAFETY: the text and format outlive the call, and metrics is a local.
         unsafe {
-            self.write
-                .CreateTextLayout(&self.utf16, &format, 1_000_000.0, 1_000.0)
+            // GDI-style text is drawn with whole-pixel advances, so it's measured
+            // that way too. Otherwise text placed after it would overlap it.
+            let layout = if gdi_classic {
+                self.write.CreateGdiCompatibleTextLayout(
+                    &self.utf16,
+                    &format,
+                    1_000_000.0,
+                    1_000.0,
+                    self.dpi / 96.0,
+                    None,
+                    false,
+                )
+            } else {
+                self.write
+                    .CreateTextLayout(&self.utf16, &format, 1_000_000.0, 1_000.0)
+            };
+            layout
                 .and_then(|layout| {
                     let mut metrics = DWRITE_TEXT_METRICS::default();
                     layout.GetMetrics(&mut metrics)?;
@@ -786,6 +802,21 @@ mod tests {
             )
             .unwrap()
         }
+    }
+
+    #[test]
+    fn text_at_full_scale_measures_in_whole_pixels_and_adds_up() {
+        let mut renderer = Renderer::offscreen(100, 100, 96.0).unwrap();
+        let word = renderer.text_width("Theme", FontRole::Ui);
+        let whole = renderer.text_width("Theme: Dark", FontRole::Ui);
+        let rest = renderer.text_width(": Dark", FontRole::Ui);
+        assert!(word > 0.0);
+        assert_eq!(word.fract(), 0.0, "{word} isn't whole pixels");
+        // Pieces drawn one after another land where the whole would.
+        assert!(
+            (word + rest - whole).abs() < 1.0,
+            "{word} + {rest} vs {whole}"
+        );
     }
 
     #[test]

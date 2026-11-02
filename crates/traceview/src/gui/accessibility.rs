@@ -6,6 +6,7 @@
 //! It's virtual, so only the rows on screen exist as nodes, and each one's text
 //! reads as a complete sentence.
 
+use super::command_palette::Mode;
 use super::log_view::{level_name, LogView, RowSource};
 use super::workspace::{Focus, Workspace};
 use accesskit::{
@@ -34,6 +35,10 @@ const FIRST_TAB_ID: u64 = 300;
 const SIDEBAR_ID: NodeId = NodeId(13);
 const HISTOGRAM_ID: NodeId = NodeId(14);
 const FIRST_CHIP_ID: u64 = 400;
+const PALETTE_ID: NodeId = NodeId(15);
+const PALETTE_FIELD_ID: NodeId = NodeId(16);
+const PALETTE_LIST_ID: NodeId = NodeId(17);
+const FIRST_PALETTE_ID: u64 = 5_000;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -347,6 +352,52 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         window_children.push(SIDEBAR_ID);
     }
 
+    if let Some(palette) = &workspace.palette {
+        let mut field = Node::new(Role::TextInput);
+        field.set_label(palette.placeholder());
+        field.set_value(palette.palette.query());
+        field.set_bounds(physical(palette.palette.field_rect(), scale));
+        nodes.push((PALETTE_FIELD_ID, field));
+        let mut options = Vec::new();
+        for index in palette.palette.visible_matches() {
+            let (Some(item), Some(rect)) = (
+                palette.palette.matched_item(index),
+                palette.palette.match_rect(index),
+            ) else {
+                continue;
+            };
+            let id = NodeId(FIRST_PALETTE_ID + index as u64);
+            let mut node = Node::new(Role::ListBoxOption);
+            let mut label = item.label.clone();
+            for part in [&item.detail, &item.shortcut] {
+                if !part.is_empty() {
+                    label.push_str(", ");
+                    label.push_str(part);
+                }
+            }
+            node.set_label(label);
+            node.set_selected(palette.palette.selected() == Some(index));
+            node.set_bounds(physical(rect, scale));
+            node.add_action(Action::Click);
+            options.push(id);
+            nodes.push((id, node));
+        }
+        let mut list = Node::new(Role::ListBox);
+        list.set_label("Matches");
+        list.set_children(options);
+        nodes.push((PALETTE_LIST_ID, list));
+        let mut dialog = Node::new(Role::Dialog);
+        dialog.set_label(match palette.mode() {
+            Mode::Everything => "Command palette",
+            Mode::SavePreset => "Save filter preset",
+        });
+        dialog.set_modal();
+        dialog.set_bounds(physical(palette.palette.rect(), scale));
+        dialog.set_children(vec![PALETTE_FIELD_ID, PALETTE_LIST_ID]);
+        nodes.push((PALETTE_ID, dialog));
+        window_children.push(PALETTE_ID);
+    }
+
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
     nodes.push((STATUS_ID, status));
@@ -361,6 +412,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .active_tab()
         .is_some_and(|tab| tab.document().is_some());
     let focus = menu_focus.unwrap_or(match workspace.focus {
+        _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
         _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
         Focus::Sidebar if workspace.show_sidebar => sidebar_focus,
         Focus::Filter if has_fields => FILTER_ID,
@@ -385,6 +437,10 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                     tab.view.select(row, false);
                     tab.following = tab.view.at_bottom();
                 }
+            } else if let Some(index) = workspace.palette.as_ref().and_then(|palette| {
+                in_range(target, FIRST_PALETTE_ID, palette.palette.match_count())
+            }) {
+                workspace.choose_palette_match(index, commands);
             } else if let Some(index) =
                 in_range(target, FIRST_CHIP_ID, workspace.chip_list().count())
             {

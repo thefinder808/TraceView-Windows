@@ -2,12 +2,13 @@
 //! focus, layout, drawing and routing input. It draws on any `Canvas`, so tests
 //! drive it without a display.
 
+use super::command_palette::{Action, CommandPalette, Mode};
 use super::details::PANE_HEIGHT;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
 use super::row_cache::{cells_from_row, SharedLog};
-use super::settings::{Settings, Store};
+use super::settings::{Preset, Settings, Store};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
 use std::io;
@@ -19,6 +20,7 @@ use tv_engine::Level;
 use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
+use tv_ui::palette::PaletteItem;
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
 use tv_ui::text_field::FieldResponse;
 use tv_ui::{
@@ -61,6 +63,9 @@ pub mod command {
     pub const THEMES: u32 = 40;
     pub const ERROR_LOOKUP: u32 = 30;
     pub const PAUSE: u32 = 31;
+    pub const PALETTE: u32 = 35;
+    pub const GO_TO_ROW: u32 = 36;
+    pub const SAVE_PRESET: u32 = 37;
     pub const BOOKMARK: u32 = 32;
     pub const NEXT_BOOKMARK: u32 = 33;
     pub const PREVIOUS_BOOKMARK: u32 = 34;
@@ -137,6 +142,8 @@ pub struct Workspace {
     pub system_is_dark: bool,
     /// The Error Lookup panel, while it's open.
     pub lookup: Option<LookupPanel>,
+    /// The command palette, while it's open.
+    pub palette: Option<CommandPalette>,
     settings: Settings,
     store: Store,
     menu: MenuBar,
@@ -201,6 +208,7 @@ impl Workspace {
             theme_choice: ThemeChoice::System,
             system_is_dark,
             lookup: None,
+            palette: None,
             settings: Settings::default(),
             store: Store::disabled(),
             menu: MenuBar::default(),
@@ -321,6 +329,7 @@ impl Workspace {
                     MenuItem::command("Find...", "Ctrl+F", command::FIND),
                     MenuItem::command("Find next", "F3", command::FIND_NEXT),
                     MenuItem::command("Find previous", "Shift+F3", command::FIND_PREVIOUS),
+                    MenuItem::command("Go to row...", "Ctrl+G", command::GO_TO_ROW),
                     MenuItem::command("Next error", "Ctrl+E", command::NEXT_ERROR),
                     MenuItem::command("Previous error", "Ctrl+Shift+E", command::PREVIOUS_ERROR),
                     MenuItem::Separator,
@@ -334,6 +343,8 @@ impl Workspace {
                 items: vec![
                     MenuItem::command("Filter...", "Ctrl+Shift+F", command::FILTER),
                     MenuItem::command("Clear filter", "", command::CLEAR_FILTER),
+                    MenuItem::command("Save filter as preset...", "", command::SAVE_PRESET),
+                    MenuItem::command("Command palette...", "Ctrl+K", command::PALETTE),
                     MenuItem::Separator,
                     checked(MenuItem::command("Sidebar", "Ctrl+B", command::SIDEBAR), self.show_sidebar),
                     checked(MenuItem::command("Severity chips", "", command::CHIPS), self.show_chips),
@@ -549,6 +560,21 @@ impl Workspace {
             command::CLOSE_TAB => self.close_tab(self.active),
             command::EXIT => commands.push(Command::Close),
             command::MERGE => self.merge_open_logs(),
+            command::PALETTE => self.open_palette(Mode::Everything, "", commands),
+            command::GO_TO_ROW => self.open_palette(Mode::Everything, ":", commands),
+            command::SAVE_PRESET => {
+                let has_filter = self.active_tab().is_some_and(|tab| {
+                    !tab.filter_field.text().trim().is_empty() || tab.chip.is_some()
+                });
+                if has_filter {
+                    self.open_palette(Mode::SavePreset, "", commands);
+                } else {
+                    self.notice = Some(
+                        "Set a filter or a severity chip first, then save it as a preset"
+                            .to_string(),
+                    );
+                }
+            }
             command::EXPORT => {
                 if let Some(tab) = self.active_tab().filter(|tab| tab.document().is_some()) {
                     let name = match tab.paths.as_slice() {
@@ -669,6 +695,8 @@ impl Workspace {
             (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
             (Key::Char('U'), true, false) => command::PAUSE,
             (Key::Char('B'), true, false) => command::SIDEBAR,
+            (Key::Char('K'), true, false) => command::PALETTE,
+            (Key::Char('G'), true, false) => command::GO_TO_ROW,
             (Key::Char('D'), true, false) => command::BOOKMARK,
             (Key::F(2), false, false) => command::NEXT_BOOKMARK,
             (Key::F(2), false, true) => command::PREVIOUS_BOOKMARK,
@@ -873,6 +901,170 @@ impl Workspace {
         commands.accessibility_changed();
     }
 
+    /// What the palette lists: every enabled menu command with its shortcut,
+    /// then open tabs, filter presets and recent logs.
+    fn palette_entries(&self) -> Vec<(PaletteItem, Action)> {
+        let mut entries = Vec::new();
+        for menu in self.build_menus() {
+            for item in menu.items {
+                if let MenuItem::Command {
+                    label,
+                    shortcut,
+                    command,
+                    enabled: true,
+                    ..
+                } = item
+                {
+                    if command != command::PALETTE {
+                        let label = label.trim_end_matches("...");
+                        entries.push((
+                            PaletteItem::new(label, &menu.title, &shortcut, 0),
+                            Action::Command(command),
+                        ));
+                    }
+                }
+            }
+        }
+        for (index, tab) in self.tabs.iter().enumerate() {
+            entries.push((
+                PaletteItem::new(&tab.title(), "Open tab", "", 0),
+                Action::Tab(index),
+            ));
+        }
+        for (index, preset) in self.settings.presets.iter().enumerate() {
+            let name = &preset.name;
+            entries.push((
+                PaletteItem::new(&format!("Filter preset: {name}"), &preset.filter, "", 0),
+                Action::ApplyPreset(index),
+            ));
+            entries.push((
+                PaletteItem::new(&format!("Delete filter preset: {name}"), "", "", 0),
+                Action::DeletePreset(index),
+            ));
+        }
+        for recent in &self.settings.recent {
+            let path = PathBuf::from(recent);
+            let folder = path
+                .parent()
+                .map_or_else(String::new, |folder| folder.display().to_string());
+            entries.push((
+                PaletteItem::new(&file_name(&path), &folder, "", 0),
+                Action::Open(path),
+            ));
+        }
+        entries
+    }
+
+    fn open_palette(&mut self, mode: Mode, query: &str, commands: &mut Commands) {
+        let rows = self.active_tab().map_or(0, Tab::total_rows);
+        let mut palette = CommandPalette::open(mode, self.palette_entries(), rows, query);
+        palette.arrange(Rect::new(
+            0.0,
+            self.layout.menu.bottom,
+            self.layout.status.right,
+            self.layout.status.bottom,
+        ));
+        self.palette = Some(palette);
+        self.lookup = None;
+        commands.push(Command::SetImeEnabled(true));
+    }
+
+    fn close_palette(&mut self, commands: &mut Commands) {
+        self.palette = None;
+        commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+    }
+
+    /// The palette takes all input while it's open.
+    fn palette_event(&mut self, event: Event, canvas: &mut dyn Canvas, commands: &mut Commands) {
+        let hwnd = self.hwnd;
+        let Some(palette) = &mut self.palette else {
+            return;
+        };
+        let outcome = palette.handle(event, canvas);
+        if let Some(text) = outcome.copy {
+            commands.push(Command::SetClipboard(text));
+        }
+        if outcome.wants_paste {
+            if let Some(text) = tv_platform::clipboard_text(hwnd) {
+                palette.paste(&text);
+            }
+        }
+        if outcome.cancelled || outcome.chosen.is_some() {
+            self.close_palette(commands);
+        }
+        if let Some(action) = outcome.chosen {
+            self.perform(action, commands);
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    /// Chooses a palette match, as a screen reader can.
+    pub fn choose_palette_match(&mut self, index: usize, commands: &mut Commands) {
+        if let Some(action) = self
+            .palette
+            .as_ref()
+            .and_then(|palette| palette.action_at(index))
+        {
+            self.close_palette(commands);
+            self.perform(action, commands);
+        }
+    }
+
+    /// Does what a palette entry stands for.
+    pub fn perform(&mut self, action: Action, commands: &mut Commands) {
+        let waker = self.waker.clone();
+        match action {
+            Action::Command(id) => self.run_command(id, commands),
+            Action::Tab(index) if index < self.tabs.len() => self.active = index,
+            Action::Open(path) => self.open_paths(vec![path]),
+            Action::GoToRow(row) => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.select_file_row(row);
+                }
+                self.set_focus(Focus::Grid, commands);
+            }
+            Action::ApplyPreset(index) => {
+                let preset = self.settings.presets.get(index).cloned();
+                if let (Some(preset), Some(tab)) = (preset, self.active_tab_mut()) {
+                    tab.filter_field.set_text(&preset.filter);
+                    tab.chip = Level::from_name(preset.level.as_bytes());
+                    tab.apply_filter(&waker);
+                }
+            }
+            Action::DeletePreset(index) if index < self.settings.presets.len() => {
+                let removed = self.settings.presets.remove(index);
+                self.notice = Some(format!("Deleted filter preset {}", removed.name));
+                self.save_settings();
+            }
+            Action::SavePreset(name) => {
+                let Some(tab) = self.active_tab() else { return };
+                let preset = Preset {
+                    name: name.clone(),
+                    filter: tab.filter_field.text().trim().to_string(),
+                    level: tab
+                        .chip
+                        .map(|level| format!("{level:?}").to_lowercase())
+                        .unwrap_or_default(),
+                };
+                match self
+                    .settings
+                    .presets
+                    .iter_mut()
+                    .find(|saved| saved.name.eq_ignore_ascii_case(&name))
+                {
+                    Some(saved) => *saved = preset,
+                    None => self.settings.presets.push(preset),
+                }
+                self.notice = Some(format!("Saved filter preset {name}"));
+                self.save_settings();
+            }
+            Action::Tab(_) | Action::DeletePreset(_) | Action::Nothing => {}
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
     fn menu_wants(&self, event: &Event) -> bool {
         let open = self.menu.open_menu().is_some();
         match event {
@@ -901,6 +1093,10 @@ impl Workspace {
         }
         if self.lookup.is_some() {
             self.lookup_event(event, canvas, commands);
+            return;
+        }
+        if self.palette.is_some() {
+            self.palette_event(event, canvas, commands);
             return;
         }
         if let Event::KeyDown(key, modifiers) = event {
@@ -1188,6 +1384,9 @@ impl Workspace {
         if let Some(panel) = &mut self.lookup {
             panel.arrange(grid);
         }
+        if let Some(palette) = &mut self.palette {
+            palette.arrange(Rect::new(0.0, self.layout.menu.bottom, size.0, size.1));
+        }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             let count = tab.rows().map_or(0, |rows| rows.row_count());
             tab.view.arrange(grid, count, metrics, theme, scale);
@@ -1332,6 +1531,9 @@ impl Workspace {
         }
         if let Some(panel) = &mut self.lookup {
             caret = Some(panel.draw(canvas, theme));
+        }
+        if let Some(palette) = &mut self.palette {
+            caret = Some(palette.draw(canvas, theme));
         }
 
         self.menu.draw_bar(canvas, layout.menu, theme);
@@ -2235,6 +2437,63 @@ mod tests {
         );
         assert_eq!(workspace.tabs[0].cursor_file_row(), Some(30));
         assert!(!workspace.tabs[0].following);
+    }
+
+    #[test]
+    fn ctrl_k_finds_and_runs_commands() {
+        let (_dir, mut workspace) = opened(100);
+        workspace.tabs[0].select_file_row(5);
+        send(&mut workspace, Event::KeyDown(Key::Char('K'), CTRL));
+        assert!(workspace.palette.is_some());
+        type_text(&mut workspace, "toggle book");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        assert!(workspace.palette.is_none());
+        assert!(workspace.tabs[0].rows().unwrap().bookmarked(5));
+    }
+
+    #[test]
+    fn ctrl_g_goes_to_a_row() {
+        let (_dir, mut workspace) = opened(100);
+        send(&mut workspace, Event::KeyDown(Key::Char('G'), CTRL));
+        type_text(&mut workspace, "42");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(41));
+        assert_eq!(workspace.focus, Focus::Grid);
+    }
+
+    #[test]
+    fn filters_save_as_presets_and_come_back() {
+        let (_dir, mut workspace) = opened(100);
+        workspace.run_command(command::SAVE_PRESET, &mut Commands::default());
+        assert!(workspace.palette.is_none());
+        assert!(workspace.status().contains("Set a filter"));
+
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL_SHIFT));
+        type_text(&mut workspace, "message 1");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        workspace.tabs[0].set_chip(Some(Level::Error), &Waker::detached());
+        settle(&mut workspace, |workspace| row_count(workspace) == 1);
+        workspace.run_command(command::SAVE_PRESET, &mut Commands::default());
+        type_text(&mut workspace, "Early errors");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        let saved = &workspace.settings().presets[0];
+        assert_eq!(
+            (
+                saved.name.as_str(),
+                saved.filter.as_str(),
+                saved.level.as_str()
+            ),
+            ("Early errors", "message 1", "error")
+        );
+
+        workspace.run_command(command::CLEAR_FILTER, &mut Commands::default());
+        workspace.tabs[0].set_chip(None, &Waker::detached());
+        settle(&mut workspace, |workspace| row_count(workspace) == 100);
+        send(&mut workspace, Event::KeyDown(Key::Char('K'), CTRL));
+        type_text(&mut workspace, "preset early");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        settle(&mut workspace, |workspace| row_count(workspace) == 1);
+        assert_eq!(workspace.tabs[0].chip, Some(Level::Error));
     }
 
     #[test]

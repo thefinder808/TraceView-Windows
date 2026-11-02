@@ -374,3 +374,22 @@ fn chips_and_the_histogram_draw_above_the_grid() {
     }
     assert!(red, "error segments drew");
 }
+
+#[test]
+fn the_command_palette_draws_over_everything() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    render(&mut workspace, "palette", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('K'), CTRL));
+    for character in "theme".chars() {
+        send(&mut workspace, Event::Char(character));
+    }
+    let frame = render(&mut workspace, "palette", 96.0, |_| true);
+    let theme = workspace.theme();
+    let palette = &workspace.palette.as_ref().unwrap().palette;
+    assert!(palette.match_count() >= 5, "every theme matches");
+    let first = palette.match_rect(0).unwrap();
+    assert!(frame.has_ink(first, frame.at(first.right - 2.0, first.top + 2.0)));
+    let _ = theme;
+}

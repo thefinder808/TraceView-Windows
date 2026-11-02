@@ -62,6 +62,8 @@ pub struct Preset {
     pub name: String,
     /// Filter box text, such as `failed level:warning`.
     pub filter: String,
+    /// The severity chip that was on, such as `error`, or empty for none.
+    pub level: String,
 }
 
 fn bookmark_key(log: &Path) -> String {
@@ -246,7 +248,8 @@ mod tests {
         settings.add_recent(Path::new("C:\\Windows\\CCM\\Logs\\PolicyAgent.log"));
         settings.presets.push(Preset {
             name: "Download errors".to_string(),
-            filter: "download level:error".to_string(),
+            filter: "download".to_string(),
+            level: "error".to_string(),
         });
         let (store, _, problem) = Store::open(Some(path.clone()));
         assert_eq!(problem, None);

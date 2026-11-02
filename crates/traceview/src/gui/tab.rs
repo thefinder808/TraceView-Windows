@@ -377,6 +377,17 @@ impl Tab {
         (&mut self.view, rows)
     }
 
+    /// Every row of the file or merged timeline, whatever the filter shows.
+    pub fn total_rows(&self) -> usize {
+        match self.document() {
+            Some(Document {
+                order: Some(order), ..
+            }) => order.len(),
+            Some(document) => document.sources[0].log.read().map_or(0, |log| log.rows()),
+            None => 0,
+        }
+    }
+
     pub fn filter_rows(&self) -> Option<&[u32]> {
         self.filter.as_ref().and_then(Matches::rows)
     }
