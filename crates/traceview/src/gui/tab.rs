@@ -6,6 +6,7 @@
 //! time order, and each of its rows stands for a row in one of the files.
 
 use super::details::{DetailTarget, Details};
+use super::export::Export;
 use super::log_view::{LogView, RowSource};
 use super::row_cache::{RowCache, RowCells, SharedLog};
 use super::search::{self, Matches, Target};
@@ -739,6 +740,26 @@ impl Tab {
             Some(index) => Some(format!("{} of {total}", with_commas(index + 1))),
             None => Some(format!("{total} matches")),
         }
+    }
+
+    /// The rows to export: the selection if it's more than one row, otherwise
+    /// every row shown.
+    pub fn export(&self) -> Option<Export> {
+        let document = self.document()?;
+        let count = self.rows()?.row_count();
+        let rows = match self.view.selection() {
+            Some(range) if range.end() > range.start() => *range.start()..*range.end() + 1,
+            _ => 0..count,
+        };
+        Some(Export {
+            logs: document.sources.iter().map(|source| source.log.clone()).collect(),
+            names: document
+                .is_merged()
+                .then(|| document.sources.iter().map(|source| file_name(&source.path)).collect()),
+            order: document.order.clone(),
+            filter: self.filter.as_ref().and_then(Matches::shared_rows),
+            rows,
+        })
     }
 
     /// Bookmarks the row under the cursor, or removes its bookmark. Returns

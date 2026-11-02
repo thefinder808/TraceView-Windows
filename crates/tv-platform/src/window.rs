@@ -61,6 +61,8 @@ pub struct WindowContext {
 pub enum Command {
     Redraw,
     OpenFileDialog,
+    /// Asks where to save a CSV file, suggesting a name.
+    SaveFileDialog { suggested_name: String },
     SetTitle(String),
     SetClipboard(String),
     SetCaptionColors {
@@ -91,6 +93,11 @@ impl Commands {
         self.push(Command::Redraw);
     }
 
+    /// The commands so far, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &Command> {
+        self.list.iter()
+    }
+
     /// Tells screen readers that what's on screen changed.
     pub fn accessibility_changed(&mut self) {
         self.accessibility_changed = true;
@@ -106,6 +113,8 @@ pub trait Handler {
     /// Another thread called [`Waker::wake`].
     fn woken(&mut self, commands: &mut Commands);
     fn files_chosen(&mut self, paths: Vec<PathBuf>, commands: &mut Commands);
+    /// A path was chosen in the save dialog.
+    fn save_path_chosen(&mut self, path: PathBuf, commands: &mut Commands);
     fn system_theme_changed(&mut self, dark: bool, commands: &mut Commands);
     fn accessibility_tree(&mut self) -> TreeUpdate;
     fn accessibility_action(&mut self, request: ActionRequest, commands: &mut Commands);
@@ -236,6 +245,13 @@ impl State {
                     if !paths.is_empty() {
                         self.with_handler(|handler, commands| {
                             handler.files_chosen(paths, commands);
+                        });
+                    }
+                }
+                Command::SaveFileDialog { suggested_name } => {
+                    if let Some(path) = shell::choose_save_path(self.hwnd.get(), &suggested_name) {
+                        self.with_handler(|handler, commands| {
+                            handler.save_path_chosen(path, commands);
                         });
                     }
                 }

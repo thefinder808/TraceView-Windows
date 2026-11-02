@@ -234,6 +234,11 @@ impl Matches {
         self.rows.as_deref().map(Vec::as_slice)
     }
 
+    /// The rows, shared, for work on another thread.
+    pub fn shared_rows(&self) -> Option<Arc<Vec<u32>>> {
+        self.rows.clone()
+    }
+
     /// How far the first search has got.
     pub fn percent_done(&self) -> usize {
         self.job.as_ref().map_or(100, SearchJob::percent_done)

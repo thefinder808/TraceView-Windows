@@ -7,10 +7,12 @@ use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::settings::{Settings, Store};
 use super::row_cache::{cells_from_row, SharedLog};
-use super::tab::{with_commas, Tab};
+use super::tab::{file_name, with_commas, Tab};
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
 use tv_platform::{Command, Commands, Waker};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
@@ -36,6 +38,7 @@ pub mod command {
     pub const CLOSE_TAB: u32 = 2;
     pub const EXIT: u32 = 3;
     pub const MERGE: u32 = 4;
+    pub const EXPORT: u32 = 5;
     pub const COPY: u32 = 10;
     pub const SELECT_ALL: u32 = 11;
     pub const FIND: u32 = 12;
@@ -82,6 +85,14 @@ struct Layout {
     status: Rect,
 }
 
+/// An export to CSV running on another thread.
+struct Exporting {
+    result: Receiver<io::Result<()>>,
+    done: Arc<AtomicUsize>,
+    total: usize,
+    name: String,
+}
+
 struct CopyResult {
     text: String,
     rows: usize,
@@ -105,6 +116,7 @@ pub struct Workspace {
     waker: Waker,
     hwnd: isize,
     copying: Option<Receiver<io::Result<CopyResult>>>,
+    exporting: Option<Exporting>,
     notice: Option<String>,
     scale: f32,
 }
@@ -158,6 +170,7 @@ impl Workspace {
             waker,
             hwnd,
             copying: None,
+            exporting: None,
             notice: None,
             scale: 1.0,
         }
@@ -217,6 +230,13 @@ impl Workspace {
 
     pub fn status(&self) -> String {
         let mut status = self.active_tab().map(Tab::status).unwrap_or_default();
+        if let Some(exporting) = &self.exporting {
+            let percent = exporting.done.load(Ordering::Relaxed) * 100 / exporting.total.max(1);
+            if !status.is_empty() {
+                status.push_str("   |   ");
+            }
+            status.push_str(&format!("Exporting {percent}%"));
+        }
         if let Some(notice) = &self.notice {
             if !status.is_empty() {
                 status.push_str("   |   ");
@@ -243,6 +263,7 @@ impl Workspace {
                 items: vec![
                     MenuItem::command("Open...", "Ctrl+O", command::OPEN),
                     MenuItem::command("Merge open logs", "Ctrl+Shift+M", command::MERGE),
+                    MenuItem::command("Export rows as CSV...", "", command::EXPORT),
                     MenuItem::command("Close tab", "Ctrl+W", command::CLOSE_TAB),
                     MenuItem::Separator,
                     MenuItem::command("Exit", "Alt+F4", command::EXIT),
@@ -323,6 +344,44 @@ impl Workspace {
         }
         self.focus = Focus::Grid;
         self.save_settings();
+    }
+
+    /// Exports the active tab's rows to a CSV file, in the background. The file
+    /// appears only once it's complete.
+    pub fn export_to(&mut self, path: PathBuf) {
+        let Some(export) = self.active_tab().and_then(Tab::export) else { return };
+        let total = export.rows.len();
+        let done = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (sender, result) = channel();
+        let (job_done, job_finished, waker, target) = (done.clone(), finished.clone(), self.waker.clone(), path.clone());
+        std::thread::spawn(move || {
+            let partial = target.with_extension("csv.part");
+            let outcome = std::fs::File::create(&partial)
+                .and_then(|file| export.write(file, &job_done))
+                .and_then(|()| std::fs::rename(&partial, &target));
+            if outcome.is_err() {
+                let _ = std::fs::remove_file(&partial);
+            }
+            job_finished.store(true, Ordering::Release);
+            let _ = sender.send(outcome);
+            waker.wake();
+        });
+        // Keeps the progress moving in the status bar.
+        let ticker_waker = self.waker.clone();
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                ticker_waker.wake();
+            }
+        });
+        self.exporting = Some(Exporting {
+            result,
+            done,
+            total,
+            name: file_name(&path),
+        });
+        self.notice = None;
     }
 
     /// Opens a tab with every open log merged into one timeline.
@@ -426,6 +485,17 @@ impl Workspace {
             command::CLOSE_TAB => self.close_tab(self.active),
             command::EXIT => commands.push(Command::Close),
             command::MERGE => self.merge_open_logs(),
+            command::EXPORT => {
+                if let Some(tab) = self.active_tab().filter(|tab| tab.document().is_some()) {
+                    let name = match tab.paths.as_slice() {
+                        [path] => path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+                        _ => "Merged logs".to_string(),
+                    };
+                    commands.push(Command::SaveFileDialog {
+                        suggested_name: format!("{name}.csv"),
+                    });
+                }
+            }
             command::BOOKMARK => {
                 if let Some((path, rows)) = self.active_tab_mut().and_then(Tab::toggle_bookmark) {
                     for tab in &mut self.tabs {
@@ -778,6 +848,18 @@ impl Workspace {
         }
         if let Some(panel) = &mut self.lookup {
             panel.poll();
+        }
+        let exported = self.exporting.as_ref().and_then(|exporting| match exporting.result.try_recv() {
+            Ok(outcome) => Some(outcome.map(|()| (exporting.total, exporting.name.clone()))),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(io::Error::other("the export stopped"))),
+        });
+        if let Some(outcome) = exported {
+            self.exporting = None;
+            self.notice = Some(match outcome {
+                Ok((rows, name)) => format!("Exported {} rows to {name}", with_commas(rows)),
+                Err(error) => format!("Couldn't export: {error}"),
+            });
         }
         if let Some(copying) = &self.copying {
             match copying.try_recv() {
@@ -1632,6 +1714,30 @@ mod tests {
         assert!(workspace.tabs[1].rows().unwrap().bookmarked(1), "b.log's own tab shows it");
         assert!(workspace.tabs[2].rows().unwrap().bookmarked(3));
         assert!(!workspace.tabs[0].rows().unwrap().bookmarked(1));
+    }
+
+    #[test]
+    fn export_writes_the_filtered_rows_and_reports_it() {
+        let (dir, mut workspace) = opened(100);
+        let mut commands = Commands::default();
+        workspace.run_command(command::EXPORT, &mut commands);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            Command::SaveFileDialog { suggested_name } if suggested_name == "app.csv"
+        )));
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL_SHIFT));
+        type_text(&mut workspace, "level:error");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        settle(&mut workspace, |workspace| workspace.tabs[0].is_filtered());
+
+        let path = dir.path().join("errors.csv");
+        workspace.export_to(path.clone());
+        settle(&mut workspace, |workspace| workspace.status().contains("Exported"));
+        assert!(workspace.status().contains("Exported 10 rows to errors.csv"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 11);
+        assert!(text.lines().nth(1).unwrap().starts_with("4,2026-01-01 10:00:03.000,Error,"));
+        assert!(!dir.path().join("errors.csv.part").exists());
     }
 
     #[test]

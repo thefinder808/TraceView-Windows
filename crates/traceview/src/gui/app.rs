@@ -214,6 +214,11 @@ impl Handler for App {
         commands.accessibility_changed();
     }
 
+    fn save_path_chosen(&mut self, path: PathBuf, commands: &mut Commands) {
+        self.workspace.export_to(path);
+        commands.redraw();
+    }
+
     fn system_theme_changed(&mut self, dark: bool, commands: &mut Commands) {
         self.workspace.system_is_dark = dark;
         self.sync_window(commands);

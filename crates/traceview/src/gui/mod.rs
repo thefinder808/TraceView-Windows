@@ -7,6 +7,7 @@ mod app;
 #[cfg(feature = "bench")]
 mod bench;
 mod details;
+mod export;
 mod log_view;
 mod lookup;
 mod row_cache;

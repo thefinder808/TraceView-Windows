@@ -20,8 +20,9 @@ use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    DragFinish, DragQueryFileW, FileOpenDialog, IFileOpenDialog, FOS_ALLOWMULTISELECT,
-    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, HDROP, SIGDN_FILESYSPATH,
+    DragFinish, DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
+    FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, HDROP,
+    SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
@@ -124,6 +125,33 @@ fn choose(hwnd: HWND) -> Option<Vec<PathBuf>> {
             chosen.push(wide_to_path(path.as_wide()));
             CoTaskMemFree(Some(path.0.cast()));
         }
+        Some(chosen)
+    }
+}
+
+/// Shows the save dialog for a CSV file, starting with `suggested_name`, and
+/// returns the chosen path. Must run on the window's thread, with no state borrowed.
+pub(crate) fn choose_save_path(hwnd: HWND, suggested_name: &str) -> Option<PathBuf> {
+    // SAFETY: COM was initialized on this thread by `run`. All pointers are live
+    // for their call, and the returned path is freed after being copied.
+    unsafe {
+        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let filters = [COMDLG_FILTERSPEC {
+            pszName: w!("CSV files (*.csv)"),
+            pszSpec: w!("*.csv"),
+        }];
+        dialog.SetFileTypes(&filters).ok()?;
+        dialog.SetDefaultExtension(w!("csv")).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog
+            .SetOptions(options | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT)
+            .ok()?;
+        dialog.SetFileName(&HSTRING::from(suggested_name)).ok()?;
+        dialog.SetTitle(&HSTRING::from("Export rows")).ok()?;
+        dialog.Show(Some(hwnd)).ok()?;
+        let path: PWSTR = dialog.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let chosen = wide_to_path(path.as_wide());
+        CoTaskMemFree(Some(path.0.cast()));
         Some(chosen)
     }
 }
