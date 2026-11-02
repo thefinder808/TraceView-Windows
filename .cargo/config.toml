@@ -2,3 +2,6 @@
 # VC++ redistributable. Being copyable anywhere is the point of this tool.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
