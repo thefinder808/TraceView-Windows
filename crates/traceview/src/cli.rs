@@ -22,6 +22,7 @@ Query options:
   --regex <pattern>    Find this regular expression, ignoring case
   --case-sensitive     Match case exactly
   --min-level <level>  debug, info, notice, warning, error or critical
+  --level <level>      Only rows at exactly this level
   --component <name>   Only this component
   --thread <id>        Only this thread
   --from <time>        Start time: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
@@ -103,6 +104,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             }
             "--case-sensitive" if is_query => query.case_sensitive = true,
             "--min-level" if is_query => query.min_level = Some(parse_level(&value(&arg)?)?),
+            "--level" if is_query => query.level = Some(parse_level(&value(&arg)?)?),
             "--component" if is_query => query.component = Some(value(&arg)?),
             "--thread" if is_query => query.thread = Some(value(&arg)?),
             "--from" if is_query => query.from = Some(value(&arg)?),

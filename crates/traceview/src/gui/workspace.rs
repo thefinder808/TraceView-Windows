@@ -5,6 +5,7 @@
 use super::details::PANE_HEIGHT;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
+use super::overview;
 use super::row_cache::{cells_from_row, SharedLog};
 use super::settings::{Settings, Store};
 use super::sidebar::{self, Sidebar, Target};
@@ -14,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
+use tv_engine::Level;
 use tv_platform::{Command, Commands, Cursor, Waker};
+use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
 use tv_ui::text_field::FieldResponse;
@@ -52,6 +55,8 @@ pub mod command {
     pub const DETAILS: u32 = 22;
     pub const THEME_SYSTEM: u32 = 23;
     pub const SIDEBAR: u32 = 26;
+    pub const CHIPS: u32 = 27;
+    pub const HISTOGRAM: u32 = 28;
     /// The themes, in `Theme::ALL` order, from this number on.
     pub const THEMES: u32 = 40;
     pub const ERROR_LOOKUP: u32 = 30;
@@ -89,6 +94,8 @@ struct Layout {
     filter: Rect,
     find: Rect,
     find_count: Rect,
+    chips: Rect,
+    histogram: Rect,
     grid: Rect,
     details: Rect,
     status: Rect,
@@ -119,6 +126,13 @@ pub struct Workspace {
     pointer: Point,
     /// The pointer shape last asked for.
     cursor: Cursor,
+    pub show_chips: bool,
+    pub show_histogram: bool,
+    chip_bar: ChipBar,
+    chips: Vec<Chip>,
+    /// The level each chip filters to.
+    chip_filters: Vec<Option<Level>>,
+    histogram_hover: Option<usize>,
     pub theme_choice: ThemeChoice,
     pub system_is_dark: bool,
     /// The Error Lookup panel, while it's open.
@@ -178,6 +192,12 @@ impl Workspace {
             sidebar: Sidebar::new(sidebar::DEFAULT_WIDTH, &waker),
             pointer: Point::default(),
             cursor: Cursor::Arrow,
+            show_chips: true,
+            show_histogram: false,
+            chip_bar: ChipBar::default(),
+            chips: Vec::new(),
+            chip_filters: Vec::new(),
+            histogram_hover: None,
             theme_choice: ThemeChoice::System,
             system_is_dark,
             lookup: None,
@@ -202,6 +222,8 @@ impl Workspace {
             Theme::by_name(&settings.theme).map_or(ThemeChoice::System, ThemeChoice::Fixed);
         self.show_details = settings.details_pane;
         self.show_sidebar = settings.sidebar;
+        self.show_chips = settings.chips;
+        self.show_histogram = settings.histogram;
         self.sidebar.set_width(settings.sidebar_width);
         self.settings = settings;
         self.store = store;
@@ -221,6 +243,8 @@ impl Workspace {
         .to_string();
         self.settings.details_pane = self.show_details;
         self.settings.sidebar = self.show_sidebar;
+        self.settings.chips = self.show_chips;
+        self.settings.histogram = self.show_histogram;
         self.settings.sidebar_width = self.sidebar.width();
         self.store.save(&self.settings);
     }
@@ -312,6 +336,8 @@ impl Workspace {
                     MenuItem::command("Clear filter", "", command::CLEAR_FILTER),
                     MenuItem::Separator,
                     checked(MenuItem::command("Sidebar", "Ctrl+B", command::SIDEBAR), self.show_sidebar),
+                    checked(MenuItem::command("Severity chips", "", command::CHIPS), self.show_chips),
+                    checked(MenuItem::command("Histogram", "", command::HISTOGRAM), self.show_histogram),
                     checked(
                         MenuItem::command("Details pane", "", command::DETAILS),
                         self.show_details,
@@ -407,6 +433,19 @@ impl Workspace {
             name: file_name(&path),
         });
         self.notice = None;
+    }
+
+    /// Clicking a chip filters to its level, and clicking it again, or All,
+    /// shows every level.
+    pub fn toggle_chip(&mut self, index: usize) {
+        let Some(level) = self.chip_filters.get(index).copied() else {
+            return;
+        };
+        let waker = self.waker.clone();
+        if let Some(tab) = self.active_tab_mut() {
+            let next = if tab.chip == level { None } else { level };
+            tab.set_chip(next, &waker);
+        }
     }
 
     /// Opens a tab with every open log merged into one timeline.
@@ -568,6 +607,8 @@ impl Workspace {
                 }
             }
             command::DETAILS => self.show_details = !self.show_details,
+            command::CHIPS => self.show_chips = !self.show_chips,
+            command::HISTOGRAM => self.show_histogram = !self.show_histogram,
             command::SIDEBAR => {
                 self.show_sidebar = !self.show_sidebar;
                 if !self.show_sidebar && self.focus == Focus::Sidebar {
@@ -601,7 +642,11 @@ impl Workspace {
         }
         if matches!(
             id,
-            command::DETAILS | command::SIDEBAR | command::THEME_SYSTEM
+            command::DETAILS
+                | command::SIDEBAR
+                | command::CHIPS
+                | command::HISTOGRAM
+                | command::THEME_SYSTEM
         ) || theme_for_command(id).is_some()
         {
             self.save_settings();
@@ -907,6 +952,29 @@ impl Workspace {
                 commands.accessibility_changed();
                 return;
             }
+            if layout.chips.contains(point) {
+                if let Some(index) = self.chip_bar.handle(event).toggled {
+                    self.toggle_chip(index);
+                }
+                commands.redraw();
+                commands.accessibility_changed();
+                return;
+            }
+            if layout.histogram.contains(point) {
+                let buckets = self
+                    .active_tab()
+                    .and_then(|tab| tab.overview.counts.histogram.as_ref())
+                    .map_or(0, |histogram| histogram.buckets.len());
+                if let (Some(bucket), Some(tab)) = (
+                    overview::bucket_at(layout.histogram, buckets, point.x),
+                    self.active_tab_mut(),
+                ) {
+                    tab.jump_to_bucket(bucket);
+                }
+                commands.redraw();
+                commands.accessibility_changed();
+                return;
+            }
             let target = if layout.filter.contains(point) {
                 Some(Focus::Filter)
             } else if layout.find.contains(point) {
@@ -927,7 +995,20 @@ impl Workspace {
                 None => return,
             }
         }
-        if let Event::MouseMove(_) = event {
+        if let Event::MouseMove(point) = event {
+            let buckets = self
+                .active_tab()
+                .and_then(|tab| tab.overview.counts.histogram.as_ref())
+                .map_or(0, |histogram| histogram.buckets.len());
+            let hover = layout
+                .histogram
+                .contains(point)
+                .then(|| overview::bucket_at(layout.histogram, buckets, point.x))
+                .flatten();
+            if hover != self.histogram_hover || self.chip_bar.handle(event).redraw {
+                self.histogram_hover = hover;
+                commands.redraw();
+            }
             if self.tab_bar.handle(event).redraw {
                 commands.redraw();
             }
@@ -1039,6 +1120,7 @@ impl Workspace {
             .is_some_and(|tab| tab.document().is_some());
         let status = area.take_bottom(snap(theme.status_height, scale));
         let (mut filter, mut find, mut find_count, mut details) = Default::default();
+        let (mut chips, mut histogram) = (Rect::default(), Rect::default());
         if ready {
             let toolbar = area.take_top(snap(TOOLBAR_HEIGHT, scale));
             let field_top = toolbar.top + (toolbar.height() - FIELD_HEIGHT) / 2.0;
@@ -1064,16 +1146,35 @@ impl Workspace {
                 toolbar.right - MARGIN,
                 toolbar.bottom,
             );
+            if self.show_chips {
+                chips = area.take_top(snap(chip_bar::BAR_HEIGHT, scale));
+            }
+            let has_histogram = self
+                .active_tab()
+                .is_some_and(|tab| tab.overview.counts.histogram.is_some());
+            if self.show_histogram && has_histogram {
+                histogram =
+                    area.take_top(snap(overview::BAR_HEIGHT + overview::LABEL_HEIGHT, scale));
+            }
             if self.show_details {
                 details = area.take_bottom(snap(PANE_HEIGHT, scale));
             }
         }
+        let (chip_list, filters) = match self.active_tab() {
+            Some(tab) => overview::chips(&tab.overview.counts.levels, tab.chip, theme),
+            None => (Vec::new(), Vec::new()),
+        };
+        self.chip_bar.arrange(chips, &chip_list, canvas);
+        self.chips = chip_list;
+        self.chip_filters = filters;
         self.layout = Layout {
             menu: menu_bar,
             tabs,
             filter,
             find,
             find_count,
+            chips,
+            histogram,
             grid: area,
             details,
             status,
@@ -1179,6 +1280,23 @@ impl Workspace {
                     if let Some(summary) = tab.find_summary() {
                         canvas.text(&summary, layout.find_count, UI_LEFT, theme.secondary_text);
                     }
+                    if layout.chips.height() > 0.0 {
+                        self.chip_bar
+                            .draw(canvas, layout.chips, &self.chips, theme, false);
+                    }
+                    if let (true, Some(histogram)) = (
+                        layout.histogram.height() > 0.0,
+                        &tab.overview.counts.histogram,
+                    ) {
+                        overview::draw_histogram(
+                            canvas,
+                            layout.histogram,
+                            histogram,
+                            &tab.overview.shadows,
+                            self.histogram_hover,
+                            theme,
+                        );
+                    }
                     if self.show_details {
                         tab.details.draw(canvas, layout.details, theme);
                     }
@@ -1222,6 +1340,18 @@ impl Workspace {
         if let Some(caret) = caret {
             commands.push(Command::SetImePosition(Point::new(caret.x, caret.y)));
         }
+    }
+
+    /// The chips showing, with where each one is.
+    pub fn chip_list(&self) -> impl Iterator<Item = (&Chip, Option<Rect>)> {
+        self.chips
+            .iter()
+            .enumerate()
+            .map(|(index, chip)| (chip, self.chip_bar.chip_rect(index)))
+    }
+
+    pub fn histogram_rect(&self) -> Rect {
+        self.layout.histogram
     }
 
     #[cfg(test)]
@@ -2018,6 +2148,93 @@ mod tests {
             None,
             "the drag didn't reach the grid"
         );
+    }
+
+    fn chip_summary(workspace: &Workspace) -> Vec<(String, usize, bool)> {
+        workspace
+            .chip_list()
+            .map(|(chip, _)| (chip.label.clone(), chip.count, chip.active))
+            .collect()
+    }
+
+    fn click_chip(workspace: &mut Workspace, label: &str) {
+        let rect = workspace
+            .chip_list()
+            .find(|(chip, _)| chip.label == label)
+            .and_then(|(_, rect)| rect)
+            .unwrap();
+        let point = Point::new(rect.left + 4.0, rect.top + rect.height() / 2.0);
+        send(workspace, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(workspace, Event::MouseUp(point, MouseButton::Left));
+    }
+
+    #[test]
+    fn chips_count_each_level_and_filter_when_clicked() {
+        let (_dir, mut workspace) = opened(100);
+        settle(&mut workspace, |workspace| {
+            workspace.chip_list().count() > 1
+        });
+        let all = |active| ("All".to_string(), 100, active);
+        assert_eq!(
+            chip_summary(&workspace),
+            [
+                all(true),
+                ("Error".to_string(), 10, false),
+                ("Warning".to_string(), 10, false),
+                ("Info".to_string(), 80, false)
+            ]
+        );
+
+        click_chip(&mut workspace, "Error");
+        settle(&mut workspace, |workspace| workspace.tabs[0].is_filtered());
+        assert_eq!(row_count(&workspace), 10);
+        assert!(chip_summary(&workspace)[1].2, "the Error chip is on");
+        // Clicking it again shows every level.
+        click_chip(&mut workspace, "Error");
+        settle(&mut workspace, |workspace| !workspace.tabs[0].is_filtered());
+
+        // A chip and the filter box work together.
+        click_chip(&mut workspace, "Error");
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL_SHIFT));
+        type_text(&mut workspace, "message 1");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        settle(&mut workspace, |workspace| row_count(workspace) == 1);
+        click_chip(&mut workspace, "All");
+        settle(&mut workspace, |workspace| row_count(workspace) == 11);
+    }
+
+    #[test]
+    fn clicking_the_histogram_selects_the_worst_row_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hour.log");
+        let text: String = (0..60)
+            .map(|minute| {
+                let level = if minute == 30 { "ERROR" } else { "INFO" };
+                format!("2026-01-01 10:{minute:02}:00 host app[1]: {level}: minute {minute}\n")
+            })
+            .collect();
+        std::fs::write(&path, text).unwrap();
+        let mut workspace = workspace();
+        workspace.show_histogram = true;
+        workspace.open_paths(vec![path]);
+        settle(&mut workspace, |workspace| {
+            workspace.histogram_rect().height() > 0.0
+        });
+        let histogram = workspace.tabs[0].overview.counts.histogram.clone().unwrap();
+        let bucket = histogram
+            .buckets
+            .iter()
+            .position(|bucket| bucket.get(Level::Error) > 0)
+            .unwrap();
+        let area = workspace.histogram_rect();
+        let width = area.width() / histogram.buckets.len() as f32;
+        let point = Point::new(area.left + (bucket as f32 + 0.5) * width, area.top + 10.0);
+        send(
+            &mut workspace,
+            Event::MouseDown(point, MouseButton::Left, NONE),
+        );
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(30));
+        assert!(!workspace.tabs[0].following);
     }
 
     #[test]

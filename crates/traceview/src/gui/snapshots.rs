@@ -345,3 +345,32 @@ fn the_sidebar_draws_beside_the_logs() {
         "the first entry's text drew"
     );
 }
+
+#[test]
+fn chips_and_the_histogram_draw_above_the_grid() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::DARK));
+    workspace.show_histogram = true;
+    let frame = render(&mut workspace, "overview", 96.0, |workspace| {
+        workspace.histogram_rect().height() > 0.0
+    });
+    let theme = workspace.theme();
+    let (error_chip, rect) = workspace
+        .chip_list()
+        .find(|(chip, _)| chip.label == "Error")
+        .unwrap();
+    assert_eq!(error_chip.count, 571);
+    assert!(frame.has_ink(rect.unwrap(), theme.chip_background));
+    let bars = workspace.histogram_rect();
+    let error_bar = Rect::new(bars.left, bars.top, bars.right - 4.0, bars.top + 28.0);
+    let mut red = false;
+    let mut y = error_bar.top;
+    while y < error_bar.bottom && !red {
+        let mut x = error_bar.left;
+        while x < error_bar.right && !red {
+            red = frame.at(x, y) == theme.histogram_error;
+            x += 1.0;
+        }
+        y += 1.0;
+    }
+    assert!(red, "error segments drew");
+}

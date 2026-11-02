@@ -32,6 +32,8 @@ const FIRST_MENU_ID: u64 = 100;
 const FIRST_MENU_ITEM_ID: u64 = 200;
 const FIRST_TAB_ID: u64 = 300;
 const SIDEBAR_ID: NodeId = NodeId(13);
+const HISTOGRAM_ID: NodeId = NodeId(14);
+const FIRST_CHIP_ID: u64 = 400;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -227,6 +229,30 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
                 window_children.push(id);
             }
         }
+        // Severity chips are toggle buttons, and the histogram a labelled picture.
+        for (index, (chip, rect)) in workspace.chip_list().enumerate() {
+            let Some(rect) = rect else { continue };
+            let id = NodeId(FIRST_CHIP_ID + index as u64);
+            let mut node = Node::new(Role::Button);
+            node.set_label(format!("{}, {}", chip.label, chip.count));
+            node.set_toggled(chip.active.into());
+            node.set_bounds(physical(rect, scale));
+            node.add_action(Action::Click);
+            nodes.push((id, node));
+            window_children.push(id);
+        }
+        if let (Some(histogram), true) = (
+            &tab.overview.counts.histogram,
+            workspace.histogram_rect().height() > 0.0,
+        ) {
+            let first = tv_engine::time::Stamp::from_seconds(histogram.range.first).label();
+            let last = tv_engine::time::Stamp::from_seconds(histogram.range.last).label();
+            let mut node = Node::new(Role::Image);
+            node.set_label(format!("Event histogram, {first} to {last}"));
+            node.set_bounds(physical(workspace.histogram_rect(), scale));
+            nodes.push((HISTOGRAM_ID, node));
+            window_children.push(HISTOGRAM_ID);
+        }
         let rows = tab.rows();
         grid_focus = grid_nodes(
             &tab.view,
@@ -359,6 +385,10 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                     tab.view.select(row, false);
                     tab.following = tab.view.at_bottom();
                 }
+            } else if let Some(index) =
+                in_range(target, FIRST_CHIP_ID, workspace.chip_list().count())
+            {
+                workspace.toggle_chip(index);
             } else if let Some(index) =
                 in_range(target, FIRST_SIDEBAR_ID, workspace.sidebar.list.items.len())
             {

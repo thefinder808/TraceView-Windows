@@ -8,6 +8,7 @@
 use super::details::{DetailTarget, Details};
 use super::export::Export;
 use super::log_view::{LogView, RowSource};
+use super::overview::Overview;
 use super::row_cache::{RowCache, RowCells, SharedLog};
 use super::search::{self, Matches, Target};
 use super::settings::Settings;
@@ -19,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use tv_engine::merge::{self, MergedRow};
+use tv_engine::overview as counting;
 use tv_engine::{CacheUse, Change, Control, Level, LogFile, OpenStats};
 use tv_platform::Waker;
 use tv_ui::text_field::TextField;
@@ -260,6 +262,10 @@ pub struct Tab {
     step_when_found: Option<bool>,
     pub details: Details,
     pub message: Option<String>,
+    /// The severity chips' counts and the event histogram.
+    pub overview: Overview,
+    /// The level the active severity chip filters to.
+    pub chip: Option<Level>,
     /// Keep the newest rows in view as they arrive. True while the view is at
     /// the bottom, which is where a log opens.
     pub following: bool,
@@ -308,6 +314,8 @@ impl Tab {
             step_when_found: None,
             details: Details::default(),
             message: None,
+            overview: Overview::default(),
+            chip: None,
             following: true,
         }
     }
@@ -506,6 +514,17 @@ impl Tab {
             changed = true;
         }
         changed |= self.poll_merge(waker);
+        let logs: Option<Vec<SharedLog>> = self.document().map(|document| {
+            document
+                .sources
+                .iter()
+                .map(|source| source.log.clone())
+                .collect()
+        });
+        if let Some(logs) = logs {
+            self.overview.update(&logs, waker);
+        }
+        changed |= self.overview.poll();
 
         if let Some(next) = &mut self.next_filter {
             match next.poll(waker) {
@@ -573,6 +592,7 @@ impl Tab {
                 return;
             }
         };
+        self.overview.changed(applied.change == Change::Reset);
         let Some(document) = self.document_mut() else {
             return;
         };
@@ -656,7 +676,7 @@ impl Tab {
     pub fn apply_filter(&mut self, waker: &Waker) {
         let text = self.filter_field.text().trim().to_string();
         self.next_filter = None;
-        if text.is_empty() {
+        if text.is_empty() && self.chip.is_none() {
             let keep = self.cursor_file_row();
             self.filter = None;
             let count = self.rows().map_or(0, |rows| rows.row_count());
@@ -671,12 +691,65 @@ impl Tab {
             return;
         };
         match search::parse(&text) {
-            Ok(query) => {
+            Ok(mut query) => {
+                query.level = self.chip;
                 self.next_filter = Some(Matches::start(target, query, waker));
                 self.message = None;
             }
             Err(error) => self.message = Some(error),
         }
+    }
+
+    /// Filters to one level, as clicking a severity chip does, or back to every
+    /// level. The filter box still applies.
+    pub fn set_chip(&mut self, level: Option<Level>, waker: &Waker) {
+        self.chip = level;
+        self.apply_filter(waker);
+    }
+
+    /// Selects the most severe row in a histogram bucket: its first error, or
+    /// else its first warning, or else its first row. Following stops, so the
+    /// row stays in view.
+    pub fn jump_to_bucket(&mut self, bucket: usize) {
+        let Some(histogram) = &self.overview.counts.histogram else {
+            return;
+        };
+        let (start, end) = (
+            histogram.bucket_start(bucket),
+            histogram.bucket_start(bucket + 1),
+        );
+        let Some(document) = self.document() else {
+            return;
+        };
+        // A merged position is the sum of each file's.
+        let position = |seconds: u32| -> usize {
+            document
+                .sources
+                .iter()
+                .filter_map(|source| {
+                    let log = source.log.read().ok()?;
+                    counting::first_row_at(&log, None, seconds, &Control::default()).ok()
+                })
+                .sum()
+        };
+        let (first, last) = (position(start), position(end));
+        let Some(rows) = self.rows() else { return };
+        let count = rows.row_count();
+        let filter = self.filter_rows();
+        let (from, to) = (
+            search::view_position(filter, first),
+            search::view_position(filter, last).min(count),
+        );
+        if from >= count {
+            return;
+        }
+        let worst = |level: Level| (from..to).find(|row| rows.level(*row) >= level);
+        let row = worst(Level::Error)
+            .or_else(|| worst(Level::Warning))
+            .unwrap_or(from);
+        drop(rows);
+        self.view.select(row, false);
+        self.following = false;
     }
 
     /// Moves to the next or previous match of the find box. If the text changed,

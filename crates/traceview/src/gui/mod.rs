@@ -10,6 +10,7 @@ mod details;
 mod export;
 mod log_view;
 mod lookup;
+mod overview;
 mod places;
 mod row_cache;
 mod search;

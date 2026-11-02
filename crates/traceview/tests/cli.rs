@@ -79,6 +79,7 @@ fn query_applies_filters() {
     assert_eq!(matches(&["--regex", r"error 0x[0-9a-f]{8}"]), 1);
     assert_eq!(matches(&["--min-level", "warning"]), 2);
     assert_eq!(matches(&["--min-level", "error"]), 1);
+    assert_eq!(matches(&["--level", "warning"]), 1);
     assert_eq!(matches(&["--component", "policyagent"]), 2);
     assert_eq!(matches(&["--thread", "5240"]), 2);
     assert_eq!(matches(&["--thread", "4128", "--min-level", "error"]), 0);

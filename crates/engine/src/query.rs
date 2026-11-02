@@ -27,6 +27,8 @@ pub struct Query {
     pub regex: bool,
     pub case_sensitive: bool,
     pub min_level: Option<Level>,
+    /// Only rows at exactly this level, as a severity chip filters.
+    pub level: Option<Level>,
     /// An exact component name, in any case.
     pub component: Option<String>,
     /// An exact thread, in any case. SCCM logs write thread IDs, while some
@@ -125,6 +127,7 @@ pub struct Control {
 pub struct Matcher {
     pattern: Option<Regex>,
     min_level: Option<Level>,
+    level: Option<Level>,
     component: Option<Vec<u8>>,
     thread: Option<Vec<u8>>,
     from: Option<u32>,
@@ -168,6 +171,7 @@ impl Matcher {
         Ok(Self {
             pattern,
             min_level: query.min_level,
+            level: query.level,
             component: query
                 .component
                 .as_ref()
@@ -203,6 +207,9 @@ impl Matcher {
             .min_level
             .is_some_and(|minimum| log.level(row) < minimum)
         {
+            return false;
+        }
+        if self.level.is_some_and(|level| log.level(row) != level) {
             return false;
         }
         if self.from.is_none() && self.to.is_none() {

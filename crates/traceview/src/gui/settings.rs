@@ -30,6 +30,8 @@ pub struct Settings {
     pub details_pane: bool,
     pub sidebar: bool,
     pub sidebar_width: f32,
+    pub chips: bool,
+    pub histogram: bool,
     /// Logs opened lately, newest first.
     pub recent: Vec<String>,
     pub presets: Vec<Preset>,
@@ -44,6 +46,8 @@ impl Default for Settings {
             details_pane: true,
             sidebar: false,
             sidebar_width: super::sidebar::DEFAULT_WIDTH,
+            chips: true,
+            histogram: false,
             recent: Vec::new(),
             presets: Vec::new(),
             bookmarks: BTreeMap::new(),
