@@ -694,6 +694,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tv-engine",
+ "tv-errors",
  "tv-platform",
  "tv-render",
  "tv-ui",
@@ -713,6 +714,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "tv-errors"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "regex",
+ "windows",
 ]
 
 [[package]]

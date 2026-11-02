@@ -9,6 +9,7 @@ pub mod encoding;
 pub mod file;
 pub mod index;
 pub mod level;
+pub mod merge;
 pub mod parse;
 pub mod query;
 mod reader;
@@ -16,7 +17,7 @@ pub mod summary;
 pub mod time;
 
 pub use encoding::Encoding;
-pub use file::{CacheUse, Change, LogFile, OpenStats};
+pub use file::{CacheUse, Change, LogFile, OpenStats, RefreshPlan};
 pub use level::Level;
 pub use parse::{Fields, Format};
 pub use query::{Control, Query, QueryError, QueryResult, RowRecord};

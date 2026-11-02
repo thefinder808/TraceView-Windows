@@ -68,6 +68,53 @@ pub struct LogFile {
     fingerprint: u64,
 }
 
+/// A refresh that has done its reading and scanning, ready for
+/// [`LogFile::apply_refresh`] to put in place quickly. It can be sent to the
+/// thread that holds the log's write lock.
+pub struct RefreshPlan {
+    /// The log's state when the plan was prepared, so a plan is never applied
+    /// to a log that has changed since.
+    base: Snapshot,
+    change: Change,
+    /// The file as it was read. `None` when it was removed.
+    reopened: Option<Reopened>,
+}
+
+impl RefreshPlan {
+    /// What applying the plan will report.
+    pub fn change(&self) -> Change {
+        self.change
+    }
+}
+
+struct Reopened {
+    file: File,
+    len: u64,
+    modified: SystemTime,
+    fingerprint: u64,
+    layout: Layout,
+    context: ParseContext,
+    rows: NewRows,
+}
+
+enum NewRows {
+    /// Rows to put after the first `keep` rows. Only used when the arrays
+    /// already have room for them, so applying them never reallocates.
+    Append { keep: usize, added: RowArrays },
+    /// A whole new index, after a reset or when the arrays were full.
+    Replace(RowArrays),
+}
+
+/// Every change a refresh applies alters at least the length or the modified
+/// time, so an unchanged snapshot means no refresh happened in between.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Snapshot {
+    rows: usize,
+    indexed_len: u64,
+    modified: SystemTime,
+    fingerprint: u64,
+}
+
 fn modified_nanos(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos() as u64)
@@ -95,8 +142,8 @@ fn check_size(len: u64) -> io::Result<()> {
     Ok(())
 }
 
-fn check_rows(rows: &RowArrays) -> io::Result<()> {
-    if rows.rows() > u32::MAX as usize {
+fn check_rows(rows: usize) -> io::Result<()> {
+    if rows > u32::MAX as usize {
         return Err(io::Error::other(
             "logs of 4 billion rows or more aren't supported",
         ));
@@ -140,7 +187,8 @@ impl LogFile {
                     && reader::fingerprint(&file, entry.stamp.indexed_len)?
                         == entry.stamp.fingerprint =>
             {
-                let from = drop_last_row(&mut entry.rows, layout.body_offset);
+                let (keep, from) = resume_point(&entry.rows, layout.body_offset);
+                entry.rows.truncate(keep);
                 entry
                     .rows
                     .extend(index::scan(&file, len, layout, context, from, progress)?);
@@ -151,7 +199,7 @@ impl LogFile {
                 CacheUse::Miss,
             ),
         };
-        check_rows(&rows)?;
+        check_rows(rows.rows())?;
 
         let fingerprint = reader::fingerprint(&file, len)?;
         if cache_use != CacheUse::Hit {
@@ -296,16 +344,40 @@ impl LogFile {
     /// Checks the file for changes and updates the index. Only new data is
     /// read. Holding a log open never stops its writer from truncating,
     /// renaming or deleting it.
+    ///
+    /// While other threads read the log, use [`Self::prepare_refresh`] and
+    /// [`Self::apply_refresh`] instead, so the slow part doesn't need
+    /// exclusive access.
     pub fn refresh(&mut self, progress: &AtomicU64) -> io::Result<Change> {
+        let Some(plan) = self.prepare_refresh(progress)? else {
+            return Ok(Change::Unchanged);
+        };
+        // Nothing can change the log between the two steps here, so the plan
+        // is never refused.
+        Ok(self.apply_refresh(plan)?.unwrap_or(Change::Unchanged))
+    }
+
+    /// Checks the file for changes and does all the reading and scanning a
+    /// refresh needs, without changing the log, so other threads can keep
+    /// reading it meanwhile. Returns `None` if nothing changed. Pass the plan
+    /// to [`Self::apply_refresh`].
+    pub fn prepare_refresh(&self, progress: &AtomicU64) -> io::Result<Option<RefreshPlan>> {
+        let base = self.snapshot();
         let metadata = match fs::metadata(&self.path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Change::Removed),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Some(RefreshPlan {
+                    base,
+                    change: Change::Removed,
+                    reopened: None,
+                }));
+            }
             Err(error) => return Err(error),
         };
         let len = metadata.len();
         let modified = metadata.modified()?;
         if len == self.indexed_len && modified == self.modified {
-            return Ok(Change::Unchanged);
+            return Ok(None);
         }
         check_size(len)?;
 
@@ -313,35 +385,87 @@ impl LogFile {
         let file = File::open(&self.path)?;
         let grew_in_place = len >= self.indexed_len
             && reader::fingerprint(&file, self.indexed_len)? == self.fingerprint;
-        let rows_before = self.rows();
-        let change = if grew_in_place {
-            let from = drop_last_row(&mut self.rows, self.layout.body_offset);
+        let (layout, context, rows, change) = if grew_in_place {
+            let (keep, from) = resume_point(&self.rows, self.layout.body_offset);
             let added = index::scan(&file, len, self.layout, self.context, from, progress)?;
-            self.rows.extend(added);
-            Change::Appended {
-                new_rows: self.rows().saturating_sub(rows_before),
-            }
+            let total = keep + added.rows();
+            check_rows(total)?;
+            // Growing the arrays copies every row, so do it here rather than
+            // while the caller holds the log exclusively.
+            let rows = if self.rows.has_room_for(total) {
+                NewRows::Append { keep, added }
+            } else {
+                NewRows::Replace(self.rows.copy_with_room(keep, added))
+            };
+            let change = Change::Appended {
+                new_rows: total.saturating_sub(self.rows()),
+            };
+            (self.layout, self.context, rows, change)
         } else {
-            self.layout = detect_layout(&file, len)?;
-            self.context = ParseContext {
+            let layout = detect_layout(&file, len)?;
+            let context = ParseContext {
                 year_hint: YearHint::from_system_time(modified),
             };
-            self.rows = index::scan(
-                &file,
-                len,
-                self.layout,
-                self.context,
-                self.layout.body_offset,
-                progress,
-            )?;
-            Change::Reset
+            let rows = index::scan(&file, len, layout, context, layout.body_offset, progress)?;
+            check_rows(rows.rows())?;
+            (layout, context, NewRows::Replace(rows), Change::Reset)
         };
-        check_rows(&self.rows)?;
-        self.fingerprint = reader::fingerprint(&file, len)?;
-        self.file = file;
-        self.indexed_len = len;
-        self.modified = modified;
-        Ok(change)
+        let fingerprint = reader::fingerprint(&file, len)?;
+        Ok(Some(RefreshPlan {
+            base,
+            change,
+            reopened: Some(Reopened {
+                file,
+                len,
+                modified,
+                fingerprint,
+                layout,
+                context,
+                rows,
+            }),
+        }))
+    }
+
+    /// Puts a prepared refresh in place. This is quick enough to do while
+    /// holding the log's write lock: new rows go into room the arrays already
+    /// have, and anything larger was built by [`Self::prepare_refresh`] and is
+    /// swapped in. Returns `None`, changing nothing, if the log changed after
+    /// the plan was prepared. Prepare again in that case.
+    pub fn apply_refresh(&mut self, plan: RefreshPlan) -> io::Result<Option<Change>> {
+        if plan.base != self.snapshot() {
+            return Ok(None);
+        }
+        if let Some(reopened) = plan.reopened {
+            match reopened.rows {
+                NewRows::Append { keep, added } => {
+                    self.rows.truncate(keep);
+                    self.rows.extend(added);
+                }
+                NewRows::Replace(rows) => {
+                    let old = std::mem::replace(&mut self.rows, rows);
+                    // Freeing a large index takes about 10 ms per 27 million
+                    // rows, so it happens on another thread rather than while
+                    // the caller holds the log exclusively.
+                    rayon::spawn(move || drop(old));
+                }
+            }
+            self.file = reopened.file;
+            self.layout = reopened.layout;
+            self.context = reopened.context;
+            self.indexed_len = reopened.len;
+            self.modified = reopened.modified;
+            self.fingerprint = reopened.fingerprint;
+        }
+        Ok(Some(plan.change))
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            rows: self.rows(),
+            indexed_len: self.indexed_len,
+            modified: self.modified,
+            fingerprint: self.fingerprint,
+        }
     }
 }
 
@@ -349,16 +473,13 @@ fn is_exact_match(stamp: &CacheStamp, len: u64, modified: SystemTime) -> bool {
     stamp.indexed_len == len && stamp.modified_nanos == modified_nanos(modified)
 }
 
-/// Removes the last row, which may still be growing, and returns where to
-/// resume scanning from.
-fn drop_last_row(rows: &mut RowArrays, body_offset: u64) -> u64 {
+/// Where to resume scanning a log that grew. The last row may still have been
+/// growing, so it's scanned again. Returns the rows to keep and the offset to
+/// resume from.
+fn resume_point(rows: &RowArrays, body_offset: u64) -> (usize, u64) {
     match rows.rows().checked_sub(1) {
-        Some(last) => {
-            let from = rows.offset(last);
-            rows.truncate(last);
-            from
-        }
-        None => body_offset,
+        Some(last) => (last, rows.offset(last)),
+        None => (0, body_offset),
     }
 }
 
@@ -686,6 +807,126 @@ mod tests {
         let progress = AtomicU64::new(0);
         assert_eq!(log.refresh(&progress).unwrap(), Change::Removed);
         assert_eq!(all_rows(&log).len(), 2);
+    }
+
+    #[test]
+    fn preparing_a_refresh_changes_nothing_until_it_is_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.log");
+        fs::write(&path, b"one\n").unwrap();
+        let mut log = open_uncached(&path);
+        let progress = AtomicU64::new(0);
+        assert!(log.prepare_refresh(&progress).unwrap().is_none());
+
+        let_clock_tick();
+        append(&path, b"two\n");
+        let plan = log.prepare_refresh(&progress).unwrap().unwrap();
+        assert_eq!(all_rows(&log), vec![b"one\n".to_vec()]);
+        assert_eq!(
+            log.apply_refresh(plan).unwrap(),
+            Some(Change::Appended { new_rows: 1 })
+        );
+        assert_eq!(all_rows(&log), vec![b"one\n".to_vec(), b"two\n".to_vec()]);
+        assert!(log.prepare_refresh(&progress).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_plan_is_refused_once_the_log_has_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.log");
+        fs::write(&path, b"one\n").unwrap();
+        let mut log = open_uncached(&path);
+        let progress = AtomicU64::new(0);
+
+        let_clock_tick();
+        append(&path, b"two\n");
+        let first = log.prepare_refresh(&progress).unwrap().unwrap();
+        let second = log.prepare_refresh(&progress).unwrap().unwrap();
+        assert_eq!(
+            log.apply_refresh(first).unwrap(),
+            Some(Change::Appended { new_rows: 1 })
+        );
+        assert_eq!(log.apply_refresh(second).unwrap(), None);
+        assert_eq!(log.rows(), 2);
+
+        // A reset is refused the same way.
+        let_clock_tick();
+        fs::write(&path, b"new\n").unwrap();
+        let reset = log.prepare_refresh(&progress).unwrap().unwrap();
+        let_clock_tick();
+        append(&path, b"more\n");
+        log.refresh(&progress).unwrap();
+        assert_eq!(log.apply_refresh(reset).unwrap(), None);
+        assert_eq!(all_rows(&log), vec![b"new\n".to_vec(), b"more\n".to_vec()]);
+    }
+
+    /// The GUI prepares on a background thread while the UI keeps reading,
+    /// then applies under a brief write lock.
+    #[test]
+    fn a_plan_prepared_on_another_thread_applies_under_a_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.log");
+        fs::write(&path, b"one\n").unwrap();
+        let log = std::sync::RwLock::new(open_uncached(&path));
+
+        let_clock_tick();
+        append(&path, b"two error\n");
+        let plan = std::thread::scope(|scope| {
+            let preparing = scope.spawn(|| {
+                let reader = log.read().unwrap();
+                reader.prepare_refresh(&AtomicU64::new(0)).unwrap()
+            });
+            assert_eq!(all_rows(&log.read().unwrap()).len(), 1);
+            preparing.join().unwrap().unwrap()
+        });
+        let mut writer = log.write().unwrap();
+        assert_eq!(
+            writer.apply_refresh(plan).unwrap(),
+            Some(Change::Appended { new_rows: 1 })
+        );
+        assert_eq!(writer.level(1), Level::Error);
+    }
+
+    /// The arrays from opening a log are exactly full, so the first append
+    /// copies them, with room to spare, before the write lock is needed. Later
+    /// appends fit in that room.
+    #[test]
+    fn appends_after_the_first_never_reallocate_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.log");
+        fs::write(&path, b"one\ntwo\n").unwrap();
+        let mut log = open_uncached(&path);
+        let progress = AtomicU64::new(0);
+
+        let_clock_tick();
+        append(&path, b"three\n");
+        assert_eq!(
+            log.refresh(&progress).unwrap(),
+            Change::Appended { new_rows: 1 }
+        );
+        let arrays = (
+            log.rows.offsets.as_ptr(),
+            log.rows.levels.as_ptr(),
+            log.rows.times.as_ptr(),
+        );
+        for row in 4..20 {
+            let_clock_tick();
+            append(&path, format!("row {row}\n").as_bytes());
+            assert_eq!(
+                log.refresh(&progress).unwrap(),
+                Change::Appended { new_rows: 1 }
+            );
+        }
+        assert_eq!(
+            (
+                log.rows.offsets.as_ptr(),
+                log.rows.levels.as_ptr(),
+                log.rows.times.as_ptr(),
+            ),
+            arrays
+        );
+        assert_eq!(log.rows(), 19);
+        assert_eq!(all_rows(&log)[18], b"row 19\n");
     }
 
     /// The reason the engine doesn't memory-map: holding a log open must never

@@ -44,4 +44,6 @@ pub enum Event {
     MouseMove(Point),
     /// Wheel movement in rows, positive when scrolling toward the file's start.
     Wheel(f32),
+    /// A typed character, after keyboard layout and IME processing.
+    Char(char),
 }

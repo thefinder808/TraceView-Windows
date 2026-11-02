@@ -27,8 +27,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_MEASURING_MODE, DWRITE_MEASURING_MODE_GDI_CLASSIC, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -113,7 +114,7 @@ pub struct Renderer {
     height: u32,
     dpi: f32,
     fonts: Fonts,
-    formats: HashMap<(FontRole, Align), IDWriteTextFormat>,
+    formats: HashMap<(FontRole, Align, bool), IDWriteTextFormat>,
     char_widths: HashMap<FontRole, f32>,
     utf16: Vec<u16>,
     vsync: bool,
@@ -525,8 +526,8 @@ impl Renderer {
         Some(pixels)
     }
 
-    fn format(&mut self, style: TextStyle) -> Option<IDWriteTextFormat> {
-        let key = (style.font, style.align);
+    fn format(&mut self, style: TextStyle, wrap: bool) -> Option<IDWriteTextFormat> {
+        let key = (style.font, style.align, wrap);
         if let Some(format) = self.formats.get(&key) {
             return Some(format.clone());
         }
@@ -548,10 +549,17 @@ impl Renderer {
                     w!("en-us"),
                 )
                 .ok()?;
-            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
-            format
-                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-                .ok()?;
+            if wrap {
+                format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP).ok()?;
+                format
+                    .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)
+                    .ok()?;
+            } else {
+                format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
+                format
+                    .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+                    .ok()?;
+            }
             format
                 .SetTextAlignment(match style.align {
                     Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
@@ -642,25 +650,42 @@ impl Canvas for Renderer {
         if text.is_empty() {
             return;
         }
-        let Some(format) = self.format(style) else {
+        let Some(format) = self.format(style, false) else {
             return;
         };
-        let mode = self.measuring_mode();
+        self.draw_utf16(text, rect, &format, color);
+    }
+
+    fn text_width(&mut self, text: &str, font: FontRole) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let Some(format) = self.format(TextStyle::new(font, Align::Left), false) else {
+            return 0.0;
+        };
         self.utf16.clear();
         self.utf16.extend(text.encode_utf16());
-        // SAFETY: called between BeginDraw and EndDraw, with arguments that
-        // outlive the call.
+        // SAFETY: the text and format outlive the call, and metrics is a local.
         unsafe {
-            self.target.brush.SetColor(&to_d2d_color(color));
-            self.target.target.DrawText(
-                &self.utf16,
-                &format,
-                &to_d2d_rect(rect),
-                &self.target.brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                mode,
-            );
+            self.write
+                .CreateTextLayout(&self.utf16, &format, 1_000_000.0, 1_000.0)
+                .and_then(|layout| {
+                    let mut metrics = DWRITE_TEXT_METRICS::default();
+                    layout.GetMetrics(&mut metrics)?;
+                    Ok(metrics.widthIncludingTrailingWhitespace)
+                })
+                .unwrap_or(0.0)
         }
+    }
+
+    fn text_block(&mut self, text: &str, rect: Rect, font: FontRole, color: Color) {
+        if text.is_empty() {
+            return;
+        }
+        let Some(format) = self.format(TextStyle::new(font, Align::Left), true) else {
+            return;
+        };
+        self.draw_utf16(text, rect, &format, color);
     }
 
     fn push_clip(&mut self, rect: Rect) {
@@ -685,23 +710,33 @@ impl Canvas for Renderer {
             FontRole::Ui => self.fonts.ui_size * 0.6,
             FontRole::Grid => self.fonts.grid_size * 0.6,
         };
-        let Some(format) = self.format(TextStyle::new(font, Align::Left)) else {
-            return fallback;
+        let width = match self.text_width("0000000000", font) {
+            measured if measured > 0.0 => measured / 10.0,
+            _ => fallback,
         };
-        let sample: Vec<u16> = "0000000000".encode_utf16().collect();
-        // SAFETY: the sample and format outlive the call, and metrics is a local.
-        let measured = unsafe {
-            self.write
-                .CreateTextLayout(&sample, &format, 10_000.0, 100.0)
-                .and_then(|layout| {
-                    let mut metrics = DWRITE_TEXT_METRICS::default();
-                    layout.GetMetrics(&mut metrics)?;
-                    Ok(metrics.widthIncludingTrailingWhitespace / 10.0)
-                })
-        };
-        let width = measured.unwrap_or(fallback);
         self.char_widths.insert(font, width);
         width
+    }
+}
+
+impl Renderer {
+    fn draw_utf16(&mut self, text: &str, rect: Rect, format: &IDWriteTextFormat, color: Color) {
+        let mode = self.measuring_mode();
+        self.utf16.clear();
+        self.utf16.extend(text.encode_utf16());
+        // SAFETY: called between BeginDraw and EndDraw, with arguments that
+        // outlive the call.
+        unsafe {
+            self.target.brush.SetColor(&to_d2d_color(color));
+            self.target.target.DrawText(
+                &self.utf16,
+                format,
+                &to_d2d_rect(rect),
+                &self.target.brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                mode,
+            );
+        }
     }
 }
 

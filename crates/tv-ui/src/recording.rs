@@ -76,4 +76,18 @@ impl Canvas for RecordingCanvas {
     fn char_width(&mut self, _font: FontRole) -> f32 {
         7.0
     }
+
+    /// Every character is 7 wide here, which keeps test arithmetic simple.
+    fn text_width(&mut self, text: &str, _font: FontRole) -> f32 {
+        text.chars().count() as f32 * 7.0
+    }
+
+    fn text_block(&mut self, text: &str, rect: Rect, font: FontRole, color: Color) {
+        self.ops.push(DrawOp::Text(
+            text.to_string(),
+            rect,
+            TextStyle::new(font, crate::canvas::Align::Left),
+            color,
+        ));
+    }
 }

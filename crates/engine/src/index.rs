@@ -22,6 +22,9 @@ const LOOKAHEAD: usize = 1024 * 1024;
 pub const MAX_FILE_LEN: u64 = 1 << 40;
 /// Bytes of index memory per row: offset, level and time.
 pub const BYTES_PER_ROW: usize = 5 + 1 + 4;
+/// The least room left for new rows when arrays are copied to grow them, so a
+/// small live log isn't copied on every refresh.
+const MIN_ROOM_ROWS: usize = 4096;
 
 /// How a file's bytes are laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +78,32 @@ impl RowArrays {
 
     pub(crate) fn extend(&mut self, other: RowArrays) {
         self.append(other);
+    }
+
+    /// Whether the arrays can hold `rows` rows without reallocating.
+    pub(crate) fn has_room_for(&self, rows: usize) -> bool {
+        self.offsets.capacity() >= rows
+            && self.levels.capacity() >= rows
+            && self.times.capacity() >= rows
+    }
+
+    /// The first `keep` rows followed by `added`, in new arrays with room to
+    /// grow by an eighth. Growing a 27-million-row index this way takes about
+    /// 55 ms, which a refresh does before it needs exclusive access to the log,
+    /// and a live log isn't copied again until it has grown by that much.
+    pub(crate) fn copy_with_room(&self, keep: usize, added: RowArrays) -> RowArrays {
+        let rows = keep + added.rows();
+        let capacity = rows + (rows / 8).max(MIN_ROOM_ROWS);
+        let mut copy = RowArrays {
+            offsets: Vec::with_capacity(capacity),
+            levels: Vec::with_capacity(capacity),
+            times: Vec::with_capacity(capacity),
+        };
+        copy.offsets.extend_from_slice(&self.offsets[..keep]);
+        copy.levels.extend_from_slice(&self.levels[..keep]);
+        copy.times.extend_from_slice(&self.times[..keep]);
+        copy.append(added);
+        copy
     }
 
     fn push(&mut self, offset: u64, level: Level, stamp: Option<Stamp>) {

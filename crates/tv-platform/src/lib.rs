@@ -9,7 +9,7 @@ mod shell;
 mod window;
 
 pub use console::{prepare_console_for_gui, ConsoleOutcome};
-pub use shell::show_error;
+pub use shell::{clipboard_text, show_error};
 pub use window::{run, Command, Commands, Handler, WindowContext, WindowOptions};
 
 /// Lets another thread wake the window's message loop. Wakes coalesce, so
@@ -21,7 +21,19 @@ pub struct Waker {
 }
 
 impl Waker {
+    /// A waker with no window, for code that runs without one, such as tests.
+    /// Waking it does nothing.
+    pub fn detached() -> Self {
+        Self {
+            hwnd: 0,
+            pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
     pub fn wake(&self) {
+        if self.hwnd == 0 {
+            return;
+        }
         use std::sync::atomic::Ordering;
         if !self.pending.swap(true, Ordering::AcqRel) {
             window::post_wake(self.hwnd);

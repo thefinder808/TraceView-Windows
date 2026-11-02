@@ -35,6 +35,14 @@ pub struct Theme {
     pub notice_text: Color,
     pub debug_text: Color,
 
+    pub accent: Color,
+    pub input_background: Color,
+    pub panel_background: Color,
+    pub hover_background: Color,
+    /// Rows matching the current find text, like CMTrace's highlight.
+    pub highlight_row: Color,
+    pub text_selection: Color,
+
     pub ui_font_size: f32,
     pub grid_font_size: f32,
     pub row_height: f32,
@@ -70,6 +78,12 @@ impl Theme {
         critical_text: Color::rgb(0x000000),
         notice_text: Color::rgb(0x0A4FA0),
         debug_text: Color::rgb(0x666666),
+        accent: Color::rgb(0x0A64C8),
+        input_background: Color::rgb(0xFFFFFF),
+        panel_background: Color::rgb(0xF7F7F7),
+        hover_background: Color::rgb(0xE5F1FB),
+        highlight_row: Color::rgb(0xE4D7FF),
+        text_selection: Color::rgb(0x99C9FF),
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -104,6 +118,12 @@ impl Theme {
         critical_text: Color::rgb(0xFF6961),
         notice_text: Color::rgb(0x7EB6FF),
         debug_text: Color::rgb(0x8E8E94),
+        accent: Color::rgb(0x4A9EFF),
+        input_background: Color::rgb(0x2C2C31),
+        panel_background: Color::rgb(0x232328),
+        hover_background: Color::rgb(0x34343A),
+        highlight_row: Color::rgb(0x2E2850),
+        text_selection: Color::rgb(0x264F78),
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -159,6 +179,12 @@ mod tests {
                 ("selected", theme.selected_text, theme.selected_row),
                 ("header", theme.primary_text, theme.header_background),
                 ("status", theme.secondary_text, theme.status_background),
+                ("input", theme.primary_text, theme.input_background),
+                ("panel", theme.primary_text, theme.panel_background),
+                ("hover", theme.primary_text, theme.hover_background),
+                ("find match", theme.primary_text, theme.highlight_row),
+                ("text selection", theme.primary_text, theme.text_selection),
+                ("menu label", theme.secondary_text, theme.panel_background),
             ] {
                 let ratio = contrast(text, background);
                 assert!(

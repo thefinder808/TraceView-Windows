@@ -23,18 +23,25 @@ crates/
     parse.rs      splits one row into fields, for every supported format
     index.rs      parallel scan into compact per-row arrays
     cache.rs      on-disk index cache
-    file.rs       an open log: row reading and following a live file
+    file.rs       an open log: row reading, and live refresh split into prepare and apply
     query.rs      search, with serializable query and result types
+    merge.rs      the merged timeline of several logs
     summary.rs    severity counts, repeated message patterns, error spikes
     examples/     gen_log (test data), evict_cache (cold-disk testing)
     tests/        robustness (random input), perf_budgets (speed limits)
   tv-ui/        toolkit base: geometry, the Canvas interface, theme tokens, input, scroll bar. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling
+  tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs
   traceview/    the EXE. No unsafe
     cli.rs        query and summarize
-    gui/          app (ties it together), log_view (grid), row_cache (background row loading),
-                  accessibility (screen reader tree), bench (scripted checks, feature-gated)
+    gui/          app (connects the window and renderer to the workspace)
+                  workspace (menus, tabs, focus, layout, input routing)
+                  tab (one log or a merged set: filter, find, details, live tail)
+                  log_view (grid), row_cache (background row loading), details (pane under the grid)
+                  search (filter syntax, and matches kept current as logs grow), watch (live tail)
+                  lookup (Error Lookup panel), accessibility (screen reader tree)
+                  snapshots (whole-window pixel tests), bench (scripted checks, feature-gated)
   d2d-probe/    an earlier grid, kept only for run-presentation-test.ps1
 fuzz/           coverage-guided fuzz targets, run on Linux in CI
 scripts/        check-perf.ps1 (engine budgets), check-gui-perf.ps1 (GUI budgets),
@@ -64,11 +71,17 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 **Severity.** Structured levels win: SCCM's `type` attribute, or a stated `ERROR:` or `[WARN]`. Otherwise whole-word keywords decide, using the same lists as the Mac app. One deliberate exception: CBS and DISM lines can be raised above their stated level, because CBS writes real failures at `Info`. Severity comes from the first 64 KiB of a message, and from at most about 1 MiB of a row while indexing.
 
-**Timestamps.** Stored as wall-clock time as the log wrote it. Time zones are read but not applied, so times only compare correctly within one zone. Formats with no year take it from the file's modified date. That matters for correlating across files, which isn't built yet.
+**Timestamps.** Stored as wall-clock time as the log wrote it. Time zones are read but not applied, so times only compare correctly within one zone. Formats with no year take it from the file's modified date. Merging relies on this, so files written in different time zones won't line up.
 
 **Filtering.** The `regex` crate runs directly on bytes, in parallel, and guarantees linear-time matching, so a bad pattern can't hang the app. Level and time filters use only the index, with no file reads. Scans can be cancelled.
 
 **Long rows.** Rows are read up to 1 MiB and results flag anything cut off, so one enormous row can't exhaust memory. Messages in results are capped at 4,096 characters.
+
+**Live tail.** A watcher thread per file checks it every 250 ms by opening it and reading its size, which also works on network shares and on files a writer holds open, where change notifications are late or missing. It reads and indexes new rows itself (`prepare_refresh`), then the UI thread puts them in place (`apply_refresh`, about 15 µs) only if it can take the write lock at once. A search holding the log just delays the update to the next check, so the window never waits. The path is reopened on each change, so SCCM's rename-and-recreate rotation shows the new file. Filters and finds then search only the changed rows, and cached rows from the change on are dropped, with a generation number so a block read before the change is never stored after it.
+
+**Merging.** A merged tab orders rows from several logs by time. A row with no time, or one earlier than the row before it, keeps its place after that row, so multi-line output and clock jumps stay together. Each merged row names its file and row, and the grid, filter, find, copy and details all work through that. When live tail changes a file, the timeline is merged again in the background.
+
+**Error codes.** Messages come from Windows at run time through `FormatMessageW`: the system table, plus message tables in `ntdll.dll`, `winhttp.dll` and `qmgr.dll`, loaded as data from full System32 paths so none of their code runs. ConfigMgr codes use `srsresources.dll` from an installed console, which is never bundled. No message text is copied into TraceView, so it's in the user's language and matches their Windows. Codes Windows has no text for, such as Windows Update's, still show their hex, signed and facility forms.
 
 **Untrusted input.** Log files can contain anything. The engine forbids `unsafe` code, cached offsets are bounds-checked so a damaged cache can only produce wrong rows, and random-input tests and fuzzing check that nothing panics. The index cache holds offsets, levels, times and the log's path, never log text, and its size is capped at 2 GiB with the oldest entries removed first.
 
@@ -98,6 +111,8 @@ traceview query app.log --regex "error 0x[0-9a-f]{8}" --min-level warning --limi
 traceview summarize app.log --top 20
 ```
 
+Filters: `--text`, `--regex`, `--case-sensitive`, `--min-level`, `--component`, `--thread`, `--from` and `--to`.
+
 Results are JSON on stdout. Errors are JSON on stderr, with exit code 1, or exit code 2 for incorrect usage. Pages are capped at 1,000 rows, and `next_offset` gives the next page. Output marks log text as untrusted (`"log_text_trust": "untrusted"`).
 
 ## Measured performance
@@ -115,9 +130,11 @@ Ryzen 9 5900X (24 threads), NVMe, 5 GiB logs with 26.9M (SCCM) and 47.8M (plain)
 | Summary | 1.2 s | 1.5 s | 5 s |
 | Read 60 visible rows, p99 | Under 0.5 ms | Under 0.5 ms | 2 ms |
 | 100 checks of an unchanged live log | 3 ms | 3 ms | 50 ms |
+| Merge two copies (10 GiB in all) | 2.2–2.4 s | 2.3–2.8 s | 0.5 s per GiB |
+| Put a live refresh in place | 0.015 ms | | Not enforced |
 | Index memory | 257 MB | 456 MB | 10 bytes per row |
 
-The CLI EXE is 1.9 MB and needs only DLLs that ship with Windows. A cold open can't beat the disk's read speed, so slower drives will take longer.
+The EXE, CLI and GUI together, is 2.6 MB and needs only DLLs that ship with Windows. A cold open can't beat the disk's read speed, so slower drives will take longer.
 
 ## Decisions
 
@@ -190,8 +207,8 @@ The goal is one engine with several front ends in the same EXE:
 
 ## Open questions
 
-- **The GUI** is designed in [GUI-DESIGN.md](GUI-DESIGN.md), including how one EXE can serve both the CLI and GUI, and what triggers `refresh`.
+- **The GUI** is designed in [GUI-DESIGN.md](GUI-DESIGN.md), including how one EXE serves both the CLI and GUI.
 - **A real no-GPU VM and slow RDP links** are still untested.
-- **Error-code database.** The Mac app's is built around macOS domains. Windows needs HRESULT, Win32, NTSTATUS and SCCM codes.
-- **Time zones,** which correlating across files will need.
+- **ConfigMgr and Windows Update error text.** Windows has none for Windows Update codes, and ConfigMgr's needs a console installed, which hasn't been tested.
+- **Time zones,** which merging files from different zones will need.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.

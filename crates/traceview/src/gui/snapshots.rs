@@ -1,0 +1,323 @@
+//! Draws the whole window with the real renderer, offscreen, and checks the
+//! pixels. Set `TV_SNAPSHOT_DIR` to also save each frame as a PNG to look at.
+
+use super::app::fonts_for;
+use super::log_view::RowSource;
+use super::workspace::{ThemeChoice, Workspace};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tv_platform::{Commands, Waker};
+use tv_render::Renderer;
+use tv_ui::recording::RecordingCanvas;
+use tv_ui::{Color, Event, Key, Modifiers, Rect};
+
+const NONE: Modifiers = Modifiers {
+    ctrl: false,
+    shift: false,
+    alt: false,
+};
+const CTRL: Modifiers = Modifiers {
+    ctrl: true,
+    shift: false,
+    alt: false,
+};
+const ALT: Modifiers = Modifiers {
+    ctrl: false,
+    shift: false,
+    alt: true,
+};
+
+fn sample_log(dir: &tempfile::TempDir) -> PathBuf {
+    let messages = [
+        (1, "Connected to management point mp01.contoso.com"),
+        (1, "Sending state message body to the management point"),
+        (3, "Failed to download policy from mp01 - error 0x80004005"),
+        (2, "Retrying policy download in 15 minutes"),
+        (1, "Software update scan completed, 3 updates applicable"),
+        (3, "Content download failed for KB5034441: hash mismatch"),
+        (1, "Client certificate validation succeeded"),
+    ];
+    let mut text = String::new();
+    for row in 0..2000 {
+        let (kind, message) = messages[row % messages.len()];
+        text.push_str(&format!(
+            "<![LOG[{message}]LOG]!><time=\"10:{:02}:{:02}.{:03}+000\" date=\"04-06-2026\" component=\"PolicyAgent\" context=\"\" type=\"{kind}\" thread=\"4128\" file=\"a.cpp\">\r\n",
+            row / 60 % 60,
+            row % 60,
+            row % 1000
+        ));
+    }
+    let path = dir.path().join("PolicyAgent.log");
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+struct Frame {
+    pixels: Vec<u8>,
+    width: u32,
+    scale: f32,
+}
+
+impl Frame {
+    fn at(&self, x: f32, y: f32) -> Color {
+        let at = (((y * self.scale) as u32 * self.width + (x * self.scale) as u32) * 4) as usize;
+        Color {
+            r: self.pixels[at],
+            g: self.pixels[at + 1],
+            b: self.pixels[at + 2],
+        }
+    }
+
+    /// The colour just inside a row's right edge, clear of its text.
+    fn row_color(&self, workspace: &Workspace, row: usize) -> Color {
+        let rect = workspace.active_tab().unwrap().view.row_rect(row);
+        self.at(rect.right - 30.0, rect.top + rect.height() / 2.0)
+    }
+
+    fn has_ink(&self, rect: Rect, background: Color) -> bool {
+        let mut y = rect.top;
+        while y < rect.bottom {
+            let mut x = rect.left;
+            while x < rect.right {
+                if self.at(x, y) != background {
+                    return true;
+                }
+                x += 0.5;
+            }
+            y += 0.5;
+        }
+        false
+    }
+}
+
+fn save(name: &str, frame: &Frame, height: u32) {
+    let Some(dir) = std::env::var_os("TV_SNAPSHOT_DIR") else {
+        return;
+    };
+    let path = PathBuf::from(dir).join(format!("{name}.png"));
+    let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut encoder = png::Encoder::new(file, frame.width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&frame.pixels).unwrap();
+    writer.finish().unwrap();
+}
+
+fn send(workspace: &mut Workspace, event: Event) {
+    workspace.event(event, &mut RecordingCanvas::new(), &mut Commands::default());
+}
+
+/// Draws frames the way the window would until the visible rows and the
+/// details pane have loaded and `done` holds, then keeps the last frame.
+fn render(
+    workspace: &mut Workspace,
+    name: &str,
+    dpi: f32,
+    done: impl Fn(&Workspace) -> bool,
+) -> Frame {
+    let scale = dpi / 96.0;
+    let (width, height) = ((1200.0 * scale) as u32, (640.0 * scale) as u32);
+    let mut renderer = Renderer::offscreen(width, height, dpi).unwrap();
+    renderer.set_fonts(fonts_for(workspace.theme()));
+    let size = renderer.logical_size();
+    let started = Instant::now();
+    loop {
+        let mut commands = Commands::default();
+        workspace.woken(&mut commands);
+        renderer.begin();
+        workspace.draw(&mut renderer, size, scale, &mut commands);
+        renderer.end().unwrap();
+        let loaded = workspace.active_tab().is_none_or(|tab| {
+            let rows_ready = tab
+                .rows()
+                .is_some_and(|rows| tab.view.visible_rows().all(|row| rows.cells(row).is_some()));
+            let details_ready = tab.cursor_file_row().is_none() || tab.details.shown().is_some();
+            rows_ready && details_ready
+        });
+        if loaded && done(workspace) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{name}: never finished loading"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let frame = Frame {
+        pixels: renderer.rgba_pixels().unwrap(),
+        width,
+        scale,
+    };
+    save(name, &frame, height);
+    frame
+}
+
+fn opened(theme: ThemeChoice) -> (tempfile::TempDir, Workspace) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = sample_log(&dir);
+    let mut workspace = Workspace::new(Waker::detached(), 0, false);
+    workspace.theme_choice = theme;
+    workspace.open_paths(vec![path]);
+    // The checks look at the first rows, so stay at the top rather than following.
+    workspace.tabs[0].following = false;
+    (dir, workspace)
+}
+
+fn check_theme(choice: ThemeChoice, name: &str, dpi: f32) {
+    let (_dir, mut workspace) = opened(choice);
+    // Select once the file is open, so there's a selected row to check.
+    render(&mut workspace, name, dpi, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.tabs[0].select_file_row(9);
+    let frame = render(&mut workspace, name, dpi, |_| true);
+    let theme = workspace.theme();
+
+    assert_eq!(
+        frame.row_color(&workspace, 2),
+        theme.error_row,
+        "{name}: error row"
+    );
+    assert_eq!(
+        frame.row_color(&workspace, 3),
+        theme.warning_row,
+        "{name}: warning row"
+    );
+    assert_eq!(
+        frame.row_color(&workspace, 9),
+        theme.selected_row,
+        "{name}: selected row"
+    );
+
+    let first = workspace.tabs[0].view.row_rect(0);
+    let message = Rect::new(
+        first.left + 340.0,
+        first.top,
+        first.left + 640.0,
+        first.bottom,
+    );
+    assert!(
+        frame.has_ink(message, theme.grid_background),
+        "{name}: the first row's text didn't draw"
+    );
+    let menu_bar = Rect::new(0.0, 0.0, 200.0, 24.0);
+    assert!(
+        frame.has_ink(menu_bar, frame.at(199.0, 2.0)),
+        "{name}: the menu titles didn't draw"
+    );
+    let filter = workspace.filter_rect();
+    assert_eq!(
+        frame.at(filter.right - 4.0, filter.top + filter.height() / 2.0),
+        theme.input_background
+    );
+}
+
+#[test]
+fn classic_theme_renders_correctly() {
+    check_theme(ThemeChoice::Classic, "classic-100", 96.0);
+}
+
+#[test]
+fn console_theme_renders_correctly() {
+    check_theme(ThemeChoice::Console, "console-100", 96.0);
+}
+
+#[test]
+fn fractional_display_scale_renders_correctly() {
+    check_theme(ThemeChoice::Classic, "classic-125", 120.0);
+}
+
+#[test]
+fn high_density_display_renders_correctly() {
+    check_theme(ThemeChoice::Console, "console-200", 192.0);
+}
+
+#[test]
+fn find_matches_are_highlighted() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Classic);
+    render(&mut workspace, "find", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+    for character in "hash mismatch".chars() {
+        send(&mut workspace, Event::Char(character));
+    }
+    send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+    let frame = render(&mut workspace, "find", 96.0, |workspace| {
+        workspace.tabs[0].cursor_file_row().is_some()
+    });
+    let theme = workspace.theme();
+    // The first match is selected; the next one is highlighted over its error colour.
+    assert_eq!(workspace.tabs[0].cursor_file_row(), Some(5));
+    assert_eq!(frame.row_color(&workspace, 12), theme.highlight_row);
+    assert_eq!(frame.row_color(&workspace, 2), theme.error_row);
+}
+
+#[test]
+fn an_open_menu_draws_over_the_grid() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Console);
+    render(&mut workspace, "menu", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('F'), ALT));
+    let frame = render(&mut workspace, "menu", 96.0, |_| true);
+    let theme = workspace.theme();
+    let highlighted = workspace.menu().item_rect(0).unwrap();
+    let plain = workspace.menu().item_rect(1).unwrap();
+    assert_eq!(
+        frame.at(highlighted.left + 3.0, highlighted.top + 3.0),
+        theme.hover_background
+    );
+    assert_eq!(
+        frame.at(plain.left + 3.0, plain.top + 3.0),
+        theme.panel_background
+    );
+}
+
+#[test]
+fn welcome_screen_shows_with_no_log() {
+    let mut workspace = Workspace::new(Waker::detached(), 0, false);
+    workspace.theme_choice = ThemeChoice::Classic;
+    let frame = render(&mut workspace, "welcome", 96.0, |_| true);
+    let grid = workspace.grid_rect();
+    let welcome = Rect::new(grid.left, grid.top, grid.left + 400.0, grid.top + 60.0);
+    assert!(frame.has_ink(welcome, workspace.theme().window_background));
+}
+
+#[test]
+fn error_lookup_explains_the_selected_rows_code() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Classic);
+    render(&mut workspace, "lookup", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.tabs[0].select_file_row(2);
+    render(&mut workspace, "lookup", 96.0, |workspace| {
+        workspace.tabs[0].details.shown().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('L'), CTRL));
+    let frame = render(&mut workspace, "lookup", 96.0, |workspace| {
+        workspace
+            .lookup
+            .as_ref()
+            .is_some_and(|panel| !panel.result().is_empty())
+    });
+    let theme = workspace.theme();
+    let panel = workspace.lookup.as_ref().unwrap();
+    assert!(panel.result().starts_with("HRESULT 0x80004005"));
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let result = Rect::new(
+        rect.left + 14.0,
+        panel.field_rect().bottom + 10.0,
+        rect.right - 14.0,
+        panel.field_rect().bottom + 40.0,
+    );
+    assert!(
+        frame.has_ink(result, theme.panel_background),
+        "the result didn't draw"
+    );
+}

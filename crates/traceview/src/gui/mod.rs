@@ -1,12 +1,21 @@
-//! The viewer. Logic lives in `log_view` and `row_cache`, which need no window,
-//! so most of it can be tested without a display.
+//! The viewer. Almost everything lives in `workspace` and the modules under it,
+//! which need no window, so most of it can be tested without a display. `app`
+//! only connects the workspace to the window and renderer.
 
 mod accessibility;
 mod app;
 #[cfg(feature = "bench")]
 mod bench;
+mod details;
 mod log_view;
+mod lookup;
 mod row_cache;
+mod search;
+#[cfg(test)]
+mod snapshots;
+mod tab;
+mod watch;
+mod workspace;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

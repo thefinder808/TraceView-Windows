@@ -7,8 +7,11 @@
 pub mod canvas;
 pub mod geometry;
 pub mod input;
+pub mod menu;
 pub mod recording;
 pub mod scrollbar;
+pub mod tab_bar;
+pub mod text_field;
 pub mod theme;
 
 pub use canvas::{Align, Canvas, FontRole, TextStyle};

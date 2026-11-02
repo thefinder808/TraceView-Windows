@@ -11,6 +11,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub const DEFAULT_LIMIT: usize = 100;
@@ -28,6 +29,9 @@ pub struct Query {
     pub min_level: Option<Level>,
     /// An exact component name, in any case.
     pub component: Option<String>,
+    /// An exact thread, in any case. SCCM logs write thread IDs, while some
+    /// other formats write names.
+    pub thread: Option<String>,
     /// Inclusive start, as `YYYY-MM-DD` or a full timestamp.
     pub from: Option<String>,
     /// Inclusive end. A bare date means the end of that day.
@@ -122,8 +126,14 @@ pub struct Matcher {
     pattern: Option<Regex>,
     min_level: Option<Level>,
     component: Option<Vec<u8>>,
+    thread: Option<Vec<u8>>,
     from: Option<u32>,
     to: Option<u32>,
+}
+
+/// Passes when there's no filter, or when the field equals it in any case.
+fn field_matches(wanted: Option<&[u8]>, found: &[u8]) -> bool {
+    wanted.is_none_or(|wanted| found.eq_ignore_ascii_case(wanted))
 }
 
 fn parse_bound(text: &str, end_of_day: bool) -> Result<u32, QueryError> {
@@ -162,6 +172,10 @@ impl Matcher {
                 .component
                 .as_ref()
                 .map(|name| name.as_bytes().to_vec()),
+            thread: query
+                .thread
+                .as_ref()
+                .map(|thread| thread.as_bytes().to_vec()),
             from: query
                 .from
                 .as_deref()
@@ -176,7 +190,11 @@ impl Matcher {
     }
 
     fn needs_row_text(&self) -> bool {
-        self.pattern.is_some() || self.component.is_some()
+        self.pattern.is_some() || self.needs_fields()
+    }
+
+    fn needs_fields(&self) -> bool {
+        self.component.is_some() || self.thread.is_some()
     }
 
     /// Checks everything answerable from the index, without reading the file.
@@ -196,8 +214,12 @@ impl Matcher {
     }
 
     fn passes_text(&self, log: &LogFile, text: &[u8]) -> bool {
-        if let Some(component) = &self.component {
-            if !log.fields(text).component.eq_ignore_ascii_case(component) {
+        // Split the row into fields once, and only if a field filter needs them.
+        if self.needs_fields() {
+            let fields = log.fields(text);
+            if !field_matches(self.component.as_deref(), fields.component)
+                || !field_matches(self.thread.as_deref(), fields.thread)
+            {
                 return false;
             }
         }
@@ -213,8 +235,21 @@ pub fn matching_rows(
     matcher: &Matcher,
     control: &Control,
 ) -> Result<Vec<u32>, QueryError> {
-    let rows = log.rows();
-    let parts: Vec<Vec<u32>> = (0..rows.div_ceil(ROWS_PER_TASK))
+    matching_rows_in(log, matcher, 0..log.rows(), control)
+}
+
+/// Finds the matching rows within `rows`, in file order, using all cores. Live
+/// tail uses this to filter only the rows a refresh added. The range is
+/// clamped to the rows the log has.
+pub fn matching_rows_in(
+    log: &LogFile,
+    matcher: &Matcher,
+    rows: Range<usize>,
+    control: &Control,
+) -> Result<Vec<u32>, QueryError> {
+    let end = rows.end.min(log.rows());
+    let rows = rows.start.min(end)..end;
+    let parts: Vec<Vec<u32>> = (0..rows.len().div_ceil(ROWS_PER_TASK))
         .into_par_iter()
         .map_init(
             || (Vec::new(), Vec::new()),
@@ -222,8 +257,8 @@ pub fn matching_rows(
                 if control.cancel.load(Ordering::Relaxed) {
                     return Err(QueryError::Cancelled);
                 }
-                let start = task * ROWS_PER_TASK;
-                let end = (start + ROWS_PER_TASK).min(rows);
+                let start = rows.start + task * ROWS_PER_TASK;
+                let end = (start + ROWS_PER_TASK).min(rows.end);
                 let mut matched = Vec::new();
                 if matcher.needs_row_text() {
                     // Skip the read when the index already rules out the whole task.
@@ -415,6 +450,68 @@ mod tests {
     }
 
     #[test]
+    fn filters_by_thread_in_any_case() {
+        let entry = |thread: &str| {
+            format!("<![LOG[hello]LOG]!><time=\"10:00:00.000+000\" date=\"01-01-2026\" component=\"App\" context=\"\" type=\"1\" thread=\"{thread}\" file=\"a.cpp\">\r\n")
+        };
+        let (_dir, log) = open(&[entry("12"), entry("Main"), entry("123")].concat());
+        let thread = |name: &str| Query {
+            thread: Some(name.to_string()),
+            ..Query::default()
+        };
+        assert_eq!(matched(&log, thread("12")), vec![1]);
+        assert_eq!(matched(&log, thread("MAIN")), vec![2]);
+        let both = Query {
+            component: Some("app".to_string()),
+            ..thread("123")
+        };
+        assert_eq!(matched(&log, both), vec![3]);
+        let wrong_component = Query {
+            component: Some("other".to_string()),
+            ..thread("123")
+        };
+        assert!(matched(&log, wrong_component).is_empty());
+    }
+
+    #[test]
+    fn matching_within_a_range_keeps_order_and_clamps() {
+        let text: String = (0..200_000).map(|n| format!("row {n}\n")).collect();
+        let (_dir, log) = open(&text);
+        let matcher = Matcher::new(&Query {
+            text: Some(r"row \d*7$".to_string()),
+            regex: true,
+            ..Query::default()
+        })
+        .unwrap();
+        let control = Control::default();
+        let everything = matching_rows(&log, &matcher, &control).unwrap();
+        let range = 70_001..150_000;
+        let expected: Vec<u32> = everything
+            .iter()
+            .copied()
+            .filter(|row| range.contains(&(*row as usize)))
+            .collect();
+        assert_eq!(
+            matching_rows_in(&log, &matcher, range, &control).unwrap(),
+            expected
+        );
+        assert_eq!(
+            matching_rows_in(&log, &matcher, 199_990..1_000_000, &control).unwrap(),
+            vec![199_997]
+        );
+        assert!(matching_rows_in(&log, &matcher, 500_000..600_000, &control)
+            .unwrap()
+            .is_empty());
+        let backwards = Range {
+            start: 100,
+            end: 50,
+        };
+        assert!(matching_rows_in(&log, &matcher, backwards, &control)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn filters_by_time_and_a_bare_end_date_covers_that_day() {
         let (_dir, log) =
             open("2026-01-01 10:00:00 a\n2026-01-02 23:30:00 b\n2026-01-03 00:00:00 c\nno time\n");
@@ -571,9 +668,11 @@ mod tests {
         let query = Query {
             text: Some("x".to_string()),
             min_level: Some(Level::Warning),
+            thread: Some("5240".to_string()),
             ..Query::default()
         };
         let json = serde_json::to_string(&query).unwrap();
+        assert!(json.contains(r#""thread":"5240""#));
         assert_eq!(serde_json::from_str::<Query>(&json).unwrap(), query);
         assert!(serde_json::from_str::<Query>(r#"{"unknown": 1}"#).is_err());
         assert_eq!(

@@ -39,4 +39,8 @@ pub trait Canvas {
     fn pop_clip(&mut self);
     /// The width of one character in a fixed-width font, for sizing columns.
     fn char_width(&mut self, font: FontRole) -> f32;
+    /// How wide `text` draws on one line, for placing a caret or fitting a label.
+    fn text_width(&mut self, text: &str, font: FontRole) -> f32;
+    /// Draws text wrapped to `rect`'s width, from its top, clipped to it.
+    fn text_block(&mut self, text: &str, rect: Rect, font: FontRole, color: Color);
 }

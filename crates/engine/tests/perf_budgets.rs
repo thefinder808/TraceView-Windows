@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use tv_engine::query::{self, Query};
-use tv_engine::{summary, CacheUse, Control, LogFile};
+use tv_engine::{merge, summary, CacheUse, Control, LogFile};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -132,6 +132,24 @@ fn reading_visible_rows_fits_in_a_frame() {
     samples.sort();
     let p99 = samples[samples.len() * 99 / 100];
     check("60 visible rows, p99", p99, 0.002);
+}
+
+/// Merging reads every row of every log for its milliseconds, so the limit
+/// scales with the bytes read: two copies of the log.
+#[test]
+#[ignore = "needs TV_PERF_LOG and a release build"]
+fn merging_the_log_with_itself_stays_under_half_a_second_per_gibibyte_read() {
+    let (log, _) = open_uncached();
+    let started = Instant::now();
+    let merged = merge::merge_order(&[&log, &log], &Control::default()).unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(merged.len(), 2 * log.rows());
+    println!(
+        "merge: {} rows, result {} MB",
+        merged.len(),
+        merged.len() * std::mem::size_of::<merge::MergedRow>() / 1_000_000
+    );
+    check("merge with itself", elapsed, 0.5 * 2.0 * gibibytes());
 }
 
 #[test]

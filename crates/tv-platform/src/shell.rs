@@ -11,15 +11,17 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    DragFinish, DragQueryFileW, FileOpenDialog, IFileOpenDialog, FOS_FILEMUSTEXIST,
-    FOS_FORCEFILESYSTEM, HDROP, SIGDN_FILESYSPATH,
+    DragFinish, DragQueryFileW, FileOpenDialog, IFileOpenDialog, FOS_ALLOWMULTISELECT,
+    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, HDROP, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
@@ -81,9 +83,14 @@ pub(crate) fn set_caption_colors(hwnd: HWND, background: Color, text: Color, dar
     }
 }
 
-/// Shows the open dialog, and returns the chosen file. `.lo_` is how SCCM names
-/// rotated logs. Must run on the window's thread, with no state borrowed.
-pub(crate) fn choose_file(hwnd: HWND) -> Option<PathBuf> {
+/// Shows the open dialog, and returns the chosen files, of which there can be
+/// several. `.lo_` is how SCCM names rotated logs. Must run on the window's
+/// thread, with no state borrowed.
+pub(crate) fn choose_files(hwnd: HWND) -> Vec<PathBuf> {
+    choose(hwnd).unwrap_or_default()
+}
+
+fn choose(hwnd: HWND) -> Option<Vec<PathBuf>> {
     // SAFETY: COM was initialized on this thread by `run`. All pointers are live
     // for their call, and the returned path is freed after being copied.
     unsafe {
@@ -102,14 +109,21 @@ pub(crate) fn choose_file(hwnd: HWND) -> Option<PathBuf> {
         dialog.SetFileTypes(&filters).ok()?;
         let options = dialog.GetOptions().ok()?;
         dialog
-            .SetOptions(options | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)
+            .SetOptions(options | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_ALLOWMULTISELECT)
             .ok()?;
-        dialog.SetTitle(&HSTRING::from("Open log file")).ok()?;
+        dialog.SetTitle(&HSTRING::from("Open logs")).ok()?;
         dialog.Show(Some(hwnd)).ok()?;
-        let item = dialog.GetResult().ok()?;
-        let path: PWSTR = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-        let chosen = wide_to_path(path.as_wide());
-        CoTaskMemFree(Some(path.0.cast()));
+        let items = dialog.GetResults().ok()?;
+        let mut chosen = Vec::new();
+        for index in 0..items.GetCount().ok()? {
+            let path: PWSTR = items
+                .GetItemAt(index)
+                .ok()?
+                .GetDisplayName(SIGDN_FILESYSPATH)
+                .ok()?;
+            chosen.push(wide_to_path(path.as_wide()));
+            CoTaskMemFree(Some(path.0.cast()));
+        }
         Some(chosen)
     }
 }
@@ -133,6 +147,31 @@ pub(crate) fn dropped_files(drop: HDROP) -> Vec<PathBuf> {
         }
         DragFinish(drop);
         paths
+    }
+}
+
+/// Reads text from the clipboard, if it holds any.
+pub fn clipboard_text(hwnd: isize) -> Option<String> {
+    // SAFETY: the clipboard is opened and closed here. The data is only read
+    // while locked, and never past the size Windows reports for it.
+    unsafe {
+        OpenClipboard(Some(HWND(hwnd as *mut _))).ok()?;
+        let text = (|| {
+            let handle = GetClipboardData(u32::from(CF_UNICODETEXT.0)).ok()?;
+            let memory = HGLOBAL(handle.0);
+            let locked = GlobalLock(memory).cast::<u16>();
+            if locked.is_null() {
+                return None;
+            }
+            let capacity = GlobalSize(memory) / 2;
+            let units = std::slice::from_raw_parts(locked, capacity);
+            let length = units.iter().position(|unit| *unit == 0).unwrap_or(capacity);
+            let text = String::from_utf16_lossy(&units[..length]);
+            let _ = GlobalUnlock(memory);
+            Some(text)
+        })();
+        let _ = CloseClipboard();
+        text
     }
 }
 

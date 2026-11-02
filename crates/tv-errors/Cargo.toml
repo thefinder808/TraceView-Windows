@@ -1,0 +1,20 @@
+[package]
+name = "tv-errors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex = "1"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+]
+
+[dev-dependencies]
+proptest = "1"

@@ -3,9 +3,8 @@
 //! scrolling can't stall, even on a slow disk or network share.
 
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tv_engine::time::Stamp;
 use tv_engine::{encoding, LogFile};
 
@@ -46,6 +45,10 @@ pub fn cells_from_row(log: &LogFile, raw: &[u8], scratch: &mut Vec<u8>) -> RowCe
     }
 }
 
+/// A log shared between the UI and background threads. Readers never block
+/// each other, and live tail takes the write lock only briefly to add rows.
+pub type SharedLog = Arc<RwLock<LogFile>>;
+
 /// One block of loaded rows.
 type Block = Arc<[Arc<RowCells>]>;
 
@@ -53,6 +56,9 @@ type Block = Arc<[Arc<RowCells>]>;
 struct Blocks {
     entries: HashMap<usize, (u64, Block)>,
     clock: u64,
+    /// Goes up with each invalidation, so a block read before one is thrown
+    /// away rather than stored.
+    generation: u64,
 }
 
 impl Blocks {
@@ -74,14 +80,14 @@ impl Blocks {
 
 pub struct RowCache {
     blocks: Arc<Mutex<Blocks>>,
-    requests: Sender<Range<usize>>,
-    last_request: Option<Range<usize>>,
+    requests: Sender<Vec<usize>>,
+    last_request: Vec<usize>,
 }
 
 impl RowCache {
     /// Starts the loader. `wake` runs on the loader's thread whenever new rows
     /// are ready. The thread ends when the cache is dropped.
-    pub fn new(log: Arc<LogFile>, wake: impl Fn() + Send + 'static) -> Self {
+    pub fn new(log: SharedLog, wake: impl Fn() + Send + 'static) -> Self {
         let blocks = Arc::new(Mutex::new(Blocks::default()));
         let (requests, incoming) = channel();
         let shared = blocks.clone();
@@ -89,7 +95,7 @@ impl RowCache {
         Self {
             blocks,
             requests,
-            last_request: None,
+            last_request: Vec::new(),
         }
     }
 
@@ -103,24 +109,35 @@ impl RowCache {
         entry.1.get(row % ROWS_PER_BLOCK).cloned()
     }
 
-    /// Says which rows are on screen. The loader fetches them, then the rows
-    /// around them, so ordinary scrolling usually finds the next rows ready.
-    pub fn request(&mut self, rows: Range<usize>) {
-        if self.last_request.as_ref() != Some(&rows) {
-            self.last_request = Some(rows.clone());
-            let _ = self.requests.send(rows);
+    /// Forgets rows from `row` onward, because live tail changed them. Pass 0
+    /// after the file was replaced.
+    pub fn invalidate_from(&mut self, row: usize) {
+        if let Ok(mut blocks) = self.blocks.lock() {
+            let first = row / ROWS_PER_BLOCK;
+            blocks.generation += 1;
+            blocks.entries.retain(|block, _| *block < first);
+        }
+        self.last_request.clear();
+    }
+
+    /// Says which rows are on screen, by their numbers in the file. They can be
+    /// scattered when a filter is on, so only their blocks are loaded. When they
+    /// sit together, the loader also fetches the rows around them, so ordinary
+    /// scrolling usually finds the next rows ready.
+    pub fn request(&mut self, rows: impl IntoIterator<Item = usize>) {
+        let mut blocks: Vec<usize> = rows.into_iter().map(|row| row / ROWS_PER_BLOCK).collect();
+        blocks.dedup();
+        if blocks != self.last_request {
+            self.last_request.clone_from(&blocks);
+            let _ = self.requests.send(blocks);
         }
     }
 }
 
-fn block_range(rows: &Range<usize>) -> Range<usize> {
-    rows.start / ROWS_PER_BLOCK..rows.end.div_ceil(ROWS_PER_BLOCK)
-}
-
 fn newest_request(
-    incoming: &Receiver<Range<usize>>,
-    mut current: Option<Range<usize>>,
-) -> Result<Option<Range<usize>>, ()> {
+    incoming: &Receiver<Vec<usize>>,
+    mut current: Option<Vec<usize>>,
+) -> Result<Option<Vec<usize>>, ()> {
     loop {
         match incoming.try_recv() {
             Ok(newer) => current = Some(newer),
@@ -147,29 +164,44 @@ fn read_block(
 }
 
 fn load_rows(
-    log: &LogFile,
-    incoming: &Receiver<Range<usize>>,
+    log: &RwLock<LogFile>,
+    incoming: &Receiver<Vec<usize>>,
     blocks: &Mutex<Blocks>,
     wake: impl Fn(),
 ) {
     let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
     while let Ok(first) = incoming.recv() {
         let mut request = Some(first);
-        while let Some(rows) = request.take() {
-            let visible = block_range(&rows);
-            let span = visible.len();
-            let ahead = visible.end..(visible.end + span).min(log.rows().div_ceil(ROWS_PER_BLOCK));
-            let behind = visible.start.saturating_sub(span)..visible.start;
+        while let Some(visible) = request.take() {
+            let (Some(&first), Some(&last)) = (visible.first(), visible.last()) else {
+                continue;
+            };
+            let contiguous = last + 1 - first == visible.len();
+            let span = if contiguous { visible.len() } else { 0 };
+            let total_blocks = log
+                .read()
+                .map_or(0, |log| log.rows().div_ceil(ROWS_PER_BLOCK));
+            let ahead = (last + 1)..(last + 1 + span).min(total_blocks);
+            let behind = first.saturating_sub(span)..first;
             let mut superseded = false;
-            for block in visible.clone().chain(ahead).chain(behind) {
+            for block in visible.iter().copied().chain(ahead).chain(behind) {
                 let present = blocks
                     .lock()
                     .map(|blocks| blocks.entries.contains_key(&block))
                     .unwrap_or(true);
                 if !present {
-                    if let Some(loaded) = read_block(log, block, &mut buffer, &mut scratch) {
+                    // The generation is read under the log's lock, so a refresh can't slip
+                    // between it and the read.
+                    let loaded = log.read().ok().and_then(|log| {
+                        let generation = blocks.lock().map_or(0, |blocks| blocks.generation);
+                        read_block(&log, block, &mut buffer, &mut scratch)
+                            .map(|rows| (generation, rows))
+                    });
+                    if let Some((generation, loaded)) = loaded {
                         if let Ok(mut blocks) = blocks.lock() {
-                            blocks.insert(block, loaded);
+                            if blocks.generation == generation {
+                                blocks.insert(block, loaded);
+                            }
                         }
                         if visible.contains(&block) {
                             wake();
@@ -200,12 +232,12 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    fn open(text: &str) -> (tempfile::TempDir, Arc<LogFile>) {
+    fn open(text: &str) -> (tempfile::TempDir, SharedLog) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.log");
         std::fs::write(&path, text).unwrap();
         let (log, _) = LogFile::open_with_cache(&path, None, &AtomicU64::new(0)).unwrap();
-        (dir, Arc::new(log))
+        (dir, Arc::new(RwLock::new(log)))
     }
 
     fn wait_for(cache: &RowCache, row: usize) -> Arc<RowCells> {
@@ -278,7 +310,7 @@ mod tests {
         let path = dir.path().join("a.log");
         std::fs::write(&path, b"caf\xE9 opened\n").unwrap();
         let (log, _) = LogFile::open_with_cache(&path, None, &AtomicU64::new(0)).unwrap();
-        let mut cache = RowCache::new(Arc::new(log), || {});
+        let mut cache = RowCache::new(Arc::new(RwLock::new(log)), || {});
         cache.request(0..1);
         assert_eq!(wait_for(&cache, 0).message, "caf\u{e9} opened");
     }
@@ -300,7 +332,40 @@ mod tests {
         let mut cache = RowCache::new(log, || {});
         cache.request(0..2);
         cache.request(0..2);
-        assert_eq!(cache.last_request, Some(0..2));
+        assert_eq!(cache.last_request, vec![0]);
+    }
+
+    #[test]
+    fn scattered_rows_load_only_their_blocks() {
+        let text: String = (0..2000)
+            .map(|n| {
+                format!(
+                    "row {n}
+"
+                )
+            })
+            .collect();
+        let (_dir, log) = open(&text);
+        let mut cache = RowCache::new(log, || {});
+        cache.request([5, 1500]);
+        assert_eq!(wait_for(&cache, 1500).message, "row 1500");
+        assert_eq!(wait_for(&cache, 5).message, "row 5");
+    }
+
+    #[test]
+    fn invalidated_rows_are_read_again() {
+        let (_dir, log) = open(
+            "a
+b
+",
+        );
+        let mut cache = RowCache::new(log.clone(), || {});
+        cache.request(0..2);
+        assert_eq!(wait_for(&cache, 1).message, "b");
+        cache.invalidate_from(0);
+        assert!(cache.get(1).is_none());
+        cache.request(0..2);
+        assert_eq!(wait_for(&cache, 1).message, "b");
     }
 
     #[test]

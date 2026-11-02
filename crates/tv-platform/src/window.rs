@@ -18,6 +18,11 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTS
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use windows::Win32::UI::Input::Ime::{
+    ImmAssociateContextEx, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+    ImmSetCompositionWindow, CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM, HIMC,
+    IACE_DEFAULT,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragAcceptFiles, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -25,11 +30,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, GetMessageW, GetWindowLongPtrW, LoadCursorW, PostMessageW, PostQuitMessage,
     RegisterClassW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
     CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_APP, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED,
-    WM_DROPFILES, WM_ERASEBKGND, WM_GETOBJECT, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WNDCLASSW,
-    WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
+    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
+    WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND, WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS,
+    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES,
+    WS_OVERLAPPEDWINDOW,
 };
 
 const WM_WAKE: u32 = WM_APP + 1;
@@ -62,6 +68,11 @@ pub enum Command {
         text: Color,
         dark: bool,
     },
+    /// Where an IME should show text being composed, in device-independent pixels.
+    SetImePosition(Point),
+    /// IMEs are turned on only while a text field has focus, so they can't intercept
+    /// keys meant for the grid.
+    SetImeEnabled(bool),
     Close,
 }
 
@@ -109,6 +120,10 @@ struct State {
     actions: Receiver<ActionRequest>,
     wake_pending: Arc<AtomicBool>,
     scale: Cell<f32>,
+    /// The first half of a character outside the basic plane, waiting for its pair.
+    high_surrogate: Cell<Option<u16>>,
+    /// Where an IME should show its composition, in device-independent pixels.
+    ime_position: Cell<Point>,
 }
 
 /// Runs on UI Automation's threads, so it only queues requests for the UI thread.
@@ -217,9 +232,10 @@ impl State {
                     let _ = unsafe { InvalidateRect(Some(self.hwnd.get()), None, false) };
                 }
                 Command::OpenFileDialog => {
-                    if let Some(path) = shell::choose_file(self.hwnd.get()) {
+                    let paths = shell::choose_files(self.hwnd.get());
+                    if !paths.is_empty() {
                         self.with_handler(|handler, commands| {
-                            handler.files_chosen(vec![path], commands);
+                            handler.files_chosen(paths, commands);
                         });
                     }
                 }
@@ -233,6 +249,18 @@ impl State {
                     text,
                     dark,
                 } => shell::set_caption_colors(self.hwnd.get(), background, text, dark),
+                Command::SetImePosition(point) => self.ime_position.set(point),
+                Command::SetImeEnabled(enabled) => {
+                    // SAFETY: the handle is this window's. A null context turns the
+                    // IME off for it, and IACE_DEFAULT restores the default one.
+                    let _ = unsafe {
+                        if enabled {
+                            ImmAssociateContextEx(self.hwnd.get(), HIMC::default(), IACE_DEFAULT)
+                        } else {
+                            ImmAssociateContextEx(self.hwnd.get(), HIMC::default(), 0)
+                        }
+                    };
+                }
                 Command::Close => {
                     // SAFETY: the handle is this window's.
                     let _ = unsafe { DestroyWindow(self.hwnd.get()) };
@@ -242,6 +270,39 @@ impl State {
         }
         if accessibility_changed {
             self.update_accessibility();
+        }
+    }
+
+    /// Puts the IME's composition and candidate windows at the text field's caret.
+    fn place_ime_windows(&self) {
+        let scale = self.scale.get();
+        let position = self.ime_position.get();
+        let point = windows::Win32::Foundation::POINT {
+            x: (position.x * scale) as i32,
+            y: (position.y * scale) as i32,
+        };
+        let hwnd = self.hwnd.get();
+        // SAFETY: the handle is this window's, the forms are locals, and the
+        // context is released after use.
+        unsafe {
+            let context = ImmGetContext(hwnd);
+            if context.is_invalid() {
+                return;
+            }
+            let composition = COMPOSITIONFORM {
+                dwStyle: CFS_POINT,
+                ptCurrentPos: point,
+                ..Default::default()
+            };
+            let _ = ImmSetCompositionWindow(context, &composition);
+            let candidate = CANDIDATEFORM {
+                dwIndex: 0,
+                dwStyle: CFS_CANDIDATEPOS,
+                ptCurrentPos: point,
+                ..Default::default()
+            };
+            let _ = ImmSetCandidateWindow(context, &candidate);
+            let _ = ImmReleaseContext(hwnd, context);
         }
     }
 
@@ -368,10 +429,42 @@ unsafe extern "system" fn window_proc(
                 state.with_handler(|handler, commands| {
                     handler.event(Event::KeyDown(key, modifiers), commands);
                 });
-                if message == WM_KEYDOWN {
+                // Alt+letter opens the app's own menus. Everything else with Alt,
+                // like Alt+F4 and Alt+Space, still goes to Windows.
+                if message == WM_KEYDOWN || matches!(key, tv_ui::Key::Char(_)) {
                     return LRESULT(0);
                 }
             }
+        }
+        // Without this, Windows beeps for Alt+letter because there's no native menu.
+        WM_SYSCHAR
+            if char::from_u32(wparam.0 as u32).is_some_and(|c| c.is_ascii_alphanumeric()) =>
+        {
+            return LRESULT(0);
+        }
+        WM_CHAR => {
+            let unit = wparam.0 as u16;
+            let character = match unit {
+                0xD800..=0xDBFF => {
+                    state.high_surrogate.set(Some(unit));
+                    None
+                }
+                0xDC00..=0xDFFF => state.high_surrogate.take().and_then(|high| {
+                    char::decode_utf16([high, unit])
+                        .next()
+                        .and_then(|decoded| decoded.ok())
+                }),
+                _ => char::from_u32(u32::from(unit)),
+            };
+            if let Some(character) = character.filter(|character| !character.is_control()) {
+                state.with_handler(|handler, commands| {
+                    handler.event(Event::Char(character), commands);
+                });
+            }
+            return LRESULT(0);
+        }
+        WM_IME_STARTCOMPOSITION => {
+            state.place_ime_windows();
         }
         WM_LBUTTONDOWN => {
             state.mouse_down(lparam, MouseButton::Left);
@@ -496,6 +589,8 @@ pub fn run(
         actions,
         wake_pending: wake_pending.clone(),
         scale: Cell::new(1.0),
+        high_surrogate: Cell::new(None),
+        ime_position: Cell::new(Point::default()),
     });
     let state_pointer: *const State = &raw const *state;
 

@@ -23,6 +23,7 @@ $WM_KEYDOWN = 0x0100
 $VK_DOWN = 0x28
 $VK_NEXT = 0x22
 $VK_END = 0x23
+$VK_HOME = 0x24
 
 $script:failures = 0
 function Check($name, $passed, $detail = '') {
@@ -94,13 +95,23 @@ $rows = Wait-Until 20 {
 Check 'rows are exposed' ($rows.Count -gt 10) "$($rows.Count) rows"
 if ($rows) {
     $first = $rows[0].Current.Name
-    Check 'rows read as sentences' ($first -match '^Row 1, \w+, 2026-01-01') $first
+    Check 'rows read as sentences' ($first -match '^Row \d+, \w+, \d{4}-\d{2}-\d{2}') $first
     Check 'only visible rows exist' ($rows.Count -lt 200)
+    $names = $rows | ForEach-Object { $_.Current.Name }
+    Check 'a log opens at its newest rows' ($names -match '^Row 26904325,') $names[-1]
 }
 $element = Get-Element $window
 Check 'the window has a name' ($element.Current.Name -match 'sccm-5gb\.log') $element.Current.Name
+$named = { param($type) Find-All $element $type | ForEach-Object { $_.Current.Name } }
+Check 'the menus are exposed' ((& $named ([System.Windows.Automation.ControlType]::MenuItem)) -contains 'Tools')
+Check 'the tab is exposed' ((& $named ([System.Windows.Automation.ControlType]::TabItem)) -contains 'sccm-5gb.log')
+$boxes = & $named ([System.Windows.Automation.ControlType]::Edit)
+Check 'the filter and find boxes are exposed' (($boxes -contains 'Filter') -and ($boxes -contains 'Find')) ($boxes -join ', ')
 
 '--- keyboard input reaches the view'
+[Input]::PostMessageW($window, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null
+$top = Wait-Until 5 { (Get-Rows $window) | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^Row 1,' -and $_ -notmatch 'loading' } }
+Check 'Home reaches the first row' ($null -ne $top) "$top"
 [Input]::PostMessageW($window, $WM_KEYDOWN, [IntPtr]$VK_DOWN, [IntPtr]0) | Out-Null
 $selected = Wait-Until 5 {
     foreach ($row in (Get-Rows $window)) {
@@ -138,6 +149,26 @@ $threads = $process.Threads.Count
 '--- closing'
 Check 'closes cleanly' (Stop-App $process)
 Check 'exit code is zero' ($process.ExitCode -eq 0) "exit $($process.ExitCode)"
+
+'--- live tail'
+$tail = Join-Path $workDir 'live.log'
+(1..5 | ForEach-Object { "2026-01-01 10:00:0$_ host app[1]: INFO: line $_" }) | Set-Content $tail
+$process = Start-Process $exe -ArgumentList "`"$tail`"" -PassThru
+$window = Get-MainWindow $process
+$ready = Wait-Until 10 { (Get-Rows $window) | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^Row 5,' -and $_ -notmatch 'loading' } }
+Check 'a small log shows all its rows' ($null -ne $ready) "$ready"
+$watch = [Diagnostics.Stopwatch]::StartNew()
+Add-Content $tail '2026-01-01 10:00:09 host app[1]: ERROR: appended while open'
+$appended = Wait-Until 5 { (Get-Rows $window) | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^Row 6, Error, .*appended while open' } }
+$watch.Stop()
+Check 'a row written to the file appears' ($null -ne $appended) ("{0:N0} ms: $appended" -f $watch.ElapsedMilliseconds)
+Start-Sleep -Seconds 1
+$cpuBefore = $process.TotalProcessorTime.TotalMilliseconds
+Start-Sleep -Seconds 5
+$process.Refresh()
+$cpuUsed = $process.TotalProcessorTime.TotalMilliseconds - $cpuBefore
+Check 'watching a log costs almost nothing' ($cpuUsed -lt 50) ("{0:N0} ms used in 5 s" -f $cpuUsed)
+Stop-App $process | Out-Null
 
 '--- starting from a shell'
 $marker = Join-Path $workDir 'shell-returned.txt'

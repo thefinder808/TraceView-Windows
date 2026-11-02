@@ -22,6 +22,15 @@ pub trait RowSource {
     fn row_count(&self) -> usize;
     fn level(&self, row: usize) -> Level;
     fn cells(&self, row: usize) -> Option<Arc<RowCells>>;
+    /// The row's number in the file. Rows are numbered by their place in the
+    /// file even when a filter hides others, so they can be found again.
+    fn file_row(&self, row: usize) -> usize {
+        row
+    }
+    /// True for rows matching the find text, which get the highlight color.
+    fn highlighted(&self, _row: usize) -> bool {
+        false
+    }
 }
 
 /// What a view needs its owner to do after handling input.
@@ -155,6 +164,15 @@ impl LogView {
         self.clamp_top();
     }
 
+    /// True when the last row is on screen, which is when live tail follows.
+    pub fn at_bottom(&self) -> bool {
+        self.top >= self.max_top()
+    }
+
+    pub fn scroll_to_end(&mut self) {
+        self.top = self.max_top();
+    }
+
     pub fn top_row(&self) -> usize {
         self.top as usize
     }
@@ -245,8 +263,22 @@ impl LogView {
         }
     }
 
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    /// Changes the row count before the next frame does, so a row past the old
+    /// end can be selected. A merged timeline uses this when it's rebuilt.
+    pub fn set_row_count(&mut self, rows: usize) {
+        self.rows = rows;
+        self.anchor = self.cursor;
+    }
+
+    /// Clears the selection and scroll position for a new set of rows. The layout
+    /// stays, so a row can be selected again before the next frame arranges it.
+    pub fn reset(&mut self, rows: usize) {
+        *self = Self {
+            layout: self.layout,
+            metrics: self.metrics,
+            rows,
+            ..Self::default()
+        };
     }
 
     fn move_cursor(&mut self, delta: i64, extend: bool) {
@@ -421,8 +453,13 @@ impl LogView {
         let rect = self.row_rect(row);
         let level = source.level(row);
         let selected = self.is_selected(row);
+        let highlighted = !selected && source.highlighted(row);
         let (background, message_color) = match level {
             _ if selected => (Some(theme.selected_row), theme.selected_text),
+            Level::Critical | Level::Error if highlighted => {
+                (Some(theme.highlight_row), theme.error_text)
+            }
+            _ if highlighted => (Some(theme.highlight_row), theme.primary_text),
             Level::Critical => (Some(theme.critical_row), theme.critical_text),
             Level::Error => (Some(theme.error_row), theme.error_text),
             Level::Warning => (Some(theme.warning_row), theme.warning_text),
@@ -436,7 +473,7 @@ impl LogView {
         let themed = |color: Color| if selected { theme.selected_text } else { color };
         let cell = |left: f32, right: f32| Rect::new(left, rect.top, right, rect.bottom);
 
-        let number = (row + 1).to_string();
+        let number = (source.file_row(row) + 1).to_string();
         canvas.text(
             &number,
             cell(layout.body.left, layout.row_number_right),

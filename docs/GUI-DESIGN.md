@@ -68,7 +68,7 @@ These are what make it feel familiar, so they come first:
 | One small EXE, copied anywhere | Yes |
 | Offers to become the `.log` viewer | Yes, but only from a Settings button, never as a prompt at launch, and per-user only |
 
-Standard Windows keys are used throughout: Ctrl+O, Ctrl+F, F3 and Shift+F3, Ctrl+G, Ctrl+W, Ctrl+Tab, Ctrl+1-9, Ctrl+K for the command palette. Every command is remappable.
+Standard Windows keys are used throughout: Ctrl+O, Ctrl+F, F3 and Shift+F3, Ctrl+G, Ctrl+W, Ctrl+Tab, Ctrl+1-9, Ctrl+K for the command palette. CMTrace's own keys work too: Ctrl+L for Error Lookup and Ctrl+U to pause, so Filter is Ctrl+Shift+F. Every command is remappable.
 
 ## From the Mac app
 
@@ -196,6 +196,49 @@ The launch figure has no log open. A log with a cached index adds about 50-110 m
 - **`crates/d2d-probe` is still here,** because `scripts/run-presentation-test.ps1` uses it. It goes once that test moves to the real app.
 
 **Not covered by automation, so these need a person:** the file dialog, drag and drop, mouse dragging, how scrolling feels, and Narrator.
+
+## Where milestone 3 landed
+
+**What it does:**
+
+- **Tabs.** Logs open from the Open dialog, which takes several files at once, from drag and drop, or from the command line. Ctrl+Tab and Ctrl+1-9 switch tabs. Ctrl+W or a middle-click closes one.
+- **Menu bar.** File, Edit, View and Tools, all usable from the keyboard with Alt or F10.
+- **Filter** (Ctrl+Shift+F). Takes words, "quoted phrases", `/regex/`, `level:`, `component:`, `thread:`, `from:` and `to:`. The old filter stays on screen until a new one finishes.
+- **Find** (Ctrl+F, F3, Shift+F3). Matching rows are highlighted and counted, as in "3 of 120", which also covers CMTrace's Highlight. Ctrl+E and Ctrl+Shift+E jump between errors.
+- **Details pane.** Shows the selected row's fields and whole message, and what Windows says its error codes mean.
+- **Error Lookup** (Ctrl+L). Takes a code or a pasted log line, and opens with the selected row's first code.
+- **Live tail.**
+  - New rows appear within about a quarter of a second, and log rotation is followed.
+  - A tab follows new rows while it's at the bottom, which is where logs open, as in CMTrace.
+  - Ctrl+U pauses.
+- **Merge** (Ctrl+Shift+M). Merges the open logs into one timeline in a new tab, which keeps updating.
+- **Themes.** Classic and Console, or follow Windows.
+
+**Budgets,** with the 5 GiB, 26.9M-row log:
+
+| Measure | Limit | Measured |
+|---|---|---|
+| Launch to first frame | 100 ms | 47 ms |
+| Worst frame, 1200x760 | 8 ms | 2.0 ms |
+| Worst frame, 1920x1050 | 8 ms | 2.4 ms |
+| CPU while idle | 0% | 0 ms used over 5 s |
+| CPU while following a small live log | | 16 ms used over 5 s |
+| A line written to the file appears | | 261 ms |
+| Memory beyond the row index | 50 MB | 32-34 MB |
+| EXE size | 5 MB | 2.6 MB |
+
+The RDP window was minimized for these frame times, so they leave out presenting to the screen. Milestone 2's on-screen figures are a better guide to real frame times.
+
+**Differences from this design:**
+
+- **Ctrl+L is Error Lookup,** as in CMTrace, so Filter moved to Ctrl+Shift+F.
+- **Merge works on open tabs,** rather than through a checkbox in the Open dialog. You open several logs at once, then press Ctrl+Shift+M.
+- **Error Lookup has no Intune or Windows Update text,** because Windows has none. Those codes still show their hex, signed and facility forms. ConfigMgr text needs a console installed, and that hasn't been tested.
+- **Live tail checks each file every 250 ms** rather than waiting for change notifications. Windows reports changes late for files a writer holds open, and unreliably on network shares.
+- **Highlight rules in chosen colors** wait for the rule editor in milestone 5. Find covers one highlight for now.
+- **IME** is built: IMM32's composition window sits at the caret, and the IME is on only while a text box has focus. It hasn't been tried with a real IME, because none is installed here.
+
+**Not covered by automation, so these need a person:** choosing several files in the Open dialog, drag and drop, an IME, Narrator, and a day of real use alongside CMTrace.
 
 ## Milestones
 

@@ -80,6 +80,8 @@ fn query_applies_filters() {
     assert_eq!(matches(&["--min-level", "warning"]), 2);
     assert_eq!(matches(&["--min-level", "error"]), 1);
     assert_eq!(matches(&["--component", "policyagent"]), 2);
+    assert_eq!(matches(&["--thread", "5240"]), 2);
+    assert_eq!(matches(&["--thread", "4128", "--min-level", "error"]), 0);
     assert_eq!(matches(&["--from", "2026-04-06T10:23:02"]), 2);
     assert_eq!(matches(&["--to", "2026-04-05"]), 0);
 }
