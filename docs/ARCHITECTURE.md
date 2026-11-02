@@ -26,10 +26,13 @@ crates/
     file.rs       an open log: row reading, and live refresh split into prepare and apply
     query.rs      search, with serializable query and result types
     merge.rs      the merged timeline of several logs
+    overview.rs   counts by level and over time, for the severity chips and histogram
     summary.rs    severity counts, repeated message patterns, error spikes
     examples/     gen_log (test data), evict_cache (cold-disk testing)
     tests/        robustness (random input), perf_budgets (speed limits)
-  tv-ui/        toolkit base: geometry, the Canvas interface, theme tokens, input, scroll bar. No unsafe, no Windows
+  tv-ui/        our toolkit: geometry, the Canvas interface, theme tokens and five themes, input,
+                scroll bar, text field, menu bar, tab bar, list view, splitter, chip bar,
+                command palette with fuzzy matching. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs
@@ -40,6 +43,9 @@ crates/
                   tab (one log or a merged set: filter, find, details, live tail)
                   log_view (grid), row_cache (background row loading), details (pane under the grid)
                   search (filter syntax, and matches kept current as logs grow), watch (live tail)
+                  sidebar and places (open tabs, bookmarks, nearby logs, Windows log folders, recent logs)
+                  overview (severity chips and histogram), command_palette (Ctrl+K, Go to row, presets)
+                  settings (traceview.toml), export (CSV)
                   lookup (Error Lookup panel), accessibility (screen reader tree)
                   snapshots (whole-window pixel tests), bench (scripted checks, feature-gated)
   d2d-probe/    an earlier grid, kept only for run-presentation-test.ps1
@@ -83,6 +89,12 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 **Error codes.** Messages come from Windows at run time through `FormatMessageW`: the system table, plus message tables in `ntdll.dll`, `winhttp.dll` and `qmgr.dll`, loaded as data from full System32 paths so none of their code runs. ConfigMgr codes use `srsresources.dll` from an installed console, which is never bundled. No message text is copied into TraceView, so it's in the user's language and matches their Windows. Codes Windows has no text for, such as Windows Update's, still show their hex, signed and facility forms.
 
+**Settings.** One TOML file, `traceview.toml`, holds the theme, layout, recent logs, filter presets and bookmarks. It lives in `%APPDATA%\TraceView`, unless a `traceview.toml` sits beside the EXE, which makes that copy portable. It's read once before the first frame, so the window opens in the right theme, and saved on a background thread because `%APPDATA%` can be a network share. Each save writes a new file and swaps it in, so a crash never leaves half a file. A file with a mistake gives the defaults and a message, and it's never overwritten, so the mistake can be fixed by hand. Lists are capped, so a hand-edited or shared file can't make the menus unusable.
+
+**Severity chips and histogram.** Both cover the whole log and come from the index alone: counting 26.9M rows and a histogram takes about 17 ms. They're counted on a background thread when a log opens and at most once a second during live tail. Chips filter to one exact level, which the engine's query gained for them. The histogram places each untimed row at the time of the row before it, as merging does, so its buckets add up to the chip counts, and it keeps the shadows of earlier spikes as a live log's range stretches, as the Mac app does.
+
+**CSV export.** Log text is untrusted, so any cell that starts like a spreadsheet formula (`=`, `+`, `-`, `@`) gets a leading apostrophe and stays plain text. Files are UTF-8 with a byte order mark, which Excel needs, and cells are capped at what Excel can hold. The file appears only once it's complete.
+
 **Untrusted input.** Log files can contain anything. The engine forbids `unsafe` code, cached offsets are bounds-checked so a damaged cache can only produce wrong rows, and random-input tests and fuzzing check that nothing panics. The index cache holds offsets, levels, times and the log's path, never log text, and its size is capped at 2 GiB with the oldest entries removed first.
 
 ## Supported formats
@@ -111,7 +123,7 @@ traceview query app.log --regex "error 0x[0-9a-f]{8}" --min-level warning --limi
 traceview summarize app.log --top 20
 ```
 
-Filters: `--text`, `--regex`, `--case-sensitive`, `--min-level`, `--component`, `--thread`, `--from` and `--to`.
+Filters: `--text`, `--regex`, `--case-sensitive`, `--min-level`, `--level` (exactly that level), `--component`, `--thread`, `--from` and `--to`.
 
 Results are JSON on stdout. Errors are JSON on stderr, with exit code 1, or exit code 2 for incorrect usage. Pages are capped at 1,000 rows, and `next_offset` gives the next page. Output marks log text as untrusted (`"log_text_trust": "untrusted"`).
 
@@ -131,6 +143,7 @@ Ryzen 9 5900X (24 threads), NVMe, 5 GiB logs with 26.9M (SCCM) and 47.8M (plain)
 | Read 60 visible rows, p99 | Under 0.5 ms | Under 0.5 ms | 2 ms |
 | 100 checks of an unchanged live log | 3 ms | 3 ms | 50 ms |
 | Merge two copies (10 GiB in all) | 2.2–2.4 s | 2.3–2.8 s | 0.5 s per GiB |
+| Level counts and a 1,000-bucket histogram | 17 ms | 28 ms | 10 ms per GiB |
 | Put a live refresh in place | 0.015 ms | | Not enforced |
 | Index memory | 257 MB | 456 MB | 10 bytes per row |
 
@@ -173,7 +186,7 @@ The upside is that no framework limits theming or layout on anything we draw our
 
 ## Quality gates
 
-- **Every push:** formatting, lint with warnings as errors, and all tests, in GitHub Actions on Windows. That includes real frames drawn into memory and checked pixel by pixel.
+- **Every push:** formatting, lint with warnings as errors, and all tests, in GitHub Actions on Windows. That includes real frames drawn into memory and checked pixel by pixel. An ARM64 EXE is also built, and kept for 14 days for testing on ARM64 PCs.
 - **Robustness:** random and log-shaped bytes go through the whole pipeline on every test run. Set `PROPTEST_CASES` for longer runs.
 - **Fuzzing:** coverage-guided on Linux in CI, because `libFuzzer` doesn't link with the MSVC toolchain here. The logic it covers isn't platform-specific, except for file access.
 - **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits.

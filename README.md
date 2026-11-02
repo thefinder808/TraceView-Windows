@@ -2,7 +2,7 @@
 
 A fast, customizable Windows log viewer inspired by CMTrace, and the counterpart to the [macOS TraceView](https://github.com/thefinder808/TraceView).
 
-**Early days.** It can stand in for CMTrace: tabs, live tail, filter, find, Error Lookup and merged logs all work. TraceView's own features, such as charts and bookmarks, come next. See [the GUI design](docs/GUI-DESIGN.md) and [the architecture](docs/ARCHITECTURE.md).
+**Early days.** It can stand in for CMTrace, and most of TraceView's own features are in: severity chips, the event histogram, the sidebar, bookmarks, filter presets, split view, the command palette and five themes. Customization comes next. See [the GUI design](docs/GUI-DESIGN.md) and [the architecture](docs/ARCHITECTURE.md).
 
 ## Build
 
@@ -14,6 +14,12 @@ cargo build --release -p traceview
 
 ```bash
 cargo test --workspace
+```
+
+For ARM64 PCs, CI builds a native EXE on every push, kept as the `traceview-arm64` artifact. To build it yourself, add Visual Studio's ARM64 C++ build tools, then:
+
+```bash
+cargo build --release --target aarch64-pc-windows-msvc -p traceview
 ```
 
 ## Try it
@@ -36,6 +42,11 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/` |
 | Ctrl+E, Ctrl+Shift+E | Next and previous error |
 | Ctrl+L | Error Lookup |
+| Ctrl+K | Command palette: every command, open tab, recent log and preset |
+| Ctrl+G | Go to a row |
+| Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |
+| Ctrl+B | Sidebar |
+| Ctrl+\ | Split view, with Ctrl+Shift+S to sync the panes by time |
 | Ctrl+U | Pause live updates |
 | Ctrl+Shift+M | Merge the open logs into one timeline |
 | Alt or F10 | The menus |

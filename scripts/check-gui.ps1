@@ -107,6 +107,8 @@ Check 'the menus are exposed' ((& $named ([System.Windows.Automation.ControlType
 Check 'the tab is exposed' ((& $named ([System.Windows.Automation.ControlType]::TabItem)) -contains 'sccm-5gb.log')
 $boxes = & $named ([System.Windows.Automation.ControlType]::Edit)
 Check 'the filter and find boxes are exposed' (($boxes -contains 'Filter') -and ($boxes -contains 'Find')) ($boxes -join ', ')
+$chips = Wait-Until 10 { & $named ([System.Windows.Automation.ControlType]::Button) | Where-Object { $_ -match '^All, 26904325$' } }
+Check 'the severity chips count the whole log' ($null -ne $chips) "$chips"
 
 '--- keyboard input reaches the view'
 [Input]::PostMessageW($window, $WM_KEYDOWN, [IntPtr]$VK_HOME, [IntPtr]0) | Out-Null

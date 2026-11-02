@@ -1,6 +1,6 @@
 # GUI design
 
-**Status:** agreed, with milestone 2 built. See [Where milestone 2 landed](#where-milestone-2-landed) for what's proven and what's still open. This builds on [ARCHITECTURE.md](ARCHITECTURE.md), and it ports the behavior of the [macOS app](https://github.com/thefinder808/TraceView) rather than its code.
+**Status:** agreed, with milestones 2 to 4 built. Each one's "Where it landed" section says what's proven and what's still open. This builds on [ARCHITECTURE.md](ARCHITECTURE.md), and it ports the behavior of the [macOS app](https://github.com/thefinder808/TraceView) rather than its code.
 
 ## What success looks like
 
@@ -240,6 +240,47 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation, so these need a person:** choosing several files in the Open dialog, drag and drop, an IME, Narrator, and a day of real use alongside CMTrace.
 
+## Where milestone 4 landed
+
+**What it adds:**
+
+- **Severity chips** above the grid count each level in the whole log. Clicking one filters to that level, alone or with the filter box. Clicking it again, or All, shows every level.
+- **Event histogram** (View > Histogram): 60 buckets with errors stacked on top and warnings below.
+  - Earlier spikes leave a shadow as a live log's range stretches.
+  - Clicking a bucket selects its worst row.
+- **Sidebar** (Ctrl+B): open tabs, bookmarks across open logs, logs in the same folder, the usual Windows log folders that exist here, and recent logs.
+- **Command palette** (Ctrl+K): every menu command with its shortcut, plus open tabs, recent logs and filter presets.
+  - Typing `:` and a number goes to that row, which is what Ctrl+G opens it for.
+- **Bookmarks:** Ctrl+D toggles one, and F2 and Shift+F2 step through them. They're saved per file and listed in the sidebar.
+- **Filter presets:** View > Save filter as preset stores the filter text and the active chip under a name. They're applied or deleted from the palette.
+- **Split view** (Ctrl+\\): two logs side by side, each with its own filter, find, chips and histogram.
+  - The focused pane is marked and gets the keyboard.
+  - Ctrl+Shift+S syncs the panes, so scrolling one lines the other up at the same time.
+- **CSV export** (File > Export rows as CSV): the selection, or every row shown.
+- **Themes:** Classic, Console, Dark, Light and Neon, all contrast-tested.
+- **Saved settings** in `traceview.toml`: theme, layout, recent logs, presets and bookmarks.
+- **Native ARM64 EXE,** built in CI.
+
+**Budgets,** with the 5 GiB log and the RDP window minimized:
+
+| Measure | Limit | Measured |
+|---|---|---|
+| Launch to first frame | 100 ms | 49 ms |
+| Worst frame, 1920x1050 | 8 ms | 2.4 ms |
+| CPU while idle | 0% | 0 ms used over 5 s |
+| Memory beyond the row index | 50 MB | 34-36 MB |
+| EXE size | 5 MB | 3.1 MB |
+
+**Differences from this design:**
+
+- **Console is the Mac's light default theme,** as it is on the Mac. Earlier milestones used the name for the Mac's dark theme, which is now called Dark and is what dark mode uses.
+- **The row drawer isn't built.** The details pane already shows the whole message, so it waits until it's clear that it's wanted.
+- **Presets live in the palette** rather than as pills in the filter bar.
+- **Chips show exact counts** up to 9,999, then shorten them, as in 12.3k.
+- **Only the focused pane** of a split view is in the screen reader tree. Screen reader users work in one pane at a time anyway.
+
+**Not covered by automation, so these need a person:** the ARM64 EXE on a real ARM64 PC, how the sidebar, chips and split view feel, and Narrator with the new controls.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |
@@ -260,7 +301,7 @@ These are my picks. Each can change if you see it differently.
 | Decision | Pick | Why |
 |---|---|---|
 | Minimum Windows | Windows 10 1809 and Server 2019 | Admins live on these. Going lower adds risk for little reach. Needs the VM tests above |
-| Default theme | Classic in light mode, Console in dark mode, following the system setting | CMTrace users get what they expect, and Mac users get familiarity |
+| Default theme | Classic in light mode, Dark in dark mode, following the system setting | CMTrace users get what they expect, and Mac users get familiarity |
 | Default on first launch | Grid, tabs, chips and filter bar, with the sidebar and histogram collapsed | Starts close to CMTrace, and reveals more as needed |
 | Menu bar | Our own, themed, and on by default | Admins expect one. Native Win32 menus can't follow dark themes |
 | Title bar | Native frame, colored by DWM | Free Snap Layouts and correct behavior |
