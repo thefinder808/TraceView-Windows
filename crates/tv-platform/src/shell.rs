@@ -2,7 +2,7 @@
 //! clipboard, the title bar's color, and the system's light or dark setting.
 
 use std::os::windows::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tv_ui::Color;
 use windows::core::{w, HSTRING, PWSTR};
 use windows::Win32::Foundation::{GlobalFree, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND};
@@ -21,10 +21,31 @@ use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_R
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     DragFinish, DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
-    FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, HDROP,
-    SIGDN_FILESYSPATH,
+    ShellExecuteW, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
+    FOS_OVERWRITEPROMPT, HDROP, SIGDN_FILESYSPATH,
 };
-use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, SW_SHOWNORMAL};
+
+/// Shows a folder in File Explorer, making it first if it isn't there yet.
+/// Returns false if it couldn't be shown.
+pub fn show_folder(folder: &Path) -> bool {
+    if std::fs::create_dir_all(folder).is_err() || !folder.is_dir() {
+        return false;
+    }
+    // SAFETY: the strings outlive the call, and no parent window is needed.
+    // Opening a folder only ever starts File Explorer on it.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(folder.as_os_str()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    result.0 as isize > 32
+}
 
 /// Reports a problem when there may be no console to report it on.
 pub fn show_error(message: &str) {

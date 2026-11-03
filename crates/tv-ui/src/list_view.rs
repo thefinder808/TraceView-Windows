@@ -482,12 +482,20 @@ impl ListView {
         if let Some(color) = swatch {
             let middle = (rect.top + rect.bottom) / 2.0;
             let half = SWATCH_SIZE / 2.0;
+            let outline = Rect::new(
+                text.left,
+                middle - half,
+                text.left + SWATCH_SIZE,
+                middle + half,
+            );
+            // Outlined, so a color close to the list's own still shows.
+            canvas.fill_rect(outline, detail_color);
             canvas.fill_rect(
                 Rect::new(
-                    text.left,
-                    middle - half,
-                    text.left + SWATCH_SIZE,
-                    middle + half,
+                    outline.left + 1.0,
+                    outline.top + 1.0,
+                    outline.right - 1.0,
+                    outline.bottom - 1.0,
                 ),
                 *color,
             );

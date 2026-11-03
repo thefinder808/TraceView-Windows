@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use tv_engine::Encoding;
 use tv_platform::{Command, Commands, Handler, WindowContext};
 use tv_render::{FrameResult, Presentation, Renderer, DEFAULT_ORDER};
-use tv_ui::Event;
+use tv_ui::{Event, Theme};
 
 pub fn encoding_name(encoding: Encoding) -> &'static str {
     match encoding {
@@ -40,7 +40,7 @@ pub struct App {
     renderer: Renderer,
     workspace: Workspace,
     /// The theme and title last applied to the window, to update them on change.
-    applied_theme: Option<&'static str>,
+    applied_theme: Option<Theme>,
     applied_title: String,
     #[cfg(feature = "bench")]
     bench: Option<Bench>,
@@ -110,12 +110,13 @@ impl App {
         // Setting the same fonts again costs nothing.
         self.renderer.set_fonts(self.workspace.fonts());
         let theme = self.workspace.theme();
-        if self.applied_theme != Some(theme.name) {
+        // Compared by value, since the theme editor changes colors in place.
+        if self.applied_theme != Some(*theme) {
             if self.applied_theme.is_none() {
                 // The grid has focus at start, so the IME starts off.
                 commands.push(Command::SetImeEnabled(false));
             }
-            self.applied_theme = Some(theme.name);
+            self.applied_theme = Some(*theme);
             commands.push(Command::SetCaptionColors {
                 background: theme.status_background,
                 text: theme.primary_text,

@@ -294,7 +294,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Differences from this design:**
 
-- **Colors are named palette entries, not any color.** Each theme defines its own shade of each, tested for contrast, so a rule picked in Classic stays readable in Dark. Theme files will be able to change the shades.
+- **Colors are named palette entries, not any color.** Each theme defines its own shade of each, tested for contrast, so a rule picked in Classic stays readable in Dark. A theme file can change the shades.
 - **There's no text-color-only style.** Text in a chosen color can't be held to contrast against every severity row, and the marker already keeps the severity visible.
 - **No format condition.** With two formats, the filter syntax's level, component and thread cover what's needed.
 - **Rules live in `traceview.toml`,** not a file of their own. Editing it by hand while TraceView runs still needs a restart. Reloading every customization file live is a later step of this milestone.
@@ -360,6 +360,24 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **One row per line.** Lines that don't match, such as a stack trace's, show as rows of their own with no time. Joining them to the row above needs the indexer to find rows by pattern, which is a larger change.
 - **Times need a date.** A `time` part with only a time of day isn't read yet.
+
+**Theme files:**
+
+- **A theme is one TOML file** in a `themes` folder beside `traceview.toml`. It names a built-in theme to start from and lists only the colors it changes, including the shades of the six rule colors, so a shared theme can be a few lines. Files in the folder show in the View menu after the built-in themes.
+- **View > Edit theme** lists every color of the theme in use with a swatch, 58 in all. The box takes a color as `#RRGGBB`, and the whole window, the editor included, recolors as soon as the color is complete. Up and Down pick a color without leaving the box.
+- **A built-in theme is never changed.** The first change makes a copy, such as "Classic copy", saves it and switches to it. Every later change is saved at once.
+- **The Name button** edits the theme's name, which is also its file's, taken on Enter. **Dark** sets whether the title bar is dark. **Open folder** shows the themes folder in File Explorer.
+- **Weak contrast is pointed out,** as in "Low contrast: Primary text: 1.2 to 1, below 4.5", using the same check the built-in themes pass. It's a warning, not a refusal.
+- **A file with a mistake** is skipped, and the status bar says which file and why.
+
+**Differences from this design:**
+
+- **Metrics aren't edited in the app.** A file can set the header and status bar heights (16 to 48 pixels), but the editor only changes colors, since the font settings already size rows.
+- **No color picker.** Colors are typed or pasted as hex. A picker would be a large control for something done rarely.
+- **No deleting themes in the app.** Open folder, then delete the file. A theme file deleted while TraceView runs stays in the menu until the next launch.
+- **Hand edits to a theme file show after a restart,** until live reload arrives.
+
+**Not covered by automation:** using the editor with Narrator, and Open folder on a real desktop.
 
 **Fixed along the way:** a frame now always brings screen readers up to date. Before, what came from layout, such as the severity chips' counts and an editor's buttons, could stay out of date for them until the next input. The end-to-end check caught it as an intermittent failure once the index cache had to be rebuilt.
 

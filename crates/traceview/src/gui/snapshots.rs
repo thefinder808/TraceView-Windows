@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use tv_platform::{Commands, Waker};
 use tv_render::Renderer;
 use tv_ui::recording::RecordingCanvas;
+use tv_ui::theme::COLOR_TOKENS;
 use tv_ui::{Color, Event, Key, Modifiers, Rect, Theme};
 
 const NONE: Modifiers = Modifiers {
@@ -542,6 +543,41 @@ fn the_log_formats_editor_tries_a_pattern_on_the_open_log() {
     assert!(
         frame.has_ink(field, theme.input_background),
         "the pattern didn't draw"
+    );
+}
+
+#[test]
+fn the_theme_editor_recolors_the_window_as_a_color_is_typed() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    render(&mut workspace, "themes", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.run_command(command::EDIT_THEME, &mut Commands::default());
+    let error_row = COLOR_TOKENS
+        .iter()
+        .position(|token| *token == "error_row")
+        .unwrap();
+    let panel = workspace.themes_panel.as_mut().unwrap();
+    panel.select(error_row);
+    panel.field.select_all();
+    for character in "#336699".chars() {
+        send(&mut workspace, Event::Char(character));
+    }
+    let frame = render(&mut workspace, "themes-editor", 96.0, |_| true);
+    let theme = workspace.theme();
+    assert_eq!(theme.name, "Classic copy");
+    assert_eq!(theme.error_row, Color::rgb(0x33_66_99));
+    assert_eq!(frame.row_color(&workspace, 2), Color::rgb(0x33_66_99));
+    let panel = workspace.themes_panel.as_ref().unwrap();
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let field = panel.field_rect();
+    assert!(
+        frame.has_ink(field, theme.input_background),
+        "the color didn't draw"
     );
 }
 

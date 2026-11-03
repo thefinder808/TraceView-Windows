@@ -272,6 +272,8 @@ pub fn location() -> Option<PathBuf> {
 pub struct Store {
     writes: Option<Sender<String>>,
     writer: Option<JoinHandle<()>>,
+    /// The settings file, so files that go with it, such as themes, sit beside it.
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -281,16 +283,27 @@ impl Store {
         Self {
             writes: None,
             writer: None,
+            path: None,
         }
     }
 
     fn writing_to(path: PathBuf) -> Self {
         let (writes, receiver) = channel();
-        let writer = std::thread::spawn(move || write_settings(&path, &receiver));
+        let target = path.clone();
+        let writer = std::thread::spawn(move || write_settings(&target, &receiver));
         Self {
             writes: Some(writes),
             writer: Some(writer),
+            path: Some(path),
         }
+    }
+
+    /// The folder the settings file is in, which files that go with it share.
+    /// `None` for a store that doesn't write.
+    pub fn folder(&self) -> Option<PathBuf> {
+        self.path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
     }
 
     /// Reads the settings file. A missing file gives the defaults. A file with
@@ -349,7 +362,7 @@ fn write_settings(path: &Path, saves: &Receiver<String>) {
 
 /// Writes beside the file, then swaps it in, so a crash mid-write never leaves
 /// half a file.
-fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
+pub(super) fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }

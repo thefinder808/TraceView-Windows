@@ -9,7 +9,7 @@ mod shell;
 mod window;
 
 pub use console::{prepare_console_for_gui, ConsoleOutcome};
-pub use shell::{clipboard_text, show_error};
+pub use shell::{clipboard_text, show_error, show_folder};
 pub use window::{run, Command, Commands, Cursor, Handler, WindowContext, WindowOptions};
 
 /// Lets another thread wake the window's message loop. Wakes coalesce, so
