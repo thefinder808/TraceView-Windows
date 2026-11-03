@@ -15,6 +15,7 @@ mod fonts;
 mod fonts_panel;
 mod formats_panel;
 mod keymap;
+mod layouts;
 mod log_view;
 mod lookup;
 mod overview;

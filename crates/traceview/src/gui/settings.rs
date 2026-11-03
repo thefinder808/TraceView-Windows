@@ -1,5 +1,5 @@
-//! Saved settings: theme, layout, recent files, filter presets and highlight
-//! rules, in one TOML file a person can also edit by hand. It lives in `%APPDATA%\TraceView`, or
+//! Saved settings: theme, layout and named layouts, recent files, filter
+//! presets and highlight rules, in one TOML file a person can also edit by hand. It lives in `%APPDATA%\TraceView`, or
 //! beside the EXE when a `traceview.toml` is already there, which makes a copy
 //! portable.
 //!
@@ -25,6 +25,7 @@ const MOST_COLUMN_LAYOUTS: usize = 20;
 const MOST_COLUMNS: usize = 20;
 const MOST_KEYS: usize = 200;
 pub const MOST_FORMATS: usize = 50;
+pub const MOST_LAYOUTS: usize = 50;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +55,22 @@ pub struct Settings {
     pub keys: BTreeMap<String, String>,
     /// Log formats defined by a pattern, tried in order.
     pub formats: Vec<FormatSetting>,
+    /// Arrangements of panes saved under a name, after the built-in ones.
+    pub layouts: Vec<LayoutSetting>,
+}
+
+/// Which panes show, saved under a name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutSetting {
+    pub name: String,
+    pub sidebar: bool,
+    /// In pixels at 100% display scale, or none to leave the width as it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<f32>,
+    pub chips: bool,
+    pub histogram: bool,
+    pub details_pane: bool,
 }
 
 /// A log format defined by a pattern. Named groups say where each part of a
@@ -140,6 +157,7 @@ impl Default for Settings {
             fonts: FontSettings::default(),
             keys: BTreeMap::new(),
             formats: Vec::new(),
+            layouts: Vec::new(),
         }
     }
 }
@@ -233,6 +251,7 @@ impl Settings {
             self.keys.pop_last();
         }
         self.formats.truncate(MOST_FORMATS);
+        self.layouts.truncate(MOST_LAYOUTS);
         while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
             self.bookmarks.pop_last();
         }

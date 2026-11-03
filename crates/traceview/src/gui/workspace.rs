@@ -10,13 +10,14 @@ use super::fonts::{self, Spacing, Target as FontTarget, LOG_SIZES};
 use super::fonts_panel::{FontsPanel, FontsResponse, Item as FontItem};
 use super::formats_panel::{FormatsPanel, FormatsResponse, Part as FormatsPart, Sample};
 use super::keymap::{self, Keymap};
+use super::layouts;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
 use super::row_cache::{cells_from_row, SharedLog};
 use super::rules::RuleSet;
 use super::rules_panel::{Part, RulesPanel};
-use super::settings::{self, Preset, Settings, Store};
+use super::settings::{self, LayoutSetting, Preset, Settings, Store};
 use super::shortcut_panel::{Choice, ShortcutPanel};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
@@ -100,8 +101,11 @@ pub mod command {
     pub const PREVIOUS_TAB: u32 = 66;
     pub const FORMATS: u32 = 67;
     pub const EDIT_THEME: u32 = 68;
+    pub const SAVE_LAYOUT: u32 = 69;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
+    /// Layouts, the built-in ones first, from this number on.
+    pub const LAYOUTS: u32 = 200;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -595,8 +599,76 @@ impl Workspace {
         self.settings.sidebar = self.show_sidebar;
         self.settings.chips = self.show_chips;
         self.settings.histogram = self.show_histogram;
-        self.settings.sidebar_width = self.sidebar.width();
+        self.settings.sidebar_width = self.sidebar.chosen_width();
         self.store.save(&self.settings);
+    }
+
+    /// The built-in layouts, then the saved ones.
+    fn layouts(&self) -> Vec<LayoutSetting> {
+        layouts::built_in()
+            .into_iter()
+            .chain(self.settings.layouts.iter().cloned())
+            .collect()
+    }
+
+    /// What the window shows now, as a layout called `name`.
+    fn current_layout(&self, name: &str) -> LayoutSetting {
+        LayoutSetting {
+            name: name.to_string(),
+            sidebar: self.show_sidebar,
+            sidebar_width: Some(self.sidebar.chosen_width()),
+            chips: self.show_chips,
+            histogram: self.show_histogram,
+            details_pane: self.show_details,
+        }
+    }
+
+    /// The layout a menu command picks, if it picks one.
+    fn layout_for(&self, id: u32) -> Option<LayoutSetting> {
+        let index = id.checked_sub(command::LAYOUTS)?;
+        self.layouts().into_iter().nth(index as usize)
+    }
+
+    /// Shows the panes a layout names, and remembers them.
+    fn apply_layout(&mut self, layout: &LayoutSetting, commands: &mut Commands) {
+        self.show_sidebar = layout.sidebar;
+        if let Some(width) = layout.sidebar_width {
+            self.sidebar.set_width(width);
+        }
+        self.show_chips = layout.chips;
+        self.show_histogram = layout.histogram;
+        self.show_details = layout.details_pane;
+        if !self.show_sidebar && self.focus == Focus::Sidebar {
+            self.set_focus(Focus::Grid, commands);
+        }
+        self.save_settings();
+    }
+
+    /// Saves the panes shown now under a name, replacing a saved layout that
+    /// has it. The palette doesn't offer built-in names.
+    fn save_layout(&mut self, name: &str) {
+        let name = name.trim();
+        if layouts::is_built_in(name) {
+            return;
+        }
+        let layout = self.current_layout(name);
+        let layouts = &mut self.settings.layouts;
+        match layouts
+            .iter()
+            .position(|saved| saved.name.eq_ignore_ascii_case(name))
+        {
+            Some(index) => layouts[index] = layout,
+            None if layouts.len() >= settings::MOST_LAYOUTS => {
+                self.notice = Some(format!(
+                    "There are already {} layouts, so delete one first",
+                    settings::MOST_LAYOUTS
+                ));
+                return;
+            }
+            None => layouts.push(layout),
+        }
+        self.notice = Some(format!("Saved layout {name}"));
+        self.save_settings();
     }
 
     /// A built-in theme or one from a file, by name in any case.
@@ -667,6 +739,7 @@ impl Workspace {
 
     fn build_menus(&self) -> Vec<Menu> {
         let theme = self.theme_choice;
+        let now = self.current_layout("");
         let paused = self.active_tab().is_some_and(Tab::is_paused);
         // Shortcuts come from the keymap, so menus always show the current ones.
         let item = |label: &str, id: u32| MenuItem::command(label, &self.keymap.label_for(id), id);
@@ -717,6 +790,20 @@ impl Workspace {
                         item("Details pane", command::DETAILS),
                         self.show_details,
                     ),
+                    item("Save layout as...", command::SAVE_LAYOUT),
+                ]
+                .into_iter()
+                .chain(
+                    self.layouts()
+                        .into_iter()
+                        .zip(command::LAYOUTS..)
+                        .map(|(layout, id)| {
+                            let shown = layouts::is_shown(&layout, &now);
+                            checked(item(&format!("Layout: {}", layout.name), id), shown)
+                        }),
+                )
+                .chain([
+                    MenuItem::Separator,
                     checked(
                         item("Pause live updates", command::PAUSE),
                         paused,
@@ -735,8 +822,7 @@ impl Workspace {
                         item("Theme: follow Windows", command::THEME_SYSTEM),
                         theme == ThemeChoice::System,
                     ),
-                ]
-                .into_iter()
+                ])
                 .chain(
                     Theme::ALL
                         .iter()
@@ -979,6 +1065,7 @@ impl Workspace {
                 None => self.notice = Some("Split the view first, with Ctrl+\\".to_string()),
             },
             command::GO_TO_ROW => self.open_palette(Mode::Everything, ":", commands),
+            command::SAVE_LAYOUT => self.open_palette(Mode::SaveLayout, "", commands),
             command::SAVE_PRESET => {
                 let has_filter = self.active_tab().is_some_and(|tab| {
                     !tab.filter_field.text().trim().is_empty() || tab.chip.is_some()
@@ -1130,6 +1217,11 @@ impl Workspace {
             command::LARGER_TEXT => self.resize_log_text(Some(true)),
             command::SMALLER_TEXT => self.resize_log_text(Some(false)),
             command::DEFAULT_TEXT => self.resize_log_text(None),
+            id if id >= command::LAYOUTS => {
+                if let Some(layout) = self.layout_for(id) {
+                    self.apply_layout(&layout, commands);
+                }
+            }
             _ => {}
         }
         if matches!(
@@ -1729,6 +1821,12 @@ impl Workspace {
                 Action::DeletePreset(index),
             ));
         }
+        for (index, layout) in self.settings.layouts.iter().enumerate() {
+            entries.push((
+                PaletteItem::new(&format!("Delete layout: {}", layout.name), "", "", 0),
+                Action::DeleteLayout(index),
+            ));
+        }
         for recent in &self.settings.recent {
             let path = PathBuf::from(recent);
             let folder = path
@@ -1860,7 +1958,7 @@ impl Workspace {
         let entries = match mode {
             Mode::Font(target) => self.font_entries(target),
             Mode::Keys => self.keys_entries(),
-            Mode::Everything | Mode::SavePreset => self.palette_entries(),
+            Mode::Everything | Mode::SavePreset | Mode::SaveLayout => self.palette_entries(),
         };
         let mut palette = CommandPalette::open(mode, entries, rows, query);
         palette.arrange(Rect::new(
@@ -2016,7 +2114,16 @@ impl Workspace {
                 self.notice = Some(format!("Saved filter preset {name}"));
                 self.save_settings();
             }
-            Action::Tab(_) | Action::DeletePreset(_) | Action::Nothing => {}
+            Action::DeleteLayout(index) if index < self.settings.layouts.len() => {
+                let removed = self.settings.layouts.remove(index);
+                self.notice = Some(format!("Deleted layout {}", removed.name));
+                self.save_settings();
+            }
+            Action::SaveLayout(name) => self.save_layout(&name),
+            Action::Tab(_)
+            | Action::DeletePreset(_)
+            | Action::DeleteLayout(_)
+            | Action::Nothing => {}
         }
         commands.redraw();
         commands.accessibility_changed();
@@ -2312,7 +2419,7 @@ impl Workspace {
         let mut area = Rect::new(0.0, 0.0, size.0, size.1);
         let menu_bar = area.take_top(snap(menu::BAR_HEIGHT, scale));
         self.menu.menus = self.build_menus();
-        self.menu.arrange(menu_bar, canvas);
+        self.menu.arrange(menu_bar, size.1, canvas);
         if self.show_sidebar {
             self.sidebar
                 .rebuild(&self.tabs, self.active, &self.settings, &self.waker);
@@ -4055,6 +4162,86 @@ mod tests {
         send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
         settle(&mut workspace, |workspace| row_count(workspace) == 1);
         assert_eq!(workspace.tabs[0].chip, Some(Level::Error));
+    }
+
+    /// Sidebar, chips, histogram and details pane.
+    fn panes(workspace: &Workspace) -> (bool, bool, bool, bool) {
+        (
+            workspace.show_sidebar,
+            workspace.show_chips,
+            workspace.show_histogram,
+            workspace.show_details,
+        )
+    }
+
+    fn layout_checked(workspace: &Workspace, name: &str) -> bool {
+        let label = format!("Layout: {name}");
+        workspace
+            .build_menus()
+            .iter()
+            .flat_map(|menu| &menu.items)
+            .any(|item| matches!(item, MenuItem::Command { label: shown, checked: true, .. } if *shown == label))
+    }
+
+    #[test]
+    fn layouts_switch_panes_and_saved_ones_come_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.run_command(command::LAYOUTS + 1, &mut Commands::default());
+        assert_eq!(panes(&first), (true, true, true, true));
+        assert!(layout_checked(&first, "Everything"));
+        first.run_command(command::LAYOUTS, &mut Commands::default());
+        assert_eq!(panes(&first), (false, false, false, true));
+        assert!(layout_checked(&first, "CMTrace"));
+        assert!(!layout_checked(&first, "Everything"));
+
+        // The sidebar, wider, and the histogram, saved as Wide.
+        first.run_command(command::SIDEBAR, &mut Commands::default());
+        first.sidebar.set_width(400.0);
+        first.run_command(command::HISTOGRAM, &mut Commands::default());
+        first.perform(
+            Action::SaveLayout("cmtrace".to_string()),
+            &mut Commands::default(),
+        );
+        assert!(
+            first.settings().layouts.is_empty(),
+            "built-in names aren't taken"
+        );
+        first.run_command(command::SAVE_LAYOUT, &mut Commands::default());
+        type_text(&mut first, "Wide");
+        send(&mut first, Event::KeyDown(Key::Enter, NONE));
+        assert_eq!(first.settings().layouts.len(), 1);
+        assert!(first.status().contains("Saved layout Wide"));
+        assert!(layout_checked(&first, "Wide"));
+        first.run_command(command::LAYOUTS, &mut Commands::default());
+        assert!(!layout_checked(&first, "Wide"));
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        assert_eq!(
+            panes(&second),
+            (false, false, false, true),
+            "the panes in use come back"
+        );
+        assert_eq!(
+            second.sidebar.chosen_width(),
+            400.0,
+            "a sidebar that was never drawn keeps its width"
+        );
+        // Saved layouts are in the palette, as every menu command is.
+        send(&mut second, Event::KeyDown(Key::Char('K'), CTRL));
+        type_text(&mut second, "layout: wide");
+        send(&mut second, Event::KeyDown(Key::Enter, NONE));
+        assert_eq!(panes(&second), (true, false, true, true));
+        assert_eq!(second.sidebar.chosen_width(), 400.0);
+        second.perform(Action::DeleteLayout(0), &mut Commands::default());
+        assert!(second.settings().layouts.is_empty());
+        assert!(second.status().contains("Deleted layout Wide"));
     }
 
     fn two_hour_logs() -> (tempfile::TempDir, Workspace) {

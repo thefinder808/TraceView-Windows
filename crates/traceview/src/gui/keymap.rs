@@ -6,6 +6,7 @@
 //! command. The keys Windows and the app use for editing, switching tabs and
 //! the menus are kept for that.
 
+use super::layouts;
 use super::workspace::command;
 use std::collections::BTreeMap;
 use tv_ui::{Key, Modifiers, Theme};
@@ -180,12 +181,16 @@ pub fn commands() -> Vec<(u32, String, &'static str)> {
         (command::RULES, "rules", "Ctrl+H"),
         (command::FORMATS, "formats", ""),
         (command::EDIT_THEME, "edit_theme", ""),
+        (command::SAVE_LAYOUT, "save_layout", ""),
     ]
     .into_iter()
     .map(|(id, name, default)| (id, name.to_string(), default))
     .collect();
     for (id, theme) in (command::THEMES..).zip(Theme::ALL) {
         list.push((id, format!("theme_{}", theme.name.to_lowercase()), ""));
+    }
+    for (id, layout) in (command::LAYOUTS..).zip(layouts::built_in()) {
+        list.push((id, format!("layout_{}", layout.name.to_lowercase()), ""));
     }
     list
 }

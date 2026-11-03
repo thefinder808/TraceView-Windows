@@ -114,8 +114,10 @@ impl MenuBar {
             .position(MenuItem::is_enabled_command);
     }
 
-    /// Lays out titles and the open popup. Call before drawing or handling input.
-    pub fn arrange(&mut self, bar: Rect, canvas: &mut dyn Canvas) {
+    /// Lays out titles and the open popup. Call before drawing or handling
+    /// input. A popup taller than `bottom` allows wraps into more columns, as
+    /// Windows' own menus can, so every item stays reachable.
+    pub fn arrange(&mut self, bar: Rect, bottom: f32, canvas: &mut dyn Canvas) {
         self.title_rects.clear();
         let mut left = bar.left;
         for menu in &self.menus {
@@ -142,18 +144,23 @@ impl MenuBar {
             }
         }
         let width = ITEM_PADDING * 2.0 + label_width + SHORTCUT_GAP + shortcut_width;
-        let left = self.title_rects[open].left;
-        let mut top = bar.bottom;
+        let first = self.title_rects[open].left;
+        let (mut left, mut top, mut lowest) = (first, bar.bottom, bar.bottom);
         for item in items {
             let height = match item {
                 MenuItem::Command { .. } => ITEM_HEIGHT,
                 MenuItem::Separator => SEPARATOR_HEIGHT,
             };
+            if top + height > bottom && top > bar.bottom {
+                left += width;
+                top = bar.bottom;
+            }
             self.item_rects
                 .push(Rect::new(left, top, left + width, top + height));
             top += height;
+            lowest = lowest.max(top);
         }
-        self.popup = Rect::new(left, bar.bottom, left + width, top);
+        self.popup = Rect::new(first, bar.bottom, left + width, lowest);
     }
 
     fn step_item(&mut self, forward: bool) {
@@ -454,6 +461,7 @@ mod tests {
         alt: true,
     };
     const BAR: Rect = Rect::new(0.0, 0.0, 800.0, BAR_HEIGHT);
+    const BOTTOM: f32 = 600.0;
 
     fn bar() -> MenuBar {
         let mut disabled = MenuItem::command("Paste", "Ctrl+V", 12);
@@ -474,19 +482,19 @@ mod tests {
                 items: vec![MenuItem::command("Copy", "Ctrl+C", 11), disabled],
             },
         ]);
-        bar.arrange(BAR, &mut RecordingCanvas::new());
+        bar.arrange(BAR, BOTTOM, &mut RecordingCanvas::new());
         bar
     }
 
     fn key(bar: &mut MenuBar, key: Key, modifiers: Modifiers) -> MenuResponse {
         let response = bar.handle(Event::KeyDown(key, modifiers));
-        bar.arrange(BAR, &mut RecordingCanvas::new());
+        bar.arrange(BAR, BOTTOM, &mut RecordingCanvas::new());
         response
     }
 
     fn click(bar: &mut MenuBar, point: Point) -> MenuResponse {
         let response = bar.handle(Event::MouseDown(point, MouseButton::Left, NONE));
-        bar.arrange(BAR, &mut RecordingCanvas::new());
+        bar.arrange(BAR, BOTTOM, &mut RecordingCanvas::new());
         response
     }
 
@@ -622,5 +630,33 @@ mod tests {
         assert!(texts.contains(&"Open..."));
         assert!(texts.contains(&"Ctrl+O"));
         assert!(canvas.clips_balance());
+    }
+
+    #[test]
+    fn a_menu_too_tall_for_the_window_wraps_into_columns() {
+        let items = (0..30)
+            .map(|index| MenuItem::command(&format!("Item {index}"), "", index))
+            .collect();
+        let mut bar = MenuBar::new(vec![Menu {
+            title: "View".to_string(),
+            items,
+        }]);
+        // Room for ten items below the bar.
+        let bottom = BAR_HEIGHT + 10.0 * ITEM_HEIGHT;
+        key(&mut bar, Key::Char('V'), ALT);
+        bar.arrange(BAR, bottom, &mut RecordingCanvas::new());
+        let (first, eleventh) = (bar.item_rect(0).unwrap(), bar.item_rect(10).unwrap());
+        assert_eq!(eleventh.top, first.top, "the eleventh item starts a column");
+        assert_eq!(eleventh.left, first.right);
+        assert!(bar.item_rect(29).unwrap().bottom <= bottom);
+        let response = {
+            let point = center(bar.item_rect(25).unwrap());
+            bar.handle(Event::MouseDown(point, MouseButton::Left, NONE))
+        };
+        assert_eq!(
+            response.command,
+            Some(25),
+            "items in later columns can be clicked"
+        );
     }
 }

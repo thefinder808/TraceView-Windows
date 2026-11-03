@@ -95,6 +95,13 @@ impl Splitter {
         self.clamp(self.wanted)
     }
 
+    /// The size asked for, which `position` gives whenever there's room. It's
+    /// the one to save, since it doesn't depend on the window's size, or on
+    /// whether the splitter has been laid out yet.
+    pub fn wanted(&self) -> f32 {
+        self.wanted
+    }
+
     /// Moves the line, for example to a size saved from the last session.
     pub fn set_position(&mut self, position: f32) {
         self.wanted = position;

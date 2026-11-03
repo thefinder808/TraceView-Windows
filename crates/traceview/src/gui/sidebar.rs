@@ -102,12 +102,23 @@ impl Sidebar {
         }
     }
 
+    /// The width it's laid out at, for tests to check against.
+    #[cfg(test)]
     pub fn width(&self) -> f32 {
         self.splitter.position()
     }
 
+    /// The width chosen, to save. Unlike `width`, it's known before the
+    /// sidebar is first shown, and doesn't shrink with the window.
+    pub fn chosen_width(&self) -> f32 {
+        self.splitter.wanted()
+    }
+
+    /// Ignores a width that isn't a number, as a hand-edited file might give.
     pub fn set_width(&mut self, width: f32) {
-        self.splitter.set_position(width);
+        if width.is_finite() {
+            self.splitter.set_position(width);
+        }
     }
 
     /// What choosing a list item does, for screen readers that choose it.

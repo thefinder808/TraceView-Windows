@@ -1,9 +1,10 @@
 //! The command palette (Ctrl+K): every menu command, open tab, recent log and
 //! filter preset in one searchable list. Typing ":" and a number goes to that
-//! row, which is what Ctrl+G opens it for. It also asks for a preset's name,
-//! and lists installed fonts to choose from.
+//! row, which is what Ctrl+G opens it for. It also asks for a preset's or a
+//! layout's name, and lists installed fonts to choose from.
 
 use super::fonts::Target;
+use super::layouts;
 use std::path::PathBuf;
 use tv_ui::palette::{Palette, PaletteItem};
 use tv_ui::{Canvas, Event, Point, Rect, Theme};
@@ -19,6 +20,9 @@ pub enum Action {
     ApplyPreset(usize),
     DeletePreset(usize),
     SavePreset(String),
+    /// A saved layout, counting from 0 after the built-in ones.
+    DeleteLayout(usize),
+    SaveLayout(String),
     /// A font family, by name.
     SetFont(Target, String),
     /// Asks for a command's new shortcut.
@@ -34,6 +38,8 @@ pub enum Mode {
     Everything,
     /// Asks for the name to save the current filter under.
     SavePreset,
+    /// Asks for the name to save the panes shown now under.
+    SaveLayout,
     /// Lists installed fonts for the log or the window.
     Font(Target),
     /// Lists commands with their shortcuts, to change one.
@@ -97,6 +103,7 @@ impl CommandPalette {
         match self.mode {
             Mode::Everything => "Type a command, a log, a preset, or : and a row number",
             Mode::SavePreset => "Name for this filter preset",
+            Mode::SaveLayout => "Name for this layout",
             Mode::Font(Target::Log) => "Type to find a font. Fixed-width fonts line logs up best",
             Mode::Font(Target::Window) => "Type to find a font",
             Mode::Keys => "Type to find a command, then press Enter to change its shortcut",
@@ -108,6 +115,7 @@ impl CommandPalette {
         match self.mode {
             Mode::Everything => "Command palette",
             Mode::SavePreset => "Save filter preset",
+            Mode::SaveLayout => "Save layout",
             Mode::Font(Target::Log) => "Choose the log font",
             Mode::Font(Target::Window) => "Choose the window font",
             Mode::Keys => "Keyboard shortcuts",
@@ -126,6 +134,27 @@ impl CommandPalette {
                     vec![(
                         PaletteItem::new(&format!("Save filter preset: {name}"), "", "Enter", 0),
                         Action::SavePreset(name.to_string()),
+                    )]
+                }
+            }
+            Mode::SaveLayout => {
+                let name = query.trim();
+                if name.is_empty() {
+                    Vec::new()
+                } else if layouts::is_built_in(name) {
+                    vec![(
+                        PaletteItem::new(
+                            &format!("{name}: a built-in layout has this name, so choose another"),
+                            "",
+                            "",
+                            0,
+                        ),
+                        Action::Nothing,
+                    )]
+                } else {
+                    vec![(
+                        PaletteItem::new(&format!("Save layout: {name}"), "", "Enter", 0),
+                        Action::SaveLayout(name.to_string()),
                     )]
                 }
             }
@@ -283,6 +312,22 @@ mod tests {
         assert_eq!(
             enter(&mut palette),
             Some(Action::SavePreset("Download errors".to_string()))
+        );
+    }
+
+    #[test]
+    fn saving_a_layout_refuses_built_in_names() {
+        let mut palette = CommandPalette::open(Mode::SaveLayout, Vec::new(), 100, "");
+        type_text(&mut palette, "cmtrace");
+        assert_eq!(enter(&mut palette), Some(Action::Nothing));
+        assert!(palette
+            .palette
+            .matched_item(0)
+            .is_some_and(|item| item.label.contains("a built-in layout has this name")));
+        type_text(&mut palette, " wide");
+        assert_eq!(
+            enter(&mut palette),
+            Some(Action::SaveLayout("cmtrace wide".to_string()))
         );
     }
 

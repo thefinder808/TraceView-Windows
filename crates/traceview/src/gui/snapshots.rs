@@ -285,6 +285,38 @@ fn an_open_menu_draws_over_the_grid() {
 }
 
 #[test]
+fn a_menu_taller_than_the_window_wraps_and_lists_layouts() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    render(&mut workspace, "menu-view", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('V'), ALT));
+    let frame = render(&mut workspace, "menu-view", 96.0, |_| true);
+    let theme = workspace.theme();
+    let menu = workspace.menu();
+    let items = &menu.menus[menu.open_menu().unwrap()].items;
+    let label = |index: usize| match &items[index] {
+        tv_ui::menu::MenuItem::Command { label, .. } => label.clone(),
+        tv_ui::menu::MenuItem::Separator => String::new(),
+    };
+    let cmtrace = (0..items.len())
+        .find(|index| label(*index) == "Layout: CMTrace")
+        .unwrap();
+    assert_eq!(label(cmtrace + 1), "Layout: Everything");
+    let first = menu.item_rect(0).unwrap();
+    let last = menu.item_rect(items.len() - 1).unwrap();
+    assert!(last.bottom <= 640.0, "the last item is in the window");
+    assert!(last.left > first.left, "and in a second column");
+    assert!(
+        frame.has_ink(
+            Rect::new(last.left + 20.0, last.top, last.right, last.bottom),
+            theme.panel_background
+        ),
+        "the second column drew"
+    );
+}
+
+#[test]
 fn welcome_screen_shows_with_no_log() {
     let mut workspace = Workspace::new(Waker::detached(), 0, false);
     workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);
