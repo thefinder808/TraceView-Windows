@@ -3,15 +3,18 @@
 //! beside the EXE when a `traceview.toml` is already there, which makes a copy
 //! portable.
 //!
-//! The file is read once at launch, before the first frame, so the window
-//! opens in the right theme. Saving happens on a background thread, because
-//! `%APPDATA%` can be redirected to a network share.
+//! The file is read at launch, before the first frame, so the window opens in
+//! the right theme, and again whenever it's edited elsewhere (see `reload`).
+//! Saving happens on a background thread, because `%APPDATA%` can be
+//! redirected to a network share, and never writes over an edit it hasn't
+//! seen.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 pub const FILE_NAME: &str = "traceview.toml";
@@ -26,7 +29,7 @@ const MOST_COLUMNS: usize = 20;
 const MOST_KEYS: usize = 200;
 pub const MOST_FORMATS: usize = 50;
 pub const MOST_LAYOUTS: usize = 50;
-const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
+const HEADER: &str = "# TraceView settings. A running TraceView loads changes saved here within a\n# second. If a line has a mistake, it says so and saves nothing until it's fixed.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -287,33 +290,53 @@ pub fn location() -> Option<PathBuf> {
     Some(PathBuf::from(app_data).join("TraceView").join(FILE_NAME))
 }
 
-/// Saves settings in the background, newest first.
+/// What the file holds as far as TraceView knows: the text it last read or
+/// wrote there. A file that doesn't match was changed elsewhere, so it's
+/// loaded rather than written over. `None` until a good file has been read.
+pub type Known = Arc<Mutex<Option<String>>>;
+
+pub fn lock(known: &Known) -> MutexGuard<'_, Option<String>> {
+    known.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+enum Write {
+    Save(String),
+    /// The window took in this text from the file, so saving over it is safe.
+    Loaded(Option<String>),
+}
+
+/// Saves settings in the background, newest first, and never over an edit
+/// made elsewhere that hasn't been loaded yet.
 pub struct Store {
-    writes: Option<Sender<String>>,
+    writes: Option<Sender<Write>>,
     writer: Option<JoinHandle<()>>,
     /// The settings file, so files that go with it, such as themes, sit beside it.
     path: Option<PathBuf>,
+    known: Known,
 }
 
 impl Store {
     /// A store that never writes, for tests, and for a settings file that
-    /// failed to load, so it isn't overwritten before it's fixed.
+    /// can't be read at all.
     pub fn disabled() -> Self {
         Self {
             writes: None,
             writer: None,
             path: None,
+            known: Known::default(),
         }
     }
 
-    fn writing_to(path: PathBuf) -> Self {
+    fn writing_to(path: PathBuf, text: Option<String>) -> Self {
         let (writes, receiver) = channel();
-        let target = path.clone();
-        let writer = std::thread::spawn(move || write_settings(&target, &receiver));
+        let known: Known = Arc::new(Mutex::new(text));
+        let (target, shared) = (path.clone(), known.clone());
+        let writer = std::thread::spawn(move || write_settings(&target, &receiver, &shared));
         Self {
             writes: Some(writes),
             writer: Some(writer),
             path: Some(path),
+            known,
         }
     }
 
@@ -325,25 +348,40 @@ impl Store {
             .and_then(|path| path.parent().map(Path::to_path_buf))
     }
 
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// What the file holds as far as this store knows, for live reload to
+    /// tell its own saves from edits made elsewhere.
+    pub fn known(&self) -> Known {
+        self.known.clone()
+    }
+
     /// Reads the settings file. A missing file gives the defaults. A file with
-    /// a mistake also gives the defaults, plus a message saying what's wrong.
+    /// a mistake also gives the defaults, plus a message saying what's wrong,
+    /// and nothing is saved over it until it's fixed and loaded.
     pub fn open(path: Option<PathBuf>) -> (Self, Settings, Option<String>) {
         let Some(path) = path else {
             return (Self::disabled(), Settings::default(), None);
         };
         match std::fs::read_to_string(&path) {
             Ok(text) => match parse(&text) {
-                Ok(settings) => (Self::writing_to(path), settings, None),
+                Ok(settings) => (Self::writing_to(path, Some(text)), settings, None),
                 Err(error) => {
                     let message = format!(
-                        "Settings weren't loaded ({error}). Fix {} and restart",
+                        "Settings weren't loaded ({error}). Fix {}, and they'll load. Until then nothing is saved",
                         path.display()
                     );
-                    (Self::disabled(), Settings::default(), Some(message))
+                    (
+                        Self::writing_to(path, None),
+                        Settings::default(),
+                        Some(message),
+                    )
                 }
             },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                (Self::writing_to(path), Settings::default(), None)
+                (Self::writing_to(path, None), Settings::default(), None)
             }
             Err(error) => {
                 let message = format!("Settings weren't loaded: {error}");
@@ -354,7 +392,16 @@ impl Store {
 
     pub fn save(&self, settings: &Settings) {
         if let (Some(writes), Ok(text)) = (&self.writes, toml::to_string_pretty(settings)) {
-            let _ = writes.send(format!("{HEADER}{text}"));
+            let _ = writes.send(Write::Save(format!("{HEADER}{text}")));
+        }
+    }
+
+    /// Says the window took in this text from the file, so later saves may
+    /// replace it. It goes through the writer, after any save sent before it,
+    /// so the window never waits for the file.
+    pub fn loaded(&self, text: String) {
+        if let Some(writes) = &self.writes {
+            let _ = writes.send(Write::Loaded(Some(text)));
         }
     }
 }
@@ -369,13 +416,48 @@ impl Drop for Store {
     }
 }
 
-fn write_settings(path: &Path, saves: &Receiver<String>) {
-    while let Ok(mut text) = saves.recv() {
-        // Only the newest settings matter.
-        while let Ok(newer) = saves.try_recv() {
-            text = newer;
+fn write_settings(path: &Path, writes: &Receiver<Write>, known: &Known) {
+    while let Ok(first) = writes.recv() {
+        let batch: Vec<Write> = std::iter::once(first).chain(writes.try_iter()).collect();
+        // Only the newest save matters, but loads before it come first.
+        let newest = batch
+            .iter()
+            .rposition(|write| matches!(write, Write::Save(_)));
+        for (index, write) in batch.into_iter().enumerate() {
+            match write {
+                Write::Loaded(text) => *lock(known) = text,
+                Write::Save(text) if Some(index) == newest => {
+                    save_unless_changed(path, &text, known)
+                }
+                Write::Save(_) => {}
+            }
         }
-        let _ = write_atomically(path, &text);
+    }
+}
+
+/// Writes the settings, unless the file holds something other than what was
+/// last read or written, which means it was edited elsewhere. That edit wins:
+/// live reload loads it, and this save is dropped. The new text is written
+/// beside the file first, so the check comes just before the swap. An edit
+/// saved in the instant between them would still be replaced.
+fn save_unless_changed(path: &Path, text: &str, known: &Known) {
+    let mut known = lock(known);
+    let temporary = path.with_extension("toml.tmp");
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&temporary, text));
+    if written.is_err() {
+        return;
+    }
+    let free = match std::fs::read_to_string(path) {
+        Ok(current) => known.as_deref() == Some(current.as_str()),
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    };
+    if free && std::fs::rename(&temporary, path).is_ok() {
+        *known = Some(text.to_string());
+    } else {
+        let _ = std::fs::remove_file(&temporary);
     }
 }
 

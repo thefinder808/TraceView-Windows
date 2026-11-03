@@ -20,6 +20,7 @@ mod log_view;
 mod lookup;
 mod overview;
 mod places;
+mod reload;
 mod row_cache;
 mod rules;
 mod rules_panel;

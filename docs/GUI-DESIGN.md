@@ -281,7 +281,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation, so these need a person:** the ARM64 EXE on a real ARM64 PC, how the sidebar, chips and split view feel, and Narrator with the new controls.
 
-## Milestone 5 so far
+## Milestone 5
 
 **Highlight rules** (Tools > Highlight rules, Ctrl+H, as CMTrace's Highlight is):
 
@@ -297,7 +297,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Colors are named palette entries, not any color.** Each theme defines its own shade of each, tested for contrast, so a rule picked in Classic stays readable in Dark. A theme file can change the shades.
 - **There's no text-color-only style.** Text in a chosen color can't be held to contrast against every severity row, and the marker already keeps the severity visible.
 - **No format condition.** With two formats, the filter syntax's level, component and thread cover what's needed.
-- **Rules live in `traceview.toml`,** not a file of their own. Editing it by hand while TraceView runs still needs a restart. Reloading every customization file live is a later step of this milestone.
+- **Rules live in `traceview.toml`,** not a file of their own. Edits made there by hand load while TraceView runs.
 
 **Not covered by automation:** using the editor with a mouse and with Narrator on a real screen.
 
@@ -345,7 +345,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **Ctrl+1 to Ctrl+9, copy, select all and Exit can't be changed.** They're the keys Windows and CMTrace users already rely on for those, and the text boxes use the same editing keys.
 - **One shortcut per command,** rather than several.
-- **Changes are made in the app,** or by hand in `traceview.toml` while it's closed, until live reload arrives.
+- **Changes are made in the app,** or by hand in `traceview.toml`, which loads while TraceView runs.
 
 **Custom log formats:**
 
@@ -374,8 +374,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **Metrics aren't edited in the app.** A file can set the header and status bar heights (16 to 48 pixels), but the editor only changes colors, since the font settings already size rows.
 - **No color picker.** Colors are typed or pasted as hex. A picker would be a large control for something done rarely.
-- **No deleting themes in the app.** Open folder, then delete the file. A theme file deleted while TraceView runs stays in the menu until the next launch.
-- **Hand edits to a theme file show after a restart,** until live reload arrives.
+- **No deleting themes in the app.** Open folder, then delete the file, and it leaves the menu within a second.
 
 **Not covered by automation:** using the editor with Narrator, and Open folder on a real desktop.
 
@@ -394,6 +393,24 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Saved layouts have no shortcuts of their own.** Ctrl+K and a few letters of the name reach one, as with filter presets.
 
 **Fixed along the way:** the sidebar's width was saved as 0 whenever settings were saved in a session where the sidebar never showed, so it next opened at its narrowest. Its chosen width is saved now.
+
+**Live reload:**
+
+- **Edits to `traceview.toml` and theme files load within a second** while TraceView runs, and the status bar says "Settings reloaded". That covers the theme, panes, rules, columns, fonts, shortcuts, presets, layouts and bookmarks. New log formats apply to logs opened afterwards, as they do when edited in the app.
+- **A hand edit wins.** TraceView never saves over an edit it hasn't loaded yet. If it was about to save a change of its own, that change is dropped and the edit is loaded. An editor of settings that's open, such as Highlight rules, closes and says why.
+- **A file with a mistake** keeps the settings in use and says what's wrong and on which line. TraceView saves nothing until it's fixed, and fixing it loads it. That's true at launch too, where it used to need a restart, and theme files now still load when the settings file has a mistake.
+- **A deleted settings file** is left alone, and the next change made in the app writes it again.
+- **Theme files** reload as a set. A changed one recolors the window if it's in use, a new one joins the menu, and a deleted one leaves it.
+
+**Differences from this design:**
+
+- **Checks run once a second,** not on change notifications, which network shares don't deliver reliably. A check reads only sizes and times.
+- **Comments and spacing in `traceview.toml` don't survive** TraceView's next save, which writes the whole file again. Edits to values do.
+
+**Fixed along the way:**
+
+- **Hidden severity chips** were still laid out, invisibly, at the window's corner, so screen readers listed them. They exist only while they show now.
+- **The end-to-end check** ran the EXE against the real settings in `%APPDATA%`, so its test logs ended up in the Recent list. It runs a portable copy with its own settings now, and it checks live reload in the real window.
 
 **Fixed along the way:** a frame now always brings screen readers up to date. Before, what came from layout, such as the severity chips' counts and an editor's buttons, could stay out of date for them until the next input. The end-to-end check caught it as an intermittent failure once the index cache had to be rebuilt.
 
