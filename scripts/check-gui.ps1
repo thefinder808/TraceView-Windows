@@ -5,11 +5,16 @@
 # opens and closes several times while it runs.
 
 $root = Split-Path $PSScriptRoot -Parent
-$exe = Join-Path $root 'target\release\traceview.exe'
+$built = Join-Path $root 'target\release\traceview.exe'
 $log = Join-Path $root 'test-data\perf\sccm-5gb.log'
 $workDir = Join-Path $root 'spike-output\gui-check'
 Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $workDir | Out-Null
+# A portable copy, with settings of its own beside it, so the checks never
+# change the real settings in %APPDATA%, such as the recent logs.
+$exe = Join-Path $workDir 'traceview.exe'
+Copy-Item $built $exe
+New-Item -ItemType File (Join-Path $workDir 'traceview.toml') | Out-Null
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -TypeDefinition @'
@@ -170,6 +175,26 @@ Start-Sleep -Seconds 5
 $process.Refresh()
 $cpuUsed = $process.TotalProcessorTime.TotalMilliseconds - $cpuBefore
 Check 'watching a log costs almost nothing' ($cpuUsed -lt 50) ("{0:N0} ms used in 5 s" -f $cpuUsed)
+Stop-App $process | Out-Null
+
+'--- live reload'
+$process = Start-Process $exe -ArgumentList "`"$tail`"" -PassThru
+$window = Get-MainWindow $process
+$element = Get-Element $window
+$named = { param($type) Find-All $element $type | ForEach-Object { $_.Current.Name } }
+$ready = Wait-Until 10 { & $named ([System.Windows.Automation.ControlType]::Button) | Where-Object { $_ -match '^All, ' } }
+Check 'the chips show before the edit' ($null -ne $ready) "$ready"
+$watch = [Diagnostics.Stopwatch]::StartNew()
+"theme = `"Dark`"`r`nchips = false`r`n" | Set-Content (Join-Path $workDir 'traceview.toml') -Encoding ascii -NoNewline
+$all = [System.Windows.Automation.Condition]::TrueCondition
+$reloaded = Wait-Until 5 {
+    $element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $all) |
+        ForEach-Object { $_.Current.Name } | Where-Object { $_ -match 'Settings reloaded' }
+}
+$watch.Stop()
+Check 'a settings file edited by hand is loaded' ($null -ne $reloaded) ("{0:N0} ms" -f $watch.ElapsedMilliseconds)
+$gone = Wait-Until 5 { -not (& $named ([System.Windows.Automation.ControlType]::Button) | Where-Object { $_ -match '^All, ' }) }
+Check 'and takes effect' $gone 'the chips it turned off are gone'
 Stop-App $process | Out-Null
 
 '--- starting from a shell'

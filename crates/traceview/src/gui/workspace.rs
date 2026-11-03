@@ -14,6 +14,7 @@ use super::layouts;
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
+use super::reload::{Reload, Reloader};
 use super::row_cache::{cells_from_row, SharedLog};
 use super::rules::RuleSet;
 use super::rules_panel::{Part, RulesPanel};
@@ -23,7 +24,7 @@ use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
 use super::themes::{self, FileTheme};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel, ThemesResponse};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -127,6 +128,15 @@ pub enum ThemeChoice {
 fn builtin_theme_for(id: u32) -> Option<&'static Theme> {
     id.checked_sub(command::THEMES)
         .and_then(|index| Theme::ALL.get(index as usize).copied())
+}
+
+/// Problems as one message: the first, and how many more there are.
+fn joined(problems: &[String]) -> Option<String> {
+    match problems {
+        [] => None,
+        [only] => Some(only.clone()),
+        [first, rest @ ..] => Some(format!("{first}, and {} more", rest.len())),
+    }
 }
 
 /// `base`, or `base 2`, `base 3` and so on, whichever isn't taken yet.
@@ -361,6 +371,11 @@ pub struct Workspace {
     /// Where theme files go, beside the settings file. `None` when settings
     /// aren't saved, as in tests.
     themes_folder: Option<PathBuf>,
+    /// What was wrong with theme files when they were last read, so a reload
+    /// only says it again if it's new.
+    theme_problems: Vec<String>,
+    /// Notices settings and theme files edited elsewhere.
+    reloader: Option<Reloader>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
     /// Which command each shortcut runs.
@@ -453,6 +468,8 @@ impl Workspace {
             themes_panel: None,
             file_themes: Vec::new(),
             themes_folder: None,
+            theme_problems: Vec::new(),
+            reloader: None,
             rules: Arc::default(),
             keymap: Keymap::new(&BTreeMap::new()),
             formats: Vec::new(),
@@ -482,26 +499,108 @@ impl Workspace {
             .map(themes::load)
             .unwrap_or_default();
         self.file_themes = file_themes;
+        self.take_settings(settings);
+        // A settings problem matters more than a theme file's.
+        self.notice = problem.or_else(|| joined(&theme_problems));
+        self.theme_problems = theme_problems;
+        self.reloader = match (store.path(), &self.themes_folder) {
+            (Some(path), Some(folder)) => Some(Reloader::start(
+                path.to_path_buf(),
+                store.known(),
+                folder.clone(),
+                self.waker.clone(),
+            )),
+            _ => None,
+        };
+        self.store = store;
+    }
+
+    /// Puts settings in place, at launch or when the file was edited.
+    fn take_settings(&mut self, settings: Settings) {
         self.theme_choice = self
             .theme_named(&settings.theme)
             .map_or(ThemeChoice::System, ThemeChoice::Fixed);
-        // A settings problem matters more than a theme file's.
-        let problem = problem.or_else(|| match theme_problems.as_slice() {
-            [] => None,
-            [only] => Some(only.clone()),
-            [first, rest @ ..] => Some(format!("{first}, and {} more", rest.len())),
-        });
         self.show_details = settings.details_pane;
         self.show_sidebar = settings.sidebar;
         self.show_chips = settings.chips;
         self.show_histogram = settings.histogram;
         self.sidebar.set_width(settings.sidebar_width);
         self.settings = settings;
-        self.store = store;
-        self.notice = problem;
         self.keymap = Keymap::new(&self.settings.keys);
         self.formats = settings::compile_formats(&self.settings.formats);
         self.apply_rules();
+        let paths: BTreeSet<PathBuf> = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.paths.iter().cloned())
+            .collect();
+        for path in paths {
+            let rows = self.settings.bookmarks_for(&path);
+            for tab in &mut self.tabs {
+                tab.update_bookmarks(&path, &rows);
+            }
+        }
+    }
+
+    /// Puts in place what live reload found. An edited settings file wins
+    /// over the window's own state, and an editor of settings that's open is
+    /// closed, since what it shows is out of date.
+    fn reloaded(&mut self, reload: Reload, commands: &mut Commands) {
+        match reload {
+            Reload::Settings(settings, text) => {
+                let editing = self.rules_panel.is_some()
+                    || self.columns_panel.is_some()
+                    || self.fonts_panel.is_some()
+                    || self.formats_panel.is_some()
+                    || self.themes_panel.is_some()
+                    || self.shortcut_panel.is_some()
+                    || self
+                        .palette
+                        .as_ref()
+                        .is_some_and(|palette| palette.mode() != Mode::Everything);
+                if editing {
+                    self.close_panels();
+                    commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+                }
+                self.take_settings(*settings);
+                self.store.loaded(text);
+                if !self.show_sidebar && self.focus == Focus::Sidebar {
+                    self.set_focus(Focus::Grid, commands);
+                }
+                self.notice = Some(
+                    if editing {
+                        "Settings were edited in traceview.toml, so they're loaded and the editor closed"
+                    } else {
+                        "Settings reloaded from traceview.toml"
+                    }
+                    .to_string(),
+                );
+            }
+            Reload::Mistake(error) => {
+                self.notice = Some(format!(
+                    "traceview.toml has a mistake ({error}), so it wasn't loaded. Nothing is saved until it's fixed"
+                ));
+            }
+            Reload::Themes(loaded, problems) => {
+                self.file_themes = loaded;
+                // The theme editor decides the theme while it's open.
+                if self.themes_panel.is_none() {
+                    if let ThemeChoice::Fixed(theme) = self.theme_choice {
+                        if let Some(fresh) = self.theme_named(theme.name) {
+                            self.theme_choice = ThemeChoice::Fixed(fresh);
+                        }
+                    }
+                }
+                if problems != self.theme_problems {
+                    if let Some(problem) = joined(&problems) {
+                        self.notice = Some(problem);
+                    }
+                    self.theme_problems = problems;
+                }
+            }
+        }
+        commands.redraw();
+        commands.accessibility_changed();
     }
 
     /// Compiles the highlight rules and marks every tab's rows with them.
@@ -2360,6 +2459,14 @@ impl Workspace {
     /// Picks up finished background work from every tab.
     pub fn woken(&mut self, commands: &mut Commands) {
         let waker = self.waker.clone();
+        let reloads = self
+            .reloader
+            .as_ref()
+            .map(Reloader::take)
+            .unwrap_or_default();
+        for reload in reloads {
+            self.reloaded(reload, commands);
+        }
         for tab in &mut self.tabs {
             tab.poll(&waker, &self.settings, &self.rules);
         }
@@ -2478,15 +2585,21 @@ impl Workspace {
         let other = other_area
             .map(|area| pane_layout(area, other_ready, self.show_chips, other_histogram, scale));
 
+        // Chips exist only while they show, so hidden ones can't be clicked
+        // or heard by a screen reader.
         let (chip_list, filters) = match self.active_tab() {
-            Some(tab) => overview::chips(&tab.overview.counts.levels, tab.chip, theme),
-            None => (Vec::new(), Vec::new()),
+            Some(tab) if focused.chips.height() > 0.0 => {
+                overview::chips(&tab.overview.counts.levels, tab.chip, theme)
+            }
+            _ => (Vec::new(), Vec::new()),
         };
         self.chip_bar.arrange(focused.chips, &chip_list, canvas);
         self.chips = chip_list;
         self.chip_filters = filters;
         let other_chips = match (other, other_tab) {
-            (Some(_), Some(tab)) => overview::chips(&tab.overview.counts.levels, tab.chip, theme).0,
+            (Some(pane), Some(tab)) if pane.chips.height() > 0.0 => {
+                overview::chips(&tab.overview.counts.levels, tab.chip, theme).0
+            }
             _ => Vec::new(),
         };
         self.other_chip_bar.arrange(
@@ -3433,6 +3546,146 @@ mod tests {
             panel.path.as_deref(),
             Some(folder.join("Paper.toml").as_path())
         );
+    }
+
+    /// Gives the reloader time to notice anything, and the workspace time to
+    /// take it in.
+    fn idle(workspace: &mut Workspace) {
+        for _ in 0..10 {
+            settle(workspace, |_| true);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn hidden_chips_cant_be_clicked_or_heard() {
+        let (_dir, mut workspace) = opened(100);
+        settle(&mut workspace, |workspace| {
+            workspace.chip_list().count() > 0
+        });
+        workspace.run_command(command::CHIPS, &mut Commands::default());
+        settle(&mut workspace, |_| true);
+        assert_eq!(workspace.chip_list().count(), 0);
+    }
+
+    #[test]
+    fn settings_edited_by_hand_load_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut workspace = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        workspace.use_settings(settings, store, problem);
+        workspace.open_paths(vec![log.clone()]);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        // A change made in the window is saved, and isn't read back as an edit.
+        workspace.run_command(command::DETAILS, &mut Commands::default());
+        settle(&mut workspace, |_| {
+            std::fs::read_to_string(&file).is_ok_and(|text| text.contains("details_pane = false"))
+        });
+        idle(&mut workspace);
+        assert!(!workspace.status().contains("reloaded"));
+
+        // Opening the editor saves, so that's left to finish first, as it
+        // would be before a person could edit the file.
+        workspace.run_command(command::RULES, &mut Commands::default());
+        idle(&mut workspace);
+        let key = log.to_string_lossy().to_lowercase();
+        let edited = format!(
+            "theme = \"Neon\"\n\n[[rules]]\npattern = \"message 9\"\ncolor = \"blue\"\n\n[bookmarks]\n'{key}' = [3]\n"
+        );
+        std::fs::write(&file, &edited).unwrap();
+        settle(&mut workspace, |workspace| workspace.theme().name == "Neon");
+        assert!(workspace.rules_panel.is_none(), "the open editor closed");
+        assert!(workspace.status().contains("the editor closed"));
+        assert!(
+            workspace.show_details,
+            "left out of the file, so the default"
+        );
+        settle(&mut workspace, |workspace| is_marked(workspace, 95));
+        assert!(workspace.tabs[0].rows().unwrap().bookmarked(3));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            edited,
+            "nothing was saved over it"
+        );
+
+        // A mistake is pointed out, and nothing is saved over it.
+        std::fs::write(&file, "theme = \n").unwrap();
+        settle(&mut workspace, |workspace| {
+            workspace.status().contains("has a mistake (line 1")
+        });
+        assert_eq!(workspace.theme().name, "Neon", "the settings in use stay");
+        workspace.run_command(command::CHIPS, &mut Commands::default());
+        idle(&mut workspace);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = \n");
+    }
+
+    #[test]
+    fn a_file_broken_at_launch_loads_once_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let folder = dir.path().join(themes::FOLDER);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("Night.toml"),
+            "name = \"Night\"\nbased_on = \"Dark\"\n",
+        )
+        .unwrap();
+        std::fs::write(&file, "theme = \"Night\"\nsidebar = maybe\n").unwrap();
+        let mut workspace = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        workspace.use_settings(settings, store, problem);
+        assert!(workspace.status().contains("Until then nothing is saved"));
+        assert_eq!(workspace.file_themes.len(), 1, "theme files still load");
+        std::fs::write(&file, "theme = \"Night\"\nsidebar = true\n").unwrap();
+        settle(&mut workspace, |workspace| {
+            workspace.theme().name == "Night"
+        });
+        assert!(workspace.show_sidebar);
+        assert!(workspace.status().contains("Settings reloaded"));
+        // Saving works again.
+        workspace.run_command(command::CHIPS, &mut Commands::default());
+        settle(&mut workspace, |_| {
+            std::fs::read_to_string(&file).is_ok_and(|text| text.contains("chips = false"))
+        });
+    }
+
+    #[test]
+    fn theme_files_edited_by_hand_load_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let folder = dir.path().join(themes::FOLDER);
+        let mut workspace = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        workspace.use_settings(settings, store, problem);
+        std::fs::create_dir_all(&folder).unwrap();
+        let night = folder.join("Night.toml");
+        std::fs::write(&night, "name = \"Night\"\nbased_on = \"Dark\"\n").unwrap();
+        settle(&mut workspace, |workspace| workspace.file_themes.len() == 1);
+        workspace.run_command(command::FILE_THEMES, &mut Commands::default());
+        assert_eq!(workspace.theme().name, "Night");
+
+        // Editing the theme in use recolors the window.
+        std::fs::write(
+            &night,
+            "name = \"Night\"\nbased_on = \"Dark\"\n[colors]\ngrid_background = \"#102030\"\n",
+        )
+        .unwrap();
+        settle(&mut workspace, |workspace| {
+            workspace.theme().grid_background == Color::rgb(0x10_20_30)
+        });
+
+        // A broken one is pointed out.
+        std::fs::write(folder.join("Broken.toml"), "name = 5\n").unwrap();
+        settle(&mut workspace, |workspace| {
+            workspace
+                .status()
+                .contains("Theme file Broken.toml wasn't used")
+        });
+        assert_eq!(workspace.file_themes.len(), 1);
     }
 
     fn is_marked(workspace: &Workspace, row: usize) -> bool {

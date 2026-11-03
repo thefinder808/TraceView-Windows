@@ -2,7 +2,7 @@
 
 A fast, customizable Windows log viewer inspired by CMTrace, and the counterpart to the [macOS TraceView](https://github.com/thefinder808/TraceView).
 
-**Early days.** It can stand in for CMTrace, and most of TraceView's own features are in: severity chips, the event histogram, the sidebar, bookmarks, filter presets, split view, the command palette and five themes. Customization comes next. See [the GUI design](docs/GUI-DESIGN.md) and [the architecture](docs/ARCHITECTURE.md).
+**Early days.** It can stand in for CMTrace, and most of TraceView's own features are in: severity chips, the event histogram, the sidebar, bookmarks, filter presets, split view, the command palette and five themes. So is customization: highlight rules, columns, fonts, shortcuts, custom log formats, theme files, named layouts, and settings that load as they're edited. See [the GUI design](docs/GUI-DESIGN.md) and [the architecture](docs/ARCHITECTURE.md).
 
 ## Build
 
@@ -59,6 +59,8 @@ Every shortcut here can be changed, and any command can be given one, in Tools >
 Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a regex whose named groups say where the time, level, component, thread, source and message are.
 
 View > Layout: CMTrace hides everything but the grid and details pane, and Layout: Everything shows every pane. View > Save layout as... names the panes you have open, to switch back to later.
+
+Settings live in `traceview.toml` and themes in the `themes` folder beside it, in `%APPDATA%\TraceView`, or beside the EXE for a portable copy. Both can be edited by hand while TraceView runs, and load within a second.
 
 View > Edit theme changes any color of the theme in use, with the window recoloring as you type. Editing a built-in theme makes a copy, saved as a small file in the `themes` folder beside `traceview.toml`. Copy a file into that folder to share a theme.
 
