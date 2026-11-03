@@ -1,7 +1,9 @@
 //! The command palette (Ctrl+K): every menu command, open tab, recent log and
 //! filter preset in one searchable list. Typing ":" and a number goes to that
-//! row, which is what Ctrl+G opens it for. It also asks for a preset's name.
+//! row, which is what Ctrl+G opens it for. It also asks for a preset's name,
+//! and lists installed fonts to choose from.
 
+use super::fonts::Target;
 use std::path::PathBuf;
 use tv_ui::palette::{Palette, PaletteItem};
 use tv_ui::{Canvas, Event, Point, Rect, Theme};
@@ -17,6 +19,8 @@ pub enum Action {
     ApplyPreset(usize),
     DeletePreset(usize),
     SavePreset(String),
+    /// A font family, by name.
+    SetFont(Target, String),
     /// A hint that does nothing when chosen.
     Nothing,
 }
@@ -26,6 +30,8 @@ pub enum Mode {
     Everything,
     /// Asks for the name to save the current filter under.
     SavePreset,
+    /// Lists installed fonts for the log or the window.
+    Font(Target),
 }
 
 /// What happened, for the workspace to act on.
@@ -85,6 +91,18 @@ impl CommandPalette {
         match self.mode {
             Mode::Everything => "Type a command, a log, a preset, or : and a row number",
             Mode::SavePreset => "Name for this filter preset",
+            Mode::Font(Target::Log) => "Type to find a font. Fixed-width fonts line logs up best",
+            Mode::Font(Target::Window) => "Type to find a font",
+        }
+    }
+
+    /// The palette's name, for screen readers.
+    pub fn title(&self) -> &'static str {
+        match self.mode {
+            Mode::Everything => "Command palette",
+            Mode::SavePreset => "Save filter preset",
+            Mode::Font(Target::Log) => "Choose the log font",
+            Mode::Font(Target::Window) => "Choose the window font",
         }
     }
 
@@ -135,6 +153,7 @@ impl CommandPalette {
                 }
                 None => self.everything.clone(),
             },
+            Mode::Font(_) => self.everything.clone(),
         };
         let (mut items, actions): (Vec<PaletteItem>, Vec<Action>) = listed.into_iter().unzip();
         for (id, item) in items.iter_mut().enumerate() {

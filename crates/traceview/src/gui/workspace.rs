@@ -6,6 +6,8 @@ use super::columns::{self, Column, ColumnSpec};
 use super::columns_panel::ColumnsPanel;
 use super::command_palette::{Action, CommandPalette, Mode};
 use super::details::PANE_HEIGHT;
+use super::fonts::{self, Spacing, Target as FontTarget, LOG_SIZES};
+use super::fonts_panel::{FontsPanel, FontsResponse, Item as FontItem};
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
@@ -81,6 +83,10 @@ pub mod command {
     pub const BOOKMARK: u32 = 32;
     pub const NEXT_BOOKMARK: u32 = 33;
     pub const PREVIOUS_BOOKMARK: u32 = 34;
+    pub const FONTS: u32 = 60;
+    pub const LARGER_TEXT: u32 = 61;
+    pub const SMALLER_TEXT: u32 = 62;
+    pub const DEFAULT_TEXT: u32 = 63;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,6 +320,8 @@ pub struct Workspace {
     pub rules_panel: Option<RulesPanel>,
     /// The columns editor, while it's open.
     pub columns_panel: Option<ColumnsPanel>,
+    /// The fonts editor, while it's open.
+    pub fonts_panel: Option<FontsPanel>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
     settings: Settings,
@@ -393,6 +401,7 @@ impl Workspace {
             palette: None,
             rules_panel: None,
             columns_panel: None,
+            fonts_panel: None,
             rules: Arc::default(),
             settings: Settings::default(),
             store: Store::disabled(),
@@ -434,6 +443,49 @@ impl Workspace {
         for tab in &mut self.tabs {
             tab.set_rules(&self.rules);
         }
+    }
+
+    /// The fonts to draw with, from settings.
+    pub fn fonts(&self) -> tv_render::Fonts {
+        fonts::render_fonts(&self.settings.fonts)
+    }
+
+    /// Makes log text one size larger or smaller, or back to the default.
+    fn resize_log_text(&mut self, larger: Option<bool>) {
+        let size = match larger {
+            Some(larger) => fonts::step_size(self.fonts().grid_size, &LOG_SIZES, larger),
+            None => tv_render::Fonts::default().grid_size,
+        };
+        self.settings.fonts.log_size = size;
+        self.notice = Some(format!("Log text is {size} pixels"));
+        self.save_settings();
+    }
+
+    /// The installed fonts, for the palette to list. The one in use comes first.
+    fn font_entries(&self, target: FontTarget) -> Vec<(PaletteItem, Action)> {
+        let fonts = self.fonts();
+        let current = match target {
+            FontTarget::Log => fonts.grid_family,
+            FontTarget::Window => fonts.ui_family,
+        };
+        let mut families = tv_render::installed_fonts();
+        families.sort_by_key(|family| !family.name.eq_ignore_ascii_case(&current));
+        families
+            .into_iter()
+            .map(|family| {
+                let in_use = family.name.eq_ignore_ascii_case(&current);
+                let detail = match (in_use, family.fixed_width) {
+                    (true, true) => "in use, fixed width",
+                    (true, false) => "in use",
+                    (false, true) => "fixed width",
+                    (false, false) => "",
+                };
+                (
+                    PaletteItem::new(&family.name, detail, "", 0),
+                    Action::SetFont(target, family.name),
+                )
+            })
+            .collect()
     }
 
     /// A format's columns, from settings. A tab that isn't open yet has none,
@@ -588,6 +640,9 @@ impl Workspace {
                         self.settings.highlighting,
                     ),
                     MenuItem::command("Columns...", "", command::COLUMNS),
+                    MenuItem::command("Fonts...", "", command::FONTS),
+                    MenuItem::command("Larger log text", "Ctrl+Plus", command::LARGER_TEXT),
+                    MenuItem::command("Smaller log text", "Ctrl+Minus", command::SMALLER_TEXT),
                     MenuItem::Separator,
                     checked(
                         MenuItem::command("Theme: follow Windows", "", command::THEME_SYSTEM),
@@ -925,9 +980,8 @@ impl Workspace {
                     .unwrap_or_default();
                 let mut panel = LookupPanel::new(&code, &waker);
                 panel.arrange(self.layout.grid);
+                self.close_panels();
                 self.lookup = Some(panel);
-                self.rules_panel = None;
-                self.columns_panel = None;
                 commands.push(Command::SetImeEnabled(true));
             }
             command::RULES => {
@@ -936,10 +990,8 @@ impl Workspace {
                     self.settings.highlighting = true;
                     self.apply_rules();
                 }
+                self.close_panels();
                 self.rules_panel = Some(RulesPanel::new(self.settings.rules.clone()));
-                self.columns_panel = None;
-                self.lookup = None;
-                self.palette = None;
                 commands.push(Command::SetImeEnabled(true));
             }
             command::HIGHLIGHTING => {
@@ -952,12 +1004,14 @@ impl Workspace {
                     .and_then(Tab::format)
                     .unwrap_or(Format::Plain);
                 let specs = self.columns_for(Some(format));
+                self.close_panels();
                 self.columns_panel = Some(ColumnsPanel::new(format, specs));
-                self.rules_panel = None;
-                self.lookup = None;
-                self.palette = None;
                 commands.push(Command::SetImeEnabled(false));
             }
+            command::FONTS => self.open_fonts(FontItem::LogFont, commands),
+            command::LARGER_TEXT => self.resize_log_text(Some(true)),
+            command::SMALLER_TEXT => self.resize_log_text(Some(false)),
+            command::DEFAULT_TEXT => self.resize_log_text(None),
             _ => {}
         }
         if matches!(
@@ -990,6 +1044,10 @@ impl Workspace {
             (Key::Char('F'), true, true) => command::FILTER,
             (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
             (Key::Char('H'), true, false) => command::RULES,
+            // Shift is allowed, since Ctrl+Plus on the main keyboard needs it.
+            (Key::Char('='), true, _) => command::LARGER_TEXT,
+            (Key::Char('-'), true, _) => command::SMALLER_TEXT,
+            (Key::Char('0'), true, false) => command::DEFAULT_TEXT,
             (Key::Char('U'), true, false) => command::PAUSE,
             (Key::Char('B'), true, false) => command::SIDEBAR,
             (Key::Char('K'), true, false) => command::PALETTE,
@@ -1097,6 +1155,34 @@ impl Workspace {
             commands.redraw();
             commands.accessibility_changed();
         }
+    }
+
+    /// The fonts editor takes all input while it's open, and every change
+    /// applies at once. Choosing a font hands over to the palette's font list.
+    fn fonts_event(&mut self, event: Event, commands: &mut Commands) {
+        let Some(panel) = &mut self.fonts_panel else {
+            return;
+        };
+        let response = panel.handle(event);
+        self.fonts_responded(response, commands);
+    }
+
+    /// Acts on what the fonts editor asked for.
+    pub fn fonts_responded(&mut self, response: FontsResponse, commands: &mut Commands) {
+        if response.changed {
+            if let Some(panel) = &self.fonts_panel {
+                self.settings.fonts = panel.fonts.clone();
+                self.save_settings();
+            }
+        }
+        if let Some(target) = response.choose {
+            self.open_palette(Mode::Font(target), "", commands);
+        } else if response.closed {
+            self.fonts_panel = None;
+            commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+        }
+        commands.redraw();
+        commands.accessibility_changed();
     }
 
     /// Applies a change a screen reader made in the columns editor.
@@ -1215,6 +1301,7 @@ impl Workspace {
                 return true;
             }
             Event::KeyDown(..) | Event::Char(_) => self.focus == Focus::Sidebar,
+            Event::ZoomWheel(_) => false,
         };
         if !consumed && !matches!(event, Event::MouseMove(_) | Event::MouseUp(..)) {
             return false;
@@ -1386,18 +1473,35 @@ impl Workspace {
 
     fn open_palette(&mut self, mode: Mode, query: &str, commands: &mut Commands) {
         let rows = self.active_tab().map_or(0, Tab::total_rows);
-        let mut palette = CommandPalette::open(mode, self.palette_entries(), rows, query);
+        let entries = match mode {
+            Mode::Font(target) => self.font_entries(target),
+            Mode::Everything | Mode::SavePreset => self.palette_entries(),
+        };
+        let mut palette = CommandPalette::open(mode, entries, rows, query);
         palette.arrange(Rect::new(
             0.0,
             self.layout.menu.bottom,
             self.layout.status.right,
             self.layout.status.bottom,
         ));
+        self.close_panels();
         self.palette = Some(palette);
+        commands.push(Command::SetImeEnabled(true));
+    }
+
+    /// Closes whichever floating panel is open, since only one can be.
+    fn close_panels(&mut self) {
         self.lookup = None;
+        self.palette = None;
         self.rules_panel = None;
         self.columns_panel = None;
-        commands.push(Command::SetImeEnabled(true));
+        self.fonts_panel = None;
+    }
+
+    fn open_fonts(&mut self, selected: FontItem, commands: &mut Commands) {
+        self.close_panels();
+        self.fonts_panel = Some(FontsPanel::new(self.settings.fonts.clone(), selected));
+        commands.push(Command::SetImeEnabled(false));
     }
 
     fn close_palette(&mut self, commands: &mut Commands) {
@@ -1420,11 +1524,15 @@ impl Workspace {
                 palette.paste(&text);
             }
         }
+        let mode = palette.mode();
         if outcome.cancelled || outcome.chosen.is_some() {
             self.close_palette(commands);
         }
         if let Some(action) = outcome.chosen {
             self.perform(action, commands);
+        } else if let (true, Mode::Font(target)) = (outcome.cancelled, mode) {
+            // Leaving the list of fonts goes back to the fonts editor.
+            self.open_fonts(FontItem::for_target(target), commands);
         }
         commands.redraw();
         commands.accessibility_changed();
@@ -1468,6 +1576,14 @@ impl Workspace {
                 self.notice = Some(format!("Deleted filter preset {}", removed.name));
                 self.save_settings();
             }
+            Action::SetFont(target, name) => {
+                match target {
+                    FontTarget::Log => self.settings.fonts.log_font = name,
+                    FontTarget::Window => self.settings.fonts.window_font = name,
+                }
+                self.save_settings();
+                self.open_fonts(FontItem::for_target(target), commands);
+            }
             Action::SavePreset(name) => {
                 let Some(tab) = self.active_tab() else { return };
                 let preset = Preset {
@@ -1503,7 +1619,11 @@ impl Workspace {
                 self.menu.is_active() || modifiers.alt || *key == Key::F(10)
             }
             Event::MouseDown(point, ..) => open || self.menu.contains(*point),
-            Event::MouseMove(_) | Event::MouseUp(..) | Event::Wheel(_) | Event::Char(_) => open,
+            Event::MouseMove(_)
+            | Event::MouseUp(..)
+            | Event::Wheel(_)
+            | Event::ZoomWheel(_)
+            | Event::Char(_) => open,
         }
     }
 
@@ -1530,12 +1650,25 @@ impl Workspace {
             self.columns_event(event, commands);
             return;
         }
+        if self.fonts_panel.is_some() {
+            self.fonts_event(event, commands);
+            return;
+        }
         if self.lookup.is_some() {
             self.lookup_event(event, canvas, commands);
             return;
         }
         if self.palette.is_some() {
             self.palette_event(event, canvas, commands);
+            return;
+        }
+        // Ctrl and the wheel make log text larger or smaller, as in editors.
+        if let Event::ZoomWheel(rows) = event {
+            if rows != 0.0 {
+                self.resize_log_text(Some(rows > 0.0));
+                commands.redraw();
+                commands.accessibility_changed();
+            }
             return;
         }
         if let Event::KeyDown(key, modifiers) = event {
@@ -1772,7 +1905,11 @@ impl Workspace {
         let with_histogram = |tab: Option<&Tab>| {
             show_histogram && tab.is_some_and(|tab| tab.overview.counts.histogram.is_some())
         };
-        let status = area.take_bottom(snap(theme.status_height, scale));
+        // Bars grow to fit a larger font, and never shrink below the theme's height.
+        let status_height = theme
+            .status_height
+            .max(canvas.line_height(FontRole::Ui) + 6.0);
+        let status = area.take_bottom(snap(status_height, scale));
         let mut details = Rect::default();
         if self.show_details && ready(self.active_tab()) {
             details = area.take_bottom(snap(PANE_HEIGHT, scale));
@@ -1842,10 +1979,12 @@ impl Workspace {
             focused_area,
             other,
         };
-        let row_height = snap(theme.row_height, scale);
+        let grid_line = canvas.line_height(FontRole::Grid);
+        let spacing = Spacing::from_name(&self.settings.fonts.row_spacing);
         let metrics = Metrics {
-            row_height,
+            row_height: snap(grid_line + spacing.padding(), scale),
             char_width: canvas.char_width(FontRole::Grid),
+            header_height: snap(theme.header_height.max(grid_line + 6.0), scale),
         };
         let grid = self.layout.grid;
         if let Some(panel) = &mut self.lookup {
@@ -1861,6 +2000,9 @@ impl Workspace {
         if let Some(panel) = &mut self.columns_panel {
             panel.arrange(below_menu, canvas, theme);
         }
+        if let Some(panel) = &mut self.fonts_panel {
+            panel.arrange(below_menu, canvas, theme);
+        }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
             let (Some(index), Some(pane)) = (index, pane) else {
@@ -1869,8 +2011,7 @@ impl Workspace {
             let columns = self.columns_for(self.tabs.get(index).and_then(Tab::format));
             if let Some(tab) = self.tabs.get_mut(index) {
                 let count = tab.rows().map_or(0, |rows| rows.row_count());
-                tab.view
-                    .arrange(pane.grid, count, metrics, theme, scale, &columns);
+                tab.view.arrange(pane.grid, count, metrics, &columns);
                 if tab.following {
                     tab.view.scroll_to_end();
                 }
@@ -2049,6 +2190,9 @@ impl Workspace {
             }
         }
         if let Some(panel) = &self.columns_panel {
+            panel.draw(canvas, theme);
+        }
+        if let Some(panel) = &self.fonts_panel {
             panel.draw(canvas, theme);
         }
 
@@ -2778,6 +2922,64 @@ mod tests {
         );
         send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
         assert!(workspace.columns_panel.is_none());
+    }
+
+    #[test]
+    fn ctrl_plus_minus_zero_and_the_wheel_size_log_text() {
+        let (_dir, mut workspace) = opened(10);
+        let size = |workspace: &Workspace| workspace.fonts().grid_size;
+        send(&mut workspace, Event::KeyDown(Key::Char('='), CTRL));
+        send(&mut workspace, Event::KeyDown(Key::Char('='), CTRL_SHIFT));
+        assert_eq!(size(&workspace), 15.0);
+        assert!(workspace.status().contains("Log text is 15 pixels"));
+        send(&mut workspace, Event::KeyDown(Key::Char('-'), CTRL));
+        send(&mut workspace, Event::ZoomWheel(-3.0));
+        assert_eq!(size(&workspace), 13.0);
+        send(&mut workspace, Event::ZoomWheel(3.0));
+        send(&mut workspace, Event::KeyDown(Key::Char('0'), CTRL));
+        assert_eq!(size(&workspace), 13.0);
+        for _ in 0..40 {
+            send(&mut workspace, Event::KeyDown(Key::Char('-'), CTRL));
+        }
+        assert_eq!(size(&workspace), *LOG_SIZES.start());
+    }
+
+    #[test]
+    fn row_spacing_sets_the_row_height_from_the_font() {
+        let (_dir, mut workspace) = opened(10);
+        let height = |workspace: &Workspace| workspace.tabs[0].view.row_rect(0).height();
+        // The test canvas's lines are 15 high.
+        assert_eq!(height(&workspace), 18.0);
+        workspace.run_command(command::FONTS, &mut Commands::default());
+        send(&mut workspace, Event::KeyDown(Key::Down, NONE));
+        send(&mut workspace, Event::Char('+'));
+        settle(&mut workspace, |_| true);
+        assert_eq!(workspace.settings().fonts.row_spacing, "roomy");
+        assert_eq!(height(&workspace), 23.0);
+    }
+
+    #[test]
+    fn choosing_a_font_goes_through_the_list_and_back() {
+        let (_dir, mut workspace) = opened(10);
+        workspace.run_command(command::FONTS, &mut Commands::default());
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        assert!(workspace.fonts_panel.is_none());
+        let palette = workspace.palette.as_ref().unwrap();
+        assert_eq!(palette.mode(), Mode::Font(FontTarget::Log));
+        let first = palette.palette.matched_item(0).unwrap();
+        assert_eq!(
+            (first.label.as_str(), first.detail.as_str()),
+            ("Consolas", "in use, fixed width")
+        );
+        // Leaving the list returns to the editor, with nothing changed.
+        send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        assert!(workspace.fonts_panel.is_some());
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        type_text(&mut workspace, "Courier New");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        assert_eq!(workspace.settings().fonts.log_font, "Courier New");
+        assert_eq!(workspace.fonts().grid_family, "Courier New");
+        assert!(workspace.fonts_panel.is_some(), "back in the editor");
     }
 
     #[test]

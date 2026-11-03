@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use tv_ui::{Align, Canvas, Color, FontRole, Rect, TextStyle};
+use windows::core::BOOL;
 use windows::core::{w, Interface, Result, HSTRING};
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -24,7 +25,8 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFont1, IDWriteFontCollection,
+    IDWriteLocalizedStrings, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_MEASURING_MODE, DWRITE_MEASURING_MODE_GDI_CLASSIC, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
@@ -80,6 +82,100 @@ impl Default for Fonts {
     }
 }
 
+/// An installed font family.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FontFamily {
+    pub name: String,
+    /// Every character is the same width, which lines log text up best.
+    pub fixed_width: bool,
+}
+
+fn system_fonts(write: &IDWriteFactory) -> Result<IDWriteFontCollection> {
+    let mut collection = None;
+    // SAFETY: the factory is live and the out parameter is a local.
+    unsafe { write.GetSystemFontCollection(&mut collection, false)? };
+    collection.ok_or_else(windows::core::Error::empty)
+}
+
+fn has_family(collection: &IDWriteFontCollection, family: &str) -> bool {
+    let (mut index, mut exists) = (0, BOOL::default());
+    // SAFETY: the name outlives the call and the out parameters are locals.
+    unsafe {
+        collection
+            .FindFamilyName(&HSTRING::from(family), &mut index, &mut exists)
+            .is_ok()
+            && exists.as_bool()
+    }
+}
+
+/// A family's English name, or the first one it has.
+fn english_name(names: &IDWriteLocalizedStrings) -> Option<String> {
+    let (mut index, mut exists) = (0, BOOL::default());
+    // SAFETY: the buffer is one longer than the name, for its terminating null.
+    unsafe {
+        names
+            .FindLocaleName(w!("en-us"), &mut index, &mut exists)
+            .ok()?;
+        if !exists.as_bool() {
+            index = 0;
+        }
+        let length = names.GetStringLength(index).ok()? as usize;
+        let mut buffer = vec![0u16; length + 1];
+        names.GetString(index, &mut buffer).ok()?;
+        Some(String::from_utf16_lossy(&buffer[..length]))
+    }
+}
+
+/// The font families installed here, sorted by name.
+pub fn installed_fonts() -> Vec<FontFamily> {
+    // SAFETY: creating the shared factory has no preconditions.
+    let Ok(write) = (unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) })
+    else {
+        return Vec::new();
+    };
+    let Ok(collection) = system_fonts(&write) else {
+        return Vec::new();
+    };
+    let mut families = Vec::new();
+    // SAFETY: the collection is live and each index is below its count.
+    unsafe {
+        for index in 0..collection.GetFontFamilyCount() {
+            let Ok(family) = collection.GetFontFamily(index) else {
+                continue;
+            };
+            let Some(name) = family
+                .GetFamilyNames()
+                .ok()
+                .and_then(|names| english_name(&names))
+            else {
+                continue;
+            };
+            let fixed_width = family
+                .GetFirstMatchingFont(
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                )
+                .ok()
+                .and_then(|font| font.cast::<IDWriteFont1>().ok())
+                .is_some_and(|font| font.IsMonospacedFont().as_bool());
+            families.push(FontFamily { name, fixed_width });
+        }
+    }
+    families.sort_by_key(|family| family.name.to_lowercase());
+    families.dedup_by(|second, first| second.name.eq_ignore_ascii_case(&first.name));
+    families
+}
+
+/// True if a font family by this name is installed here.
+pub fn is_installed(family: &str) -> bool {
+    // SAFETY: creating the shared factory has no preconditions.
+    let write = unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) };
+    write
+        .and_then(|write| system_fonts(&write))
+        .is_ok_and(|collection| has_family(&collection, family))
+}
+
 /// The result of finishing a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameResult {
@@ -113,9 +209,14 @@ pub struct Renderer {
     width: u32,
     height: u32,
     dpi: f32,
+    /// The fonts drawn with: what was asked for, with any family that isn't
+    /// installed replaced by the default.
     fonts: Fonts,
+    /// What `set_fonts` was last given, so repeating it costs nothing.
+    requested: Fonts,
     formats: HashMap<(FontRole, Align, bool), IDWriteTextFormat>,
     char_widths: HashMap<FontRole, f32>,
+    line_heights: HashMap<FontRole, f32>,
     utf16: Vec<u16>,
     vsync: bool,
 }
@@ -371,8 +472,10 @@ impl Renderer {
             height,
             dpi,
             fonts: Fonts::default(),
+            requested: Fonts::default(),
             formats: HashMap::new(),
             char_widths: HashMap::new(),
+            line_heights: HashMap::new(),
             utf16: Vec::with_capacity(1024),
             vsync: true,
         }
@@ -399,11 +502,30 @@ impl Renderer {
         self.vsync = vsync;
     }
 
+    /// Uses these fonts from the next text drawn. A family that isn't
+    /// installed, as when settings come from another PC, is replaced by the
+    /// default rather than left to Windows, which would pick a font that
+    /// isn't fixed width for log text.
     pub fn set_fonts(&mut self, fonts: Fonts) {
+        if fonts == self.requested {
+            return;
+        }
+        self.requested = fonts.clone();
+        let mut fonts = fonts;
+        let defaults = Fonts::default();
+        if let Ok(collection) = system_fonts(&self.write) {
+            if !has_family(&collection, &fonts.ui_family) {
+                fonts.ui_family = defaults.ui_family;
+            }
+            if !has_family(&collection, &fonts.grid_family) {
+                fonts.grid_family = defaults.grid_family;
+            }
+        }
         if fonts != self.fonts {
             self.fonts = fonts;
             self.formats.clear();
             self.char_widths.clear();
+            self.line_heights.clear();
         }
     }
 
@@ -418,6 +540,7 @@ impl Renderer {
         self.dpi = dpi;
         if dpi_changed {
             self.char_widths.clear();
+            self.line_heights.clear();
         }
         // SAFETY: all objects are live. The device context's target is released
         // before resizing, because DXGI requires no outstanding buffer references.
@@ -660,38 +783,8 @@ impl Canvas for Renderer {
         if text.is_empty() {
             return 0.0;
         }
-        let Some(format) = self.format(TextStyle::new(font, Align::Left), false) else {
-            return 0.0;
-        };
-        self.utf16.clear();
-        self.utf16.extend(text.encode_utf16());
-        let gdi_classic = self.measuring_mode() == DWRITE_MEASURING_MODE_GDI_CLASSIC;
-        // SAFETY: the text and format outlive the call, and metrics is a local.
-        unsafe {
-            // GDI-style text is drawn with whole-pixel advances, so it's measured
-            // that way too. Otherwise text placed after it would overlap it.
-            let layout = if gdi_classic {
-                self.write.CreateGdiCompatibleTextLayout(
-                    &self.utf16,
-                    &format,
-                    1_000_000.0,
-                    1_000.0,
-                    self.dpi / 96.0,
-                    None,
-                    false,
-                )
-            } else {
-                self.write
-                    .CreateTextLayout(&self.utf16, &format, 1_000_000.0, 1_000.0)
-            };
-            layout
-                .and_then(|layout| {
-                    let mut metrics = DWRITE_TEXT_METRICS::default();
-                    layout.GetMetrics(&mut metrics)?;
-                    Ok(metrics.widthIncludingTrailingWhitespace)
-                })
-                .unwrap_or(0.0)
-        }
+        self.measure(text, font)
+            .map_or(0.0, |metrics| metrics.widthIncludingTrailingWhitespace)
     }
 
     fn text_block(&mut self, text: &str, rect: Rect, font: FontRole, color: Color) {
@@ -733,9 +826,54 @@ impl Canvas for Renderer {
         self.char_widths.insert(font, width);
         width
     }
+
+    fn line_height(&mut self, font: FontRole) -> f32 {
+        if let Some(height) = self.line_heights.get(&font) {
+            return *height;
+        }
+        let size = match font {
+            FontRole::Ui => self.fonts.ui_size,
+            FontRole::Grid => self.fonts.grid_size,
+        };
+        let height = match self.measure("Ag", font) {
+            Some(metrics) if metrics.height > 0.0 => metrics.height,
+            _ => size * 1.3,
+        };
+        self.line_heights.insert(font, height);
+        height
+    }
 }
 
 impl Renderer {
+    /// Lays out one line of text to measure it.
+    fn measure(&mut self, text: &str, font: FontRole) -> Option<DWRITE_TEXT_METRICS> {
+        let format = self.format(TextStyle::new(font, Align::Left), false)?;
+        self.utf16.clear();
+        self.utf16.extend(text.encode_utf16());
+        let gdi_classic = self.measuring_mode() == DWRITE_MEASURING_MODE_GDI_CLASSIC;
+        // SAFETY: the text and format outlive the call, and metrics is a local.
+        unsafe {
+            // GDI-style text is drawn with whole-pixel advances, so it's measured
+            // that way too. Otherwise text placed after it would overlap it.
+            let layout = if gdi_classic {
+                self.write.CreateGdiCompatibleTextLayout(
+                    &self.utf16,
+                    &format,
+                    1_000_000.0,
+                    1_000.0,
+                    self.dpi / 96.0,
+                    None,
+                    false,
+                )
+            } else {
+                self.write
+                    .CreateTextLayout(&self.utf16, &format, 1_000_000.0, 1_000.0)
+            };
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            layout.ok()?.GetMetrics(&mut metrics).ok()?;
+            Some(metrics)
+        }
+    }
     fn draw_utf16(&mut self, text: &str, rect: Rect, format: &IDWriteTextFormat, color: Color) {
         let mode = self.measuring_mode();
         self.utf16.clear();
@@ -875,6 +1013,44 @@ mod tests {
         let mut renderer = Renderer::offscreen(10, 10, 96.0).unwrap();
         let width = renderer.char_width(FontRole::Grid);
         assert!((5.0..12.0).contains(&width), "measured {width}");
+    }
+
+    #[test]
+    fn installed_fonts_are_listed_and_fixed_width_ones_marked() {
+        let fonts = installed_fonts();
+        let find = |name: &str| fonts.iter().find(|font| font.name == name);
+        assert!(find("Consolas").is_some_and(|font| font.fixed_width));
+        assert!(find("Segoe UI").is_some_and(|font| !font.fixed_width));
+        assert!(fonts
+            .windows(2)
+            .all(|pair| pair[0].name.to_lowercase() < pair[1].name.to_lowercase()));
+        assert!(is_installed("consolas"), "names match in any case");
+        assert!(!is_installed("No Such Font Anywhere"));
+    }
+
+    #[test]
+    fn a_missing_font_falls_back_to_the_default() {
+        let mut renderer = Renderer::offscreen(10, 10, 96.0).unwrap();
+        let consolas = renderer.char_width(FontRole::Grid);
+        renderer.set_fonts(Fonts {
+            grid_family: "No Such Font Anywhere".to_string(),
+            ..Fonts::default()
+        });
+        assert_eq!(renderer.fonts.grid_family, "Consolas");
+        assert_eq!(renderer.char_width(FontRole::Grid), consolas);
+    }
+
+    #[test]
+    fn line_height_follows_the_font_size() {
+        let mut renderer = Renderer::offscreen(10, 10, 96.0).unwrap();
+        let normal = renderer.line_height(FontRole::Grid);
+        assert!((13.0..20.0).contains(&normal), "measured {normal}");
+        renderer.set_fonts(Fonts {
+            grid_size: 26.0,
+            ..Fonts::default()
+        });
+        let large = renderer.line_height(FontRole::Grid);
+        assert!(large > normal * 1.8, "{large} against {normal}");
     }
 
     #[test]

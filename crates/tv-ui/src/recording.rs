@@ -77,6 +77,11 @@ impl Canvas for RecordingCanvas {
         7.0
     }
 
+    /// 15, which with normal spacing gives the usual 18-pixel row.
+    fn line_height(&mut self, _font: FontRole) -> f32 {
+        15.0
+    }
+
     /// Every character is 7 wide here, which keeps test arithmetic simple.
     fn text_width(&mut self, text: &str, _font: FontRole) -> f32 {
         text.chars().count() as f32 * 7.0

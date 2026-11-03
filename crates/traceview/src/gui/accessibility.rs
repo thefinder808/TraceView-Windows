@@ -8,7 +8,7 @@
 
 use super::columns::Column;
 use super::columns_panel::{self, ColumnsPanel, Part as ColumnsPart};
-use super::command_palette::Mode;
+use super::fonts_panel::{self, FontsPanel, Part as FontsPart};
 use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
@@ -55,6 +55,10 @@ const COLUMNS_ID: NodeId = NodeId(22);
 const COLUMNS_LIST_ID: NodeId = NodeId(23);
 const FIRST_COLUMN_BUTTON_ID: u64 = 640;
 const FIRST_COLUMN_ITEM_ID: u64 = 7_200;
+const FONTS_ID: NodeId = NodeId(24);
+const FONTS_LIST_ID: NodeId = NodeId(25);
+const FIRST_FONT_BUTTON_ID: u64 = 660;
+const FIRST_FONT_ITEM_ID: u64 = 7_300;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -245,6 +249,84 @@ fn act_on_columns(workspace: &mut Workspace, request: &ActionRequest) {
         };
     if changed {
         workspace.columns_edited();
+    }
+}
+
+/// The fonts editor, as a modal dialog. Returns the node with focus.
+fn fonts_nodes(panel: &FontsPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let list = &panel.list;
+    let mut focus = FONTS_LIST_ID;
+    let mut options = Vec::new();
+    for index in list.visible_items() {
+        let (Some(rect), ListItem::Entry { label, detail, .. }) =
+            (list.item_rect(index), &list.items[index])
+        else {
+            continue;
+        };
+        let id = NodeId(FIRST_FONT_ITEM_ID + index as u64);
+        let selected = list.selected() == Some(index);
+        let mut node = Node::new(Role::ListBoxOption);
+        node.set_label(format!("{label}, {detail}"));
+        node.set_selected(selected);
+        node.set_bounds(physical(rect, scale));
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        if panel.focus == FontsPart::List && selected {
+            focus = id;
+        }
+        options.push(id);
+        nodes.push((id, node));
+    }
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Fonts and spacing");
+    list_node.set_children(options);
+    nodes.push((FONTS_LIST_ID, list_node));
+    let mut children = vec![FONTS_LIST_ID];
+    for (index, chip) in panel.button_chips().iter().enumerate() {
+        let Some(rect) = panel.buttons.chip_rect(index) else {
+            continue;
+        };
+        let id = NodeId(FIRST_FONT_BUTTON_ID + index as u64);
+        let mut node = Node::new(Role::Button);
+        node.set_label(chip.label.as_str());
+        if panel.button_applies(index) {
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
+        node.add_action(Action::Focus);
+        node.set_bounds(physical(rect, scale));
+        if panel.focus == FontsPart::Buttons && panel.buttons.focus() == Some(index) {
+            focus = id;
+        }
+        children.push(id);
+        nodes.push((id, node));
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(fonts_panel::TITLE);
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    nodes.push((FONTS_ID, dialog));
+    focus
+}
+
+/// Carries out a screen reader's request in the fonts editor. Clicking a
+/// button presses it, and focusing a row selects it.
+fn act_on_fonts(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Commands) {
+    let Some(panel) = workspace.fonts_panel.as_mut() else {
+        return;
+    };
+    let target = request.target_node;
+    if let Some(index) = in_range(target, FIRST_FONT_BUTTON_ID, panel.button_chips().len()) {
+        panel.focus = FontsPart::Buttons;
+        if request.action == Action::Click {
+            let response = panel.press(index);
+            workspace.fonts_responded(response, commands);
+        }
+    } else if let Some(index) = in_range(target, FIRST_FONT_ITEM_ID, panel.list.items.len()) {
+        panel.focus = FontsPart::List;
+        panel.list.select_id(Some(index as u32));
     }
 }
 
@@ -635,10 +717,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         list.set_children(options);
         nodes.push((PALETTE_LIST_ID, list));
         let mut dialog = Node::new(Role::Dialog);
-        dialog.set_label(match palette.mode() {
-            Mode::Everything => "Command palette",
-            Mode::SavePreset => "Save filter preset",
-        });
+        dialog.set_label(palette.title());
         dialog.set_modal();
         dialog.set_bounds(physical(palette.palette.rect(), scale));
         dialog.set_children(vec![PALETTE_FIELD_ID, PALETTE_LIST_ID]);
@@ -660,6 +739,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if columns_focus.is_some() {
         window_children.push(COLUMNS_ID);
     }
+    let fonts_focus = workspace
+        .fonts_panel
+        .as_ref()
+        .map(|panel| fonts_nodes(panel, scale, &mut nodes));
+    if fonts_focus.is_some() {
+        window_children.push(FONTS_ID);
+    }
 
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
@@ -677,6 +763,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     let focus = menu_focus
         .or(rules_focus)
         .or(columns_focus)
+        .or(fonts_focus)
         .unwrap_or(match workspace.focus {
             _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
             _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
@@ -702,6 +789,8 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 act_on_rules(workspace, request);
             } else if workspace.columns_panel.is_some() {
                 act_on_columns(workspace, request);
+            } else if workspace.fonts_panel.is_some() {
+                act_on_fonts(workspace, request, commands);
             } else if let Some(row) = row_from_id(target) {
                 if let Some(tab) = workspace.active_tab_mut() {
                     tab.view.select(row, false);
