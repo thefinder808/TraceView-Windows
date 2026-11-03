@@ -1,7 +1,10 @@
 //! Reads rows on a background thread, so the UI thread never touches the disk.
 //! When a row isn't ready, the grid draws a placeholder and moves on, which means
 //! scrolling can't stall, even on a slow disk or network share.
+//!
+//! Highlight rules are checked here too, as each row is read.
 
+use super::rules::{Mark, RuleSet};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
@@ -20,6 +23,8 @@ pub struct RowCells {
     pub component: String,
     pub thread: String,
     pub message: String,
+    /// How the first highlight rule that matches the row shows on it.
+    pub mark: Option<Mark>,
 }
 
 fn first_line(bytes: &[u8]) -> &[u8] {
@@ -36,12 +41,18 @@ fn display_time(stamp: Stamp) -> String {
 }
 
 pub fn cells_from_row(log: &LogFile, raw: &[u8], scratch: &mut Vec<u8>) -> RowCells {
-    let fields = log.fields(log.text(raw, scratch));
+    cells_from_text(log, log.text(raw, scratch))
+}
+
+/// A row's cells from its text, as [`LogFile::text`] gives it.
+fn cells_from_text(log: &LogFile, text: &[u8]) -> RowCells {
+    let fields = log.fields(text);
     RowCells {
         time: fields.stamp.map(display_time).unwrap_or_default(),
         component: encoding::display(fields.component).into_owned(),
         thread: encoding::display(fields.thread).into_owned(),
         message: encoding::display(first_line(fields.message)).into_owned(),
+        mark: None,
     }
 }
 
@@ -52,24 +63,37 @@ pub type SharedLog = Arc<RwLock<LogFile>>;
 /// One block of loaded rows.
 type Block = Arc<[Arc<RowCells>]>;
 
+struct Entry {
+    /// When the block was last used, by the cache's clock.
+    used: u64,
+    /// The rules version its marks came from.
+    rules: u64,
+    rows: Block,
+}
+
 #[derive(Default)]
 struct Blocks {
-    entries: HashMap<usize, (u64, Block)>,
+    entries: HashMap<usize, Entry>,
     clock: u64,
     /// Goes up with each invalidation, so a block read before one is thrown
     /// away rather than stored.
     generation: u64,
+    rules: Arc<RuleSet>,
+    /// Goes up when the rules change. Blocks marked by older rules still
+    /// draw until they're read again, so rows never blank out meanwhile.
+    rules_version: u64,
 }
 
 impl Blocks {
-    fn insert(&mut self, block: usize, rows: Block) {
+    fn insert(&mut self, block: usize, rules: u64, rows: Block) {
         self.clock += 1;
-        self.entries.insert(block, (self.clock, rows));
+        let used = self.clock;
+        self.entries.insert(block, Entry { used, rules, rows });
         if self.entries.len() > MAX_BLOCKS {
             let oldest = self
                 .entries
                 .iter()
-                .min_by_key(|(_, (used, _))| *used)
+                .min_by_key(|(_, entry)| entry.used)
                 .map(|(block, _)| *block);
             if let Some(oldest) = oldest {
                 self.entries.remove(&oldest);
@@ -105,8 +129,18 @@ impl RowCache {
         blocks.clock += 1;
         let clock = blocks.clock;
         let entry = blocks.entries.get_mut(&(row / ROWS_PER_BLOCK))?;
-        entry.0 = clock;
-        entry.1.get(row % ROWS_PER_BLOCK).cloned()
+        entry.used = clock;
+        entry.rows.get(row % ROWS_PER_BLOCK).cloned()
+    }
+
+    /// Marks rows with new highlight rules. Rows on screen are read again
+    /// with them, and keep their old marks until then.
+    pub fn set_rules(&mut self, rules: Arc<RuleSet>) {
+        if let Ok(mut blocks) = self.blocks.lock() {
+            blocks.rules = rules;
+            blocks.rules_version += 1;
+        }
+        self.last_request.clear();
     }
 
     /// Forgets rows from `row` onward, because live tail changed them. Pass 0
@@ -150,14 +184,18 @@ fn newest_request(
 fn read_block(
     log: &LogFile,
     block: usize,
+    rules: &RuleSet,
     buffer: &mut Vec<u8>,
     scratch: &mut Vec<u8>,
 ) -> Option<Block> {
     let start = block * ROWS_PER_BLOCK;
     let end = (start + ROWS_PER_BLOCK).min(log.rows());
     let mut rows = Vec::with_capacity(end.saturating_sub(start));
-    log.read_rows(start..end, buffer, |_, raw, _| {
-        rows.push(Arc::new(cells_from_row(log, raw, scratch)));
+    log.read_rows(start..end, buffer, |row, raw, _| {
+        let text = log.text(raw, scratch);
+        let mut cells = cells_from_text(log, text);
+        cells.mark = rules.mark(log, row, text);
+        rows.push(Arc::new(cells));
     })
     .ok()?;
     Some(rows.into())
@@ -187,20 +225,34 @@ fn load_rows(
             for block in visible.iter().copied().chain(ahead).chain(behind) {
                 let present = blocks
                     .lock()
-                    .map(|blocks| blocks.entries.contains_key(&block))
+                    .map(|blocks| {
+                        blocks
+                            .entries
+                            .get(&block)
+                            .is_some_and(|entry| entry.rules == blocks.rules_version)
+                    })
                     .unwrap_or(true);
                 if !present {
                     // The generation is read under the log's lock, so a refresh can't slip
                     // between it and the read.
                     let loaded = log.read().ok().and_then(|log| {
-                        let generation = blocks.lock().map_or(0, |blocks| blocks.generation);
-                        read_block(&log, block, &mut buffer, &mut scratch)
-                            .map(|rows| (generation, rows))
+                        let (generation, rules, version) = blocks.lock().map_or_else(
+                            |_| (0, Arc::default(), 0),
+                            |blocks| {
+                                (
+                                    blocks.generation,
+                                    blocks.rules.clone(),
+                                    blocks.rules_version,
+                                )
+                            },
+                        );
+                        read_block(&log, block, &rules, &mut buffer, &mut scratch)
+                            .map(|rows| (generation, version, rows))
                     });
-                    if let Some((generation, loaded)) = loaded {
+                    if let Some((generation, version, loaded)) = loaded {
                         if let Ok(mut blocks) = blocks.lock() {
                             if blocks.generation == generation {
-                                blocks.insert(block, loaded);
+                                blocks.insert(block, version, loaded);
                             }
                         }
                         if visible.contains(&block) {
@@ -229,6 +281,7 @@ fn load_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::settings::Rule;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
@@ -319,7 +372,7 @@ mod tests {
     fn the_cache_stays_within_its_limit() {
         let mut blocks = Blocks::default();
         for block in 0..MAX_BLOCKS + 50 {
-            blocks.insert(block, Arc::from(Vec::new()));
+            blocks.insert(block, 0, Arc::from(Vec::new()));
         }
         assert_eq!(blocks.entries.len(), MAX_BLOCKS);
         assert!(!blocks.entries.contains_key(&0));
@@ -366,6 +419,27 @@ b
         assert!(cache.get(1).is_none());
         cache.request(0..2);
         assert_eq!(wait_for(&cache, 1).message, "b");
+    }
+
+    #[test]
+    fn new_rules_mark_rows_without_blanking_them() {
+        let (_dir, log) = open("first\nsecond\n");
+        let mut cache = RowCache::new(log, || {});
+        cache.request(0..2);
+        assert_eq!(wait_for(&cache, 1).mark, None);
+        let rule = Rule {
+            pattern: "second".to_string(),
+            ..Rule::default()
+        };
+        cache.set_rules(Arc::new(RuleSet::compile(&[rule])));
+        assert!(cache.get(1).is_some(), "rows stay until they're read again");
+        cache.request(0..2);
+        let started = Instant::now();
+        while cache.get(1).and_then(|cells| cells.mark).is_none() {
+            assert!(started.elapsed() < Duration::from_secs(5), "never marked");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(cache.get(0).unwrap().mark, None);
     }
 
     #[test]

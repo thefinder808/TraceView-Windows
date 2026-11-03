@@ -22,7 +22,8 @@ const UI_RIGHT: TextStyle = TextStyle::new(FontRole::Ui, Align::Right);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chip {
     pub label: String,
-    pub count: usize,
+    /// Drawn after the label. `None` for a chip that's a plain button.
+    pub count: Option<usize>,
     /// The text color while the chip is off, so an error chip can be red.
     pub color: Color,
     pub active: bool,
@@ -120,8 +121,10 @@ impl ChipBar {
         let mut left = bar.left + MARGIN;
         for chip in chips {
             let label = canvas.text_width(&chip.label, FontRole::Ui);
-            let count = canvas.text_width(&compact_count(chip.count), FontRole::Ui);
-            let width = PADDING * 2.0 + label + COUNT_GAP + count;
+            let count = chip.count.map_or(0.0, |count| {
+                COUNT_GAP + canvas.text_width(&compact_count(count), FontRole::Ui)
+            });
+            let width = PADDING * 2.0 + label + count;
             self.chip_rects
                 .push(Rect::new(left, top, left + width, bottom));
             left += width + SPACING;
@@ -228,7 +231,9 @@ impl ChipBar {
                 rect.bottom,
             );
             canvas.text(&chip.label, text, UI_LEFT, text_color);
-            canvas.text(&compact_count(chip.count), text, UI_RIGHT, text_color);
+            if let Some(count) = chip.count {
+                canvas.text(&compact_count(count), text, UI_RIGHT, text_color);
+            }
             if focused && index == self.focus {
                 outline(canvas, grow(*rect, FOCUS_OFFSET), theme.accent);
             }
@@ -254,7 +259,7 @@ mod tests {
     fn chips() -> Vec<Chip> {
         let chip = |label: &str, count: usize, color: Color, active: bool| Chip {
             label: label.to_string(),
-            count,
+            count: Some(count),
             color,
             active,
         };

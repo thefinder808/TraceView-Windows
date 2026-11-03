@@ -234,6 +234,12 @@ impl Matcher {
             .as_ref()
             .is_none_or(|pattern| pattern.is_match(parse::searchable(log.format(), text)))
     }
+
+    /// Tests one row, given its decoded text from [`LogFile::text`]. This is
+    /// for rows already read, such as the ones on screen.
+    pub fn matches(&self, log: &LogFile, row: usize, text: &[u8]) -> bool {
+        self.passes_index(log, row) && self.passes_text(log, text)
+    }
 }
 
 /// Finds every matching row, in file order, using all cores.
@@ -397,6 +403,30 @@ mod tests {
         let rows = matching_rows(&log, &matcher, &Control::default()).unwrap();
         assert_eq!(rows.len(), 20_000);
         assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn one_row_matches_as_a_scan_would() {
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00 host alpha[1]: ERROR: disk full\n2026-01-01 10:00:01 host beta[2]: disk fine\n",
+        );
+        let matcher = Matcher::new(&Query {
+            text: Some("disk".to_string()),
+            min_level: Some(Level::Error),
+            ..Query::default()
+        })
+        .unwrap();
+        let scanned = matching_rows(&log, &matcher, &Control::default()).unwrap();
+        let mut one_at_a_time = Vec::new();
+        let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
+        log.read_rows(0..log.rows(), &mut buffer, |row, raw, _| {
+            if matcher.matches(&log, row, log.text(raw, &mut scratch)) {
+                one_at_a_time.push(row as u32);
+            }
+        })
+        .unwrap();
+        assert_eq!(one_at_a_time, scanned);
+        assert_eq!(scanned, vec![0]);
     }
 
     #[test]

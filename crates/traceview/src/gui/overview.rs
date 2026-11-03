@@ -212,7 +212,7 @@ pub fn chips(
 ) -> (Vec<Chip>, Vec<Option<Level>>) {
     let mut chips = vec![Chip {
         label: "All".to_string(),
-        count: levels.total() as usize,
+        count: Some(levels.total() as usize),
         color: theme.primary_text,
         active: active.is_none(),
     }];
@@ -222,7 +222,7 @@ pub fn chips(
         if count > 0 || active == Some(level) {
             chips.push(Chip {
                 label: level_label(level).to_string(),
-                count,
+                count: Some(count),
                 color: level_color(level, theme),
                 active: active == Some(level),
             });
@@ -442,7 +442,13 @@ mod tests {
         let (chips, filters) = chips(&levels, Some(Level::Warning), theme);
         let labels: Vec<_> = chips
             .iter()
-            .map(|chip| (chip.label.as_str(), chip.count, chip.active))
+            .map(|chip| {
+                (
+                    chip.label.as_str(),
+                    chip.count.unwrap_or_default(),
+                    chip.active,
+                )
+            })
             .collect();
         assert_eq!(
             labels,

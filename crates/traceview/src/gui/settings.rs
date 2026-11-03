@@ -1,5 +1,5 @@
-//! Saved settings: theme, layout, recent files and filter presets, in one TOML
-//! file a person can also edit by hand. It lives in `%APPDATA%\TraceView`, or
+//! Saved settings: theme, layout, recent files, filter presets and highlight
+//! rules, in one TOML file a person can also edit by hand. It lives in `%APPDATA%\TraceView`, or
 //! beside the EXE when a `traceview.toml` is already there, which makes a copy
 //! portable.
 //!
@@ -20,6 +20,7 @@ const MOST_RECENT: usize = 20;
 const MOST_PRESETS: usize = 100;
 const MOST_BOOKMARKED_LOGS: usize = 200;
 const MOST_BOOKMARKS_PER_LOG: usize = 10_000;
+pub const MOST_RULES: usize = 100;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,6 +38,10 @@ pub struct Settings {
     pub presets: Vec<Preset>,
     /// Bookmarked rows, by log path in lower case. Rows count from 0.
     pub bookmarks: BTreeMap<String, Vec<u32>>,
+    /// Turns every highlight rule on or off at once.
+    pub highlighting: bool,
+    /// Highlight rules, first match first.
+    pub rules: Vec<Rule>,
 }
 
 impl Default for Settings {
@@ -51,6 +56,34 @@ impl Default for Settings {
             recent: Vec::new(),
             presets: Vec::new(),
             bookmarks: BTreeMap::new(),
+            highlighting: true,
+            rules: Vec::new(),
+        }
+    }
+}
+
+/// A highlight rule. The first turned-on rule that matches a row decides how
+/// it's drawn. Names are kept as text, so a file from a newer version with a
+/// color this one doesn't know still loads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rule {
+    /// Filter box text, such as `download failed level:error`.
+    pub pattern: String,
+    /// A color's name, such as `blue`.
+    pub color: String,
+    /// `row` colors the whole row, and `marker` puts a mark by its number.
+    pub style: String,
+    pub enabled: bool,
+}
+
+impl Default for Rule {
+    fn default() -> Self {
+        Self {
+            pattern: String::new(),
+            color: "yellow".to_string(),
+            style: "row".to_string(),
+            enabled: true,
         }
     }
 }
@@ -107,6 +140,7 @@ impl Settings {
     fn tidy(&mut self) {
         self.recent.truncate(MOST_RECENT);
         self.presets.truncate(MOST_PRESETS);
+        self.rules.truncate(MOST_RULES);
         while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
             self.bookmarks.pop_last();
         }
@@ -250,6 +284,12 @@ mod tests {
             name: "Download errors".to_string(),
             filter: "download".to_string(),
             level: "error".to_string(),
+        });
+        settings.rules.push(Rule {
+            pattern: "/0x8007[0-9a-f]{4}/ level:warning".to_string(),
+            color: "blue".to_string(),
+            style: "marker".to_string(),
+            enabled: false,
         });
         let (store, _, problem) = Store::open(Some(path.clone()));
         assert_eq!(problem, None);

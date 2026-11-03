@@ -3,6 +3,46 @@
 
 use crate::geometry::Color;
 
+/// The colors a highlight rule can pick, in the order `Theme::rule_colors` holds them.
+pub const RULE_COLOR_NAMES: [&str; 6] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple"];
+
+/// One color a highlight rule can pick: a row background and the text drawn on
+/// it, and a stronger shade for markers, which can sit on any row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RuleColor {
+    pub row: Color,
+    pub text: Color,
+    pub marker: Color,
+}
+
+const fn rule(row: u32, text: u32, marker: u32) -> RuleColor {
+    RuleColor {
+        row: Color::rgb(row),
+        text: Color::rgb(text),
+        marker: Color::rgb(marker),
+    }
+}
+
+/// Pale rows with black text, and markers dark enough for CMTrace's red rows.
+const LIGHT_RULES: [RuleColor; 6] = [
+    rule(0xFFD2CC, 0x000000, 0x9B1C12),
+    rule(0xFFDDB8, 0x000000, 0x7A3800),
+    rule(0xFFF4A8, 0x000000, 0x5C4600),
+    rule(0xD3F0CF, 0x000000, 0x135C26),
+    rule(0xD2E4FF, 0x000000, 0x0B4CA3),
+    rule(0xE9DAFF, 0x000000, 0x63309F),
+];
+
+/// Dim rows with bright text, as dark themes draw errors and warnings.
+const DARK_RULES: [RuleColor; 6] = [
+    rule(0x47231F, 0xFF9C94, 0xFF6B61),
+    rule(0x452E16, 0xFFBE7A, 0xFF9F43),
+    rule(0x403A14, 0xFFE57A, 0xFFD60A),
+    rule(0x1B3C26, 0x86E39A, 0x3DD65C),
+    rule(0x1B3150, 0x96C8FF, 0x5AABFF),
+    rule(0x33264F, 0xD2B6FF, 0xB78CFF),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub name: &'static str,
@@ -59,6 +99,8 @@ pub struct Theme {
     pub histogram_window: Color,
     /// The marker drawn on bookmarked rows.
     pub bookmark: Color,
+    /// Highlight rule colors, in [`RULE_COLOR_NAMES`] order.
+    pub rule_colors: [RuleColor; 6],
 
     pub ui_font_size: f32,
     pub grid_font_size: f32,
@@ -112,6 +154,7 @@ impl Theme {
         histogram_error: Color::rgb(0xD13438),
         histogram_window: Color::rgb(0xDCE8F5),
         bookmark: Color::rgb(0x0A64C8),
+        rule_colors: LIGHT_RULES,
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -164,6 +207,7 @@ impl Theme {
         histogram_error: Color::rgb(0x9B1D14),
         histogram_window: Color::rgb(0xC1D3E5),
         bookmark: Color::rgb(0x0066CC),
+        rule_colors: LIGHT_RULES,
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -216,6 +260,7 @@ impl Theme {
         histogram_error: Color::rgb(0xFF6961),
         histogram_window: Color::rgb(0x334258),
         bookmark: Color::rgb(0x4A9EFF),
+        rule_colors: DARK_RULES,
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -268,6 +313,7 @@ impl Theme {
         histogram_error: Color::rgb(0xD32F2F),
         histogram_window: Color::rgb(0xBCD2EE),
         bookmark: Color::rgb(0x007AFF),
+        rule_colors: LIGHT_RULES,
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -320,6 +366,7 @@ impl Theme {
         histogram_error: Color::rgb(0xFF4070),
         histogram_window: Color::rgb(0x193F55),
         bookmark: Color::rgb(0x00D4FF),
+        rule_colors: DARK_RULES,
         ui_font_size: 12.0,
         grid_font_size: 13.0,
         row_height: 18.0,
@@ -449,6 +496,46 @@ mod tests {
                     "{} theme, {name}: {ratio:.2} is below 3",
                     theme.name
                 );
+            }
+        }
+    }
+
+    /// A rule's row is read like any other, its marker can land on a severity
+    /// row, and the editor writes each color's name in its marker shade.
+    #[test]
+    fn highlight_rule_colors_stay_readable_in_every_theme() {
+        for theme in Theme::ALL {
+            for (name, color) in RULE_COLOR_NAMES.iter().zip(theme.rule_colors) {
+                for (part, ratio, needed) in [
+                    ("row text", contrast(color.text, color.row), 4.5),
+                    (
+                        "name in the editor",
+                        contrast(color.marker, theme.chip_background),
+                        4.5,
+                    ),
+                    ("marker", contrast(color.marker, theme.grid_background), 4.5),
+                    (
+                        "marker on a warning",
+                        contrast(color.marker, theme.warning_row),
+                        3.0,
+                    ),
+                    (
+                        "marker on an error",
+                        contrast(color.marker, theme.error_row),
+                        3.0,
+                    ),
+                    (
+                        "marker on a critical row",
+                        contrast(color.marker, theme.critical_row),
+                        3.0,
+                    ),
+                ] {
+                    assert!(
+                        ratio >= needed,
+                        "{} theme, {name} {part}: {ratio:.2} is below {needed}",
+                        theme.name
+                    );
+                }
             }
         }
     }
