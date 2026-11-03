@@ -32,7 +32,7 @@ crates/
     examples/     gen_log (test data), evict_cache (cold-disk testing)
     tests/        robustness (random input), perf_budgets (speed limits)
   tv-ui/        our toolkit: geometry, the Canvas interface, theme tokens and five themes, input,
-                scroll bar, text field, menu bar, tab bar, list view, splitter, chip bar,
+                scroll bar, text field, menu bar, context menu, tab bar, list view, splitter, chip bar,
                 command palette with fuzzy matching. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling

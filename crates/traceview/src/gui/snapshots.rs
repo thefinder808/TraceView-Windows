@@ -317,6 +317,43 @@ fn a_menu_taller_than_the_window_wraps_and_lists_layouts() {
 }
 
 #[test]
+fn a_right_clicked_row_shows_its_menu() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::DARK));
+    render(&mut workspace, "row-menu", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    let row = workspace.tabs[0].view.row_rect(4);
+    let point = tv_ui::Point::new(row.left + 300.0, row.top + row.height() / 2.0);
+    send(
+        &mut workspace,
+        Event::MouseDown(point, tv_ui::MouseButton::Right, NONE),
+    );
+    let frame = render(&mut workspace, "row-menu", 96.0, |_| true);
+    let theme = workspace.theme();
+    let menu = &workspace.row_menu.as_ref().unwrap().menu;
+    let rect = menu.rect();
+    assert_eq!(
+        (rect.left, rect.top),
+        (point.x, point.y),
+        "it opens where the click was"
+    );
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.bottom - 4.0),
+        theme.panel_background
+    );
+    let first = menu.item_rect(0).unwrap();
+    assert!(
+        frame.has_ink(first, theme.panel_background),
+        "Add bookmark drew"
+    );
+    assert_eq!(
+        frame.row_color(&workspace, 4),
+        theme.selected_row,
+        "the row is selected"
+    );
+}
+
+#[test]
 fn welcome_screen_shows_with_no_log() {
     let mut workspace = Workspace::new(Waker::detached(), 0, false);
     workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);

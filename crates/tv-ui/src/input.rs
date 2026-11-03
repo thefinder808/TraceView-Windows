@@ -32,6 +32,8 @@ pub enum Key {
     Backspace,
     Delete,
     F(u8),
+    /// The menu key, which opens a context menu.
+    Menu,
     /// A letter or digit key, uppercase, regardless of keyboard state. The
     /// plus and minus keys, on the main keyboard or the number pad, are `=`
     /// and `-`.

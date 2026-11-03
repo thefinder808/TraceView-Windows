@@ -54,6 +54,9 @@ pub struct Response {
     pub columns_changed: bool,
     /// The header was right-clicked, which opens the columns editor.
     pub columns_menu: bool,
+    /// A row's menu was asked for, by right-clicking it or with Shift+F10 or
+    /// the menu key on the selected row.
+    pub row_menu: Option<usize>,
 }
 
 impl Response {
@@ -63,6 +66,7 @@ impl Response {
         selection_changed: false,
         columns_changed: false,
         columns_menu: false,
+        row_menu: None,
     };
     const SELECTED: Response = Response {
         redraw: true,
@@ -70,6 +74,7 @@ impl Response {
         selection_changed: true,
         columns_changed: false,
         columns_menu: false,
+        row_menu: None,
     };
 }
 
@@ -392,6 +397,18 @@ impl LogView {
     }
 
     fn handle_key(&mut self, key: Key, ctrl: bool, shift: bool) -> Response {
+        // Shift+F10 and the menu key open the selected row's menu, as they
+        // open a context menu anywhere in Windows.
+        if key == Key::Menu || (key == Key::F(10) && shift && !ctrl) {
+            let Some(row) = self.cursor else {
+                return Response::default();
+            };
+            self.reveal(row);
+            return Response {
+                row_menu: Some(row),
+                ..Response::REDRAW
+            };
+        }
         let page = self.page_rows() as i64;
         match (key, ctrl) {
             (Key::Up, false) => self.move_cursor(-1, shift),
@@ -586,6 +603,22 @@ impl LogView {
                     ..Response::default()
                 }
             }
+            Event::MouseDown(point, MouseButton::Right, _) => match self.row_at(point) {
+                // A row outside the selection becomes it. One inside leaves the
+                // selection as it is, so all of it can be copied.
+                Some(row) if self.is_selected(row) => Response {
+                    row_menu: Some(row),
+                    ..Response::REDRAW
+                },
+                Some(row) => {
+                    self.select(row, false);
+                    Response {
+                        row_menu: Some(row),
+                        ..Response::SELECTED
+                    }
+                }
+                None => Response::default(),
+            },
             Event::MouseUp(_, MouseButton::Left) => self.finish_drag(),
             Event::MouseMove(point) => self.handle_drag(point),
             Event::Wheel(rows) => {
@@ -1374,6 +1407,44 @@ mod tests {
         assert!(view.handle(header).columns_menu);
         let row = Event::MouseDown(Point::new(300.0, 100.0), MouseButton::Right, NONE);
         assert!(!view.handle(row).columns_menu);
+    }
+
+    #[test]
+    fn right_clicking_a_row_asks_for_its_menu_and_keeps_a_selection_it_is_in() {
+        fn point(view: &LogView, row: usize) -> Point {
+            let rect = view.row_rect(row);
+            Point::new(rect.left + 200.0, rect.top + rect.height() / 2.0)
+        }
+        let mut view = view(100);
+        let response = view.handle(Event::MouseDown(point(&view, 3), MouseButton::Right, NONE));
+        assert_eq!(response.row_menu, Some(3));
+        assert_eq!(
+            view.selection(),
+            Some(3..=3),
+            "a row outside the selection becomes it"
+        );
+        view.select(1, false);
+        view.select(5, true);
+        let inside = view.handle(Event::MouseDown(point(&view, 4), MouseButton::Right, NONE));
+        assert_eq!(inside.row_menu, Some(4));
+        assert_eq!(
+            view.selection(),
+            Some(1..=5),
+            "a row inside it keeps the selection"
+        );
+        let shift = Modifiers {
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(
+            view.handle(Event::KeyDown(Key::F(10), shift)).row_menu,
+            Some(5)
+        );
+        assert_eq!(
+            view.handle(Event::KeyDown(Key::Menu, NONE)).row_menu,
+            Some(5)
+        );
+        assert_eq!(view.handle(Event::KeyDown(Key::F(10), NONE)).row_menu, None);
     }
 
     #[test]

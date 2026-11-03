@@ -33,6 +33,7 @@ use std::sync::Arc;
 use tv_engine::{CustomFormat, Format, Level};
 use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
+use tv_ui::context_menu::ContextMenu;
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
 use tv_ui::palette::PaletteItem;
 use tv_ui::splitter::{Orientation, Splitter};
@@ -297,6 +298,13 @@ fn draw_pane(
     }
 }
 
+/// The menu a right-clicked row opens, with Shift+F10 or the menu key too.
+pub struct RowMenu {
+    pub menu: ContextMenu,
+    /// The row it's for, in the file or merged timeline.
+    row: usize,
+}
+
 /// Two logs side by side, as in the Mac app.
 pub struct Split {
     /// The tab in the pane without focus.
@@ -356,6 +364,7 @@ pub struct Workspace {
     pub lookup: Option<LookupPanel>,
     /// The command palette, while it's open.
     pub palette: Option<CommandPalette>,
+    pub row_menu: Option<RowMenu>,
     /// The highlight rules editor, while it's open.
     pub rules_panel: Option<RulesPanel>,
     /// The columns editor, while it's open.
@@ -475,6 +484,7 @@ impl Workspace {
             formats: Vec::new(),
             shortcut_panel: None,
             keys_query: String::new(),
+            row_menu: None,
             settings: Settings::default(),
             store: Store::disabled(),
             menu: MenuBar::default(),
@@ -1191,15 +1201,7 @@ impl Workspace {
                     });
                 }
             }
-            command::BOOKMARK => {
-                if let Some((path, rows)) = self.active_tab_mut().and_then(Tab::toggle_bookmark) {
-                    for tab in &mut self.tabs {
-                        tab.update_bookmarks(&path, &rows);
-                    }
-                    self.settings.set_bookmarks(&path, &rows);
-                    self.save_settings();
-                }
-            }
+            command::BOOKMARK => self.toggle_bookmark(None),
             command::NEXT_BOOKMARK | command::PREVIOUS_BOOKMARK => {
                 if let Some(tab) = self.active_tab_mut() {
                     tab.step_bookmark(id == command::NEXT_BOOKMARK);
@@ -2072,7 +2074,91 @@ impl Workspace {
     }
 
     /// Closes whichever floating panel is open, since only one can be.
+    /// Bookmarks a row of the active tab, or removes its bookmark: the row
+    /// given, in the file or merged timeline, or else the selected one. Every
+    /// tab showing that file sees it.
+    fn toggle_bookmark(&mut self, row: Option<usize>) {
+        let toggled = self
+            .active_tab_mut()
+            .and_then(|tab| tab.toggle_bookmark(row));
+        if let Some((path, rows)) = toggled {
+            for tab in &mut self.tabs {
+                tab.update_bookmarks(&path, &rows);
+            }
+            self.settings.set_bookmarks(&path, &rows);
+            self.save_settings();
+        }
+    }
+
+    /// Opens a row's menu at a point. It offers what applies to that row.
+    fn open_row_menu(&mut self, view_row: usize, at: Point, from_keyboard: bool) {
+        let Some(rows) = self.active_tab().and_then(Tab::rows) else {
+            return;
+        };
+        let (row, bookmarked) = (rows.file_row(view_row), rows.bookmarked(view_row));
+        drop(rows);
+        let bookmark = if bookmarked {
+            "Remove bookmark"
+        } else {
+            "Add bookmark"
+        };
+        let items = vec![
+            MenuItem::command(
+                bookmark,
+                &self.keymap.label_for(command::BOOKMARK),
+                command::BOOKMARK,
+            ),
+            MenuItem::command("Copy", "Ctrl+C", command::COPY),
+        ];
+        self.row_menu = Some(RowMenu {
+            menu: ContextMenu::new(items, at, from_keyboard),
+            row,
+        });
+    }
+
+    /// The row menu takes all input while it's open, as any menu does.
+    fn row_menu_event(&mut self, event: Event, commands: &mut Commands) {
+        let Some(open) = &mut self.row_menu else {
+            return;
+        };
+        let response = open.menu.handle(event);
+        if response.closed {
+            let row = open.row;
+            self.row_menu = None;
+            self.row_menu_chose(response.command, row, commands);
+        }
+        if response.redraw || response.closed {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    /// Chooses an item of the open row menu, as a screen reader can.
+    pub fn press_row_menu_item(&mut self, item: usize, commands: &mut Commands) {
+        let Some(open) = &mut self.row_menu else {
+            return;
+        };
+        let response = open.menu.activate(item);
+        if response.closed {
+            let row = open.row;
+            self.row_menu = None;
+            self.row_menu_chose(response.command, row, commands);
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    /// Does what was chosen from a row's menu, for its row.
+    fn row_menu_chose(&mut self, command: Option<u32>, row: usize, commands: &mut Commands) {
+        match command {
+            Some(command::BOOKMARK) => self.toggle_bookmark(Some(row)),
+            Some(id) => self.run_command(id, commands),
+            None => {}
+        }
+    }
+
     fn close_panels(&mut self) {
+        self.row_menu = None;
         self.lookup = None;
         self.palette = None;
         self.rules_panel = None;
@@ -2232,7 +2318,7 @@ impl Workspace {
         let open = self.menu.open_menu().is_some();
         match event {
             Event::KeyDown(key, modifiers) => {
-                self.menu.is_active() || modifiers.alt || *key == Key::F(10)
+                self.menu.is_active() || modifiers.alt || (*key == Key::F(10) && !modifiers.shift)
             }
             Event::MouseDown(point, ..) => open || self.menu.contains(*point),
             Event::MouseMove(_)
@@ -2245,6 +2331,10 @@ impl Workspace {
 
     /// Routes input to the menu, a shortcut, the tab bar, a text field or the grid.
     pub fn event(&mut self, event: Event, canvas: &mut dyn Canvas, commands: &mut Commands) {
+        if self.row_menu.is_some() {
+            self.row_menu_event(event, commands);
+            return;
+        }
         if self.menu_wants(&event) {
             let response = self.menu.handle(event);
             if response.redraw {
@@ -2435,6 +2525,14 @@ impl Workspace {
         }
         let response = tab.view.handle(event);
         tab.following = tab.view.at_bottom();
+        // A right-click opens the menu where it was, and the keyboard below the row.
+        let row_menu = response.row_menu.map(|row| match event {
+            Event::MouseDown(point, ..) => (row, point, false),
+            _ => {
+                let rect = tab.view.row_rect(row);
+                (row, Point::new(rect.left + 40.0, rect.bottom), true)
+            }
+        });
         let changed_columns = response
             .columns_changed
             .then(|| (tab.kind(), tab.view.columns().to_vec()));
@@ -2443,6 +2541,9 @@ impl Workspace {
         }
         if response.columns_menu {
             self.run_command(command::COLUMNS, commands);
+        }
+        if let Some((row, at, from_keyboard)) = row_menu {
+            self.open_row_menu(row, at, from_keyboard);
         }
         if matches!(event, Event::MouseMove(_) | Event::MouseUp(..)) {
             self.update_cursor(commands);
@@ -2656,6 +2757,10 @@ impl Workspace {
         }
         if let Some(panel) = &mut self.themes_panel {
             panel.arrange(below_menu, canvas, theme);
+        }
+        if let Some(open) = &mut self.row_menu {
+            open.menu
+                .arrange(Rect::new(0.0, 0.0, size.0, size.1), canvas);
         }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
@@ -2871,6 +2976,9 @@ impl Workspace {
 
         self.menu.draw_bar(canvas, layout.menu, theme);
         self.menu.draw_popup(canvas, theme);
+        if let Some(open) = &self.row_menu {
+            open.menu.draw(canvas, theme);
+        }
 
         if let Some(caret) = caret {
             commands.push(Command::SetImePosition(Point::new(caret.x, caret.y)));
@@ -3469,6 +3577,8 @@ mod tests {
         first.use_settings(settings, store, problem);
         first.run_command(command::THEMES + 1, &mut Commands::default());
         first.run_command(command::DETAILS, &mut Commands::default());
+        first.run_command(command::SIDEBAR, &mut Commands::default());
+        first.run_command(command::HISTOGRAM, &mut Commands::default());
         first.open_paths(vec![log.clone()]);
         drop(first);
 
@@ -3477,7 +3587,95 @@ mod tests {
         restored.use_settings(settings, store, problem);
         assert_eq!(restored.theme().name, "Console");
         assert!(!restored.show_details);
+        assert!(restored.show_sidebar && restored.show_histogram);
         assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
+    }
+
+    fn row_point(workspace: &Workspace, row: usize) -> Point {
+        let rect = workspace.tabs[0].view.row_rect(row);
+        Point::new(rect.left + 200.0, rect.top + rect.height() / 2.0)
+    }
+
+    /// Opens a row's menu by right-clicking it, and lays the menu out.
+    fn right_click(workspace: &mut Workspace, row: usize) -> Vec<String> {
+        let point = row_point(workspace, row);
+        send(workspace, Event::MouseDown(point, MouseButton::Right, NONE));
+        settle(workspace, |_| true);
+        let open = workspace.row_menu.as_ref().expect("the row's menu opened");
+        open.menu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Command { label, .. } => Some(label.clone()),
+                MenuItem::Separator => None,
+            })
+            .collect()
+    }
+
+    fn choose(workspace: &mut Workspace, item: usize) {
+        let rect = workspace
+            .row_menu
+            .as_ref()
+            .unwrap()
+            .menu
+            .item_rect(item)
+            .unwrap();
+        let point = Point::new(rect.left + 10.0, rect.top + rect.height() / 2.0);
+        send(workspace, Event::MouseDown(point, MouseButton::Left, NONE));
+    }
+
+    #[test]
+    fn right_clicking_a_row_bookmarks_it_and_copies_the_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut workspace = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        workspace.use_settings(settings, store, problem);
+        workspace.open_paths(vec![log.clone()]);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        // The log opens at its newest rows, so row 95 is on screen.
+        assert_eq!(right_click(&mut workspace, 95), ["Add bookmark", "Copy"]);
+        assert_eq!(
+            workspace.tabs[0].cursor_file_row(),
+            Some(95),
+            "the row is selected"
+        );
+        choose(&mut workspace, 0);
+        assert!(workspace.row_menu.is_none());
+        assert!(workspace.tabs[0].rows().unwrap().bookmarked(95));
+        assert_eq!(
+            workspace.settings().bookmarks_for(&log),
+            BTreeSet::from([95])
+        );
+
+        // Again, it offers to remove it, and Esc closes it.
+        assert_eq!(right_click(&mut workspace, 95)[0], "Remove bookmark");
+        send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        assert!(workspace.row_menu.is_none());
+        assert!(
+            workspace.tabs[0].rows().unwrap().bookmarked(95),
+            "Esc chose nothing"
+        );
+
+        // Inside a selection, the selection stays, so Copy copies all of it.
+        workspace.tabs[0].view.select(92, false);
+        workspace.tabs[0].view.select(96, true);
+        right_click(&mut workspace, 94);
+        assert_eq!(workspace.tabs[0].view.selection(), Some(92..=96));
+        choose(&mut workspace, 1);
+        settle(&mut workspace, |workspace| {
+            workspace.status().contains("Copied 5 rows")
+        });
+
+        // Shift+F10 opens it for the selected row, ready for Enter.
+        send(&mut workspace, Event::KeyDown(Key::F(10), SHIFT));
+        assert!(workspace.row_menu.is_some());
+        assert!(!workspace.menu().is_active(), "it isn't the menu bar's F10");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        assert!(workspace.tabs[0].rows().unwrap().bookmarked(96));
     }
 
     fn retype_theme_box(workspace: &mut Workspace, text: &str) {

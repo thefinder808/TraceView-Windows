@@ -41,6 +41,120 @@ impl MenuItem {
     pub fn is_enabled_command(&self) -> bool {
         matches!(self, MenuItem::Command { enabled: true, .. })
     }
+
+    pub(crate) fn height(&self) -> f32 {
+        match self {
+            MenuItem::Command { .. } => ITEM_HEIGHT,
+            MenuItem::Separator => SEPARATOR_HEIGHT,
+        }
+    }
+}
+
+/// How wide a popup must be for its longest label and shortcut.
+pub(crate) fn popup_width(items: &[MenuItem], canvas: &mut dyn Canvas) -> f32 {
+    let mut label_width: f32 = 0.0;
+    let mut shortcut_width: f32 = 0.0;
+    for item in items {
+        if let MenuItem::Command {
+            label, shortcut, ..
+        } = item
+        {
+            label_width = label_width.max(canvas.text_width(label, FontRole::Ui));
+            shortcut_width = shortcut_width.max(canvas.text_width(shortcut, FontRole::Ui));
+        }
+    }
+    ITEM_PADDING * 2.0 + label_width + SHORTCUT_GAP + shortcut_width
+}
+
+/// The next enabled command after `from`, or before it, wrapping around and
+/// skipping separators and disabled items.
+pub(crate) fn step(items: &[MenuItem], from: Option<usize>, forward: bool) -> Option<usize> {
+    let count = items.len();
+    if count == 0 {
+        return None;
+    }
+    let mut index = from.unwrap_or(if forward { count - 1 } else { 0 });
+    for _ in 0..count {
+        index = if forward {
+            (index + 1) % count
+        } else {
+            (index + count - 1) % count
+        };
+        if items[index].is_enabled_command() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// Draws a popup of items, each in its rectangle, with one highlighted. The
+/// border has no top, so a menu bar's popup joins the bar.
+pub(crate) fn draw_items(
+    canvas: &mut dyn Canvas,
+    popup: Rect,
+    items: &[MenuItem],
+    rects: &[Rect],
+    highlighted: Option<usize>,
+    theme: &Theme,
+) {
+    canvas.fill_rect(
+        Rect::new(
+            popup.left - 1.0,
+            popup.top,
+            popup.right + 1.0,
+            popup.bottom + 1.0,
+        ),
+        theme.border,
+    );
+    canvas.fill_rect(popup, theme.panel_background);
+    for (index, (item, rect)) in items.iter().zip(rects).enumerate() {
+        match item {
+            MenuItem::Separator => {
+                let middle = (rect.top + rect.bottom) / 2.0;
+                canvas.fill_rect(
+                    Rect::new(rect.left + 8.0, middle, rect.right - 8.0, middle + 1.0),
+                    theme.border,
+                );
+            }
+            MenuItem::Command {
+                label,
+                shortcut,
+                enabled,
+                checked,
+                ..
+            } => {
+                if highlighted == Some(index) {
+                    canvas.fill_rect(*rect, theme.hover_background);
+                }
+                let color = if *enabled {
+                    theme.primary_text
+                } else {
+                    theme.placeholder_text
+                };
+                if *checked {
+                    canvas.text(
+                        "\u{2713}",
+                        Rect::new(
+                            rect.left + 6.0,
+                            rect.top,
+                            rect.left + ITEM_PADDING,
+                            rect.bottom,
+                        ),
+                        UI_LEFT,
+                        color,
+                    );
+                }
+                let inner = Rect::new(
+                    rect.left + ITEM_PADDING,
+                    rect.top,
+                    rect.right - ITEM_PADDING,
+                    rect.bottom,
+                );
+                canvas.text(label, inner, UI_LEFT, color);
+                canvas.text(shortcut, inner, UI_RIGHT, theme.secondary_text);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,25 +246,11 @@ impl MenuBar {
             return;
         };
         let items = &self.menus[open].items;
-        let mut label_width: f32 = 0.0;
-        let mut shortcut_width: f32 = 0.0;
-        for item in items {
-            if let MenuItem::Command {
-                label, shortcut, ..
-            } = item
-            {
-                label_width = label_width.max(canvas.text_width(label, FontRole::Ui));
-                shortcut_width = shortcut_width.max(canvas.text_width(shortcut, FontRole::Ui));
-            }
-        }
-        let width = ITEM_PADDING * 2.0 + label_width + SHORTCUT_GAP + shortcut_width;
+        let width = popup_width(items, canvas);
         let first = self.title_rects[open].left;
         let (mut left, mut top, mut lowest) = (first, bar.bottom, bar.bottom);
         for item in items {
-            let height = match item {
-                MenuItem::Command { .. } => ITEM_HEIGHT,
-                MenuItem::Separator => SEPARATOR_HEIGHT,
-            };
+            let height = item.height();
             if top + height > bottom && top > bar.bottom {
                 left += width;
                 top = bar.bottom;
@@ -165,24 +265,8 @@ impl MenuBar {
 
     fn step_item(&mut self, forward: bool) {
         let Some(open) = self.open else { return };
-        let items = &self.menus[open].items;
-        if items.is_empty() {
-            return;
-        }
-        let count = items.len();
-        let mut index = self
-            .highlighted
-            .unwrap_or(if forward { count - 1 } else { 0 });
-        for _ in 0..count {
-            index = if forward {
-                (index + 1) % count
-            } else {
-                (index + count - 1) % count
-            };
-            if items[index].is_enabled_command() {
-                self.highlighted = Some(index);
-                return;
-            }
+        if let Some(next) = step(&self.menus[open].items, self.highlighted, forward) {
+            self.highlighted = Some(next);
         }
     }
 
@@ -364,70 +448,14 @@ impl MenuBar {
     /// Draws the open menu. Call last, so it covers everything beneath it.
     pub fn draw_popup(&self, canvas: &mut dyn Canvas, theme: &Theme) {
         let Some(open) = self.open else { return };
-        let popup = self.popup;
-        canvas.fill_rect(
-            Rect::new(
-                popup.left - 1.0,
-                popup.top,
-                popup.right + 1.0,
-                popup.bottom + 1.0,
-            ),
-            theme.border,
+        draw_items(
+            canvas,
+            self.popup,
+            &self.menus[open].items,
+            &self.item_rects,
+            self.highlighted,
+            theme,
         );
-        canvas.fill_rect(popup, theme.panel_background);
-        for (index, (item, rect)) in self.menus[open]
-            .items
-            .iter()
-            .zip(&self.item_rects)
-            .enumerate()
-        {
-            match item {
-                MenuItem::Separator => {
-                    let middle = (rect.top + rect.bottom) / 2.0;
-                    canvas.fill_rect(
-                        Rect::new(rect.left + 8.0, middle, rect.right - 8.0, middle + 1.0),
-                        theme.border,
-                    );
-                }
-                MenuItem::Command {
-                    label,
-                    shortcut,
-                    enabled,
-                    checked,
-                    ..
-                } => {
-                    if self.highlighted == Some(index) {
-                        canvas.fill_rect(*rect, theme.hover_background);
-                    }
-                    let color = if *enabled {
-                        theme.primary_text
-                    } else {
-                        theme.placeholder_text
-                    };
-                    if *checked {
-                        canvas.text(
-                            "\u{2713}",
-                            Rect::new(
-                                rect.left + 6.0,
-                                rect.top,
-                                rect.left + ITEM_PADDING,
-                                rect.bottom,
-                            ),
-                            UI_LEFT,
-                            color,
-                        );
-                    }
-                    let inner = Rect::new(
-                        rect.left + ITEM_PADDING,
-                        rect.top,
-                        rect.right - ITEM_PADDING,
-                        rect.bottom,
-                    );
-                    canvas.text(label, inner, UI_LEFT, color);
-                    canvas.text(shortcut, inner, UI_RIGHT, theme.secondary_text);
-                }
-            }
-        }
     }
 
     pub fn title_rect(&self, menu: usize) -> Option<Rect> {

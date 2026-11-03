@@ -251,7 +251,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Sidebar** (Ctrl+B): open tabs, bookmarks across open logs, logs in the same folder, the usual Windows log folders that exist here, and recent logs.
 - **Command palette** (Ctrl+K): every menu command with its shortcut, plus open tabs, recent logs and filter presets.
   - Typing `:` and a number goes to that row, which is what Ctrl+G opens it for.
-- **Bookmarks:** Ctrl+D toggles one, and F2 and Shift+F2 step through them. They're saved per file and listed in the sidebar.
+- **Bookmarks:** Ctrl+D toggles one, and F2 and Shift+F2 step through them. They're saved per file and listed in the sidebar. Right-clicking a row offers it too (see below).
 - **Filter presets:** View > Save filter as preset stores the filter text and the active chip under a name. They're applied or deleted from the palette.
 - **Split view** (Ctrl+\\): two logs side by side, each with its own filter, find, chips and histogram.
   - The focused pane is marked and gets the keyboard.
@@ -413,6 +413,14 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **The end-to-end check** ran the EXE against the real settings in `%APPDATA%`, so its test logs ended up in the Recent list. It runs a portable copy with its own settings now, and it checks live reload in the real window.
 
 **Fixed along the way:** a frame now always brings screen readers up to date. Before, what came from layout, such as the severity chips' counts and an editor's buttons, could stay out of date for them until the next input. The end-to-end check caught it as an intermittent failure once the index cache had to be rebuilt.
+
+## Since milestone 5
+
+**The row menu:**
+
+- **Right-clicking a row** opens a menu with Add bookmark, or Remove bookmark if it has one, and Copy, each with its shortcut. Shift+F10 and the menu key open it for the selected row, as they open a context menu anywhere in Windows, and screen readers get it as a menu.
+- **A row outside the selection becomes the selection.** One inside it leaves the selection as it is, so rows can be selected, right-clicked and copied together. The bookmark item is always for the row that was clicked.
+- **It's a toolkit widget,** drawn and stepped through by the same code as the menu bar's menus, so more row actions can join it later.
 
 ## Milestones
 
