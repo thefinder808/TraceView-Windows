@@ -35,7 +35,8 @@ crates/
                 scroll bar, text field, menu bar, context menu, tab bar, list view, splitter, chip bar,
                 command palette with fuzzy matching. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
-  tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling
+  tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
+                contrast themes, per-user file type registration
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs
   traceview/    the EXE. No unsafe
     cli.rs        query and summarize
@@ -118,6 +119,10 @@ The edited file wins over the window. The writer thread knows the text the file 
 Theme files reload as a set when any of them changes. The menu lists them again, and the theme in use updates if its file changed, except while the theme editor is open, since it decides the theme then. The editor's own saves are read back too, which is harmless because each distinct theme is kept once. Problems with theme files are said only when they change, so a broken file isn't announced on every keystroke in the editor.
 
 **Layouts.** A layout is a name and whether the sidebar, severity chips, histogram and details pane show, with the sidebar's width. CMTrace (the grid and details pane) and Everything are built in, and saved ones follow them in `traceview.toml`, up to 50. Each is a menu command numbered from `command::LAYOUTS`, so the View menu, the palette and screen readers all get them the way they get themes, and the built-in two have stable shortcut names (`layout_cmtrace`, `layout_everything`). Nothing records which layout is in use: the menu checks every layout that matches what the window shows now, so changing a pane by hand simply unchecks it. The status bar isn't part of a layout, since it carries row counts, live state and every message. The sidebar's width is saved as the width chosen, not the width it's laid out at, because a sidebar not yet shown has no width, and a narrow window shrinks it only for as long as it's narrow.
+
+**File types.** Registering for `.log` and `.lo_` writes only under `HKEY_CURRENT_USER`: a `TraceView.Log` file type whose open command is this EXE's path, quoted, with `"%1"`; an entry in each extension's `OpenWithProgids`, so other programs listed there stay; and capabilities under `Software\TraceView` named in `RegisteredApplications`, which is what puts TraceView on Windows' Default apps page. Windows keeps the default choice itself, behind a hash a program can't forge, so TraceView registers and then opens that page. Taking it back removes exactly those keys and values. The window runs both as commands and reports back, so the workspace and its tests never touch the registry, and the registry code's own tests write under a scratch key they remove.
+
+**Contrast themes.** The window reads whether a Windows contrast theme is on, and its six colors, at launch and whenever Windows says settings or system colors changed. While one is on, the workspace draws with a theme made from those colors in place of the chosen one, kept once per set of colors as file themes are. Its backgrounds are all the background color and only highlights are filled, so every pair a view draws is one the contrast theme defines, and a test holds the mapping to the same contrast limits as the built-in themes for palettes like Windows' own four. A `contrast` flag on the theme does the rest: text on a highlight takes the selected-text color through `Theme::on_highlight`, rules draw as markers, find matches are framed, and the title bar is left to Windows.
 
 **Menus.** A menu taller than the window wraps into more columns, as Windows' own can, so long lists of themes and layouts stay reachable. Items are found by their rectangles, so clicks, hovering and screen reader bounds needed no change.
 

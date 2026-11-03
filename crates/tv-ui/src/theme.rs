@@ -6,6 +6,21 @@ use crate::geometry::Color;
 /// The colors a highlight rule can pick, in the order `Theme::rule_colors` holds them.
 pub const RULE_COLOR_NAMES: [&str; 6] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple"];
 
+/// The colors a Windows contrast theme sets, as Settings > Accessibility >
+/// Contrast themes names them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContrastColors {
+    pub background: Color,
+    pub text: Color,
+    /// Hyperlinks.
+    pub link: Color,
+    /// Inactive text.
+    pub disabled: Color,
+    /// Selected text's background, and its text.
+    pub selected: Color,
+    pub selected_text: Color,
+}
+
 /// One color a highlight rule can pick: a row background and the text drawn on
 /// it, and a stronger shade for markers, which can sit on any row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +62,10 @@ const DARK_RULES: [RuleColor; 6] = [
 pub struct Theme {
     pub name: &'static str,
     pub is_dark: bool,
+    /// Made from a Windows contrast theme's colors, which pair only in the
+    /// ways Windows intends, so a few things draw differently: see
+    /// [`Theme::contrast`].
+    pub contrast: bool,
 
     pub window_background: Color,
     pub grid_background: Color,
@@ -113,6 +132,7 @@ impl Theme {
     pub const CLASSIC: Theme = Theme {
         name: "Classic",
         is_dark: false,
+        contrast: false,
         window_background: Color::rgb(0xFFFFFF),
         grid_background: Color::rgb(0xFFFFFF),
         header_background: Color::rgb(0xECECEC),
@@ -163,6 +183,7 @@ impl Theme {
     pub const CONSOLE: Theme = Theme {
         name: "Console",
         is_dark: false,
+        contrast: false,
         window_background: Color::rgb(0xFFFFFF),
         grid_background: Color::rgb(0xFFFFFF),
         header_background: Color::rgb(0xF4F4F4),
@@ -213,6 +234,7 @@ impl Theme {
     pub const DARK: Theme = Theme {
         name: "Dark",
         is_dark: true,
+        contrast: false,
         window_background: Color::rgb(0x1A1A1E),
         grid_background: Color::rgb(0x1E1E22),
         header_background: Color::rgb(0x19191D),
@@ -263,6 +285,7 @@ impl Theme {
     pub const LIGHT: Theme = Theme {
         name: "Light",
         is_dark: false,
+        contrast: false,
         window_background: Color::rgb(0xF5F5F7),
         grid_background: Color::rgb(0xFFFFFF),
         header_background: Color::rgb(0xE8E8ED),
@@ -313,6 +336,7 @@ impl Theme {
     pub const NEON: Theme = Theme {
         name: "Neon",
         is_dark: true,
+        contrast: false,
         window_background: Color::rgb(0x0D0D12),
         grid_background: Color::rgb(0x0F0F16),
         header_background: Color::rgb(0x0A0A10),
@@ -386,6 +410,88 @@ impl Theme {
     /// Every pair whose contrast falls short: text needs 4.5:1 against what
     /// it's drawn on, as WCAG asks, and bars and markers need 3:1. Each says
     /// which pair it is and by how much, for a theme file's author.
+    /// A theme from a Windows contrast theme's colors. They're meant to pair
+    /// only as text on the background, inactive and link text on it, and
+    /// selected text on the selection, so every background here is the
+    /// background, and only the selection, hover and highlights are filled.
+    /// Errors and criticals are in the link color, and debug rows in the
+    /// inactive one. Views draw rule rows as markers and frame find matches
+    /// in a contrast theme, since there are no fills to spare for them.
+    pub fn contrast(colors: &ContrastColors) -> Theme {
+        let ContrastColors {
+            background,
+            text,
+            link,
+            disabled,
+            selected,
+            selected_text,
+        } = *colors;
+        let rule = RuleColor {
+            row: background,
+            text,
+            marker: link,
+        };
+        Theme {
+            name: "Windows contrast",
+            is_dark: contrast(background, Color::rgb(0x000000))
+                < contrast(background, Color::rgb(0xFFFFFF)),
+            contrast: true,
+            window_background: background,
+            grid_background: background,
+            header_background: background,
+            status_background: background,
+            scrollbar_track: background,
+            scrollbar_thumb: text,
+            border: text,
+            primary_text: text,
+            secondary_text: text,
+            tertiary_text: text,
+            timestamp_text: text,
+            component_text: text,
+            placeholder_text: disabled,
+            selected_row: selected,
+            selected_text,
+            warning_row: background,
+            warning_text: text,
+            error_row: background,
+            error_text: link,
+            critical_row: background,
+            critical_text: link,
+            notice_text: text,
+            debug_text: disabled,
+            accent: link,
+            input_background: background,
+            panel_background: background,
+            hover_background: selected,
+            highlight_row: background,
+            text_selection: selected,
+            sidebar_background: background,
+            section_text: text,
+            chip_background: background,
+            chip_active_background: selected,
+            chip_active_text: selected_text,
+            histogram_background: background,
+            histogram_info: disabled,
+            histogram_warning: text,
+            histogram_error: link,
+            histogram_window: selected,
+            bookmark: link,
+            rule_colors: [rule; 6],
+            ..Theme::CLASSIC
+        }
+    }
+
+    /// The color for text drawn on a highlight, such as a hovered item or
+    /// selected text in a box. A contrast theme pairs only its selected text
+    /// with its highlight, so it uses that, and any other theme keeps `color`.
+    pub fn on_highlight(&self, color: Color) -> Color {
+        if self.contrast {
+            self.selected_text
+        } else {
+            color
+        }
+    }
+
     pub fn contrast_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
         let mut check = |name: String, first: Color, second: Color, needed: f64| {
@@ -454,14 +560,22 @@ impl Theme {
             ("Status", self.secondary_text, self.status_background),
             ("Input", self.primary_text, self.input_background),
             ("Panel", self.primary_text, self.panel_background),
-            ("Hover", self.primary_text, self.hover_background),
+            (
+                "Hover",
+                self.on_highlight(self.primary_text),
+                self.hover_background,
+            ),
             ("Find match", self.primary_text, self.highlight_row),
             ("Error find match", self.error_text, self.highlight_row),
             ("Error chip", self.histogram_error, self.chip_background),
             ("Warning chip", self.histogram_warning, self.chip_background),
             ("Notice chip", self.notice_text, self.chip_background),
             ("Debug chip", self.debug_text, self.chip_background),
-            ("Text selection", self.primary_text, self.text_selection),
+            (
+                "Text selection",
+                self.on_highlight(self.primary_text),
+                self.text_selection,
+            ),
             ("Menu label", self.secondary_text, self.panel_background),
             ("Section", self.section_text, self.sidebar_background),
             ("Sidebar", self.primary_text, self.sidebar_background),
@@ -578,6 +692,52 @@ pub fn token_label(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const fn palette(colors: [u32; 6]) -> ContrastColors {
+        ContrastColors {
+            background: Color::rgb(colors[0]),
+            text: Color::rgb(colors[1]),
+            link: Color::rgb(colors[2]),
+            disabled: Color::rgb(colors[3]),
+            selected: Color::rgb(colors[4]),
+            selected_text: Color::rgb(colors[5]),
+        }
+    }
+
+    /// Close to Windows 11's Aquatic, Desert, Dusk and Night sky: background,
+    /// text, link, inactive text, selection and selected text.
+    const WINDOWS_CONTRAST: [ContrastColors; 4] = [
+        palette([0x202020, 0xFFFFFF, 0x75E9FC, 0xA6A6A6, 0x8EE3F0, 0x263B50]),
+        palette([0xFFFAEF, 0x3D3D3D, 0x1C5E75, 0x676767, 0x903909, 0xFFF5E3]),
+        palette([0x2D3236, 0xB6F6F0, 0x70EBDE, 0xA6A6A6, 0xA1BFDE, 0x212D3B]),
+        palette([0x000000, 0xFFFFFF, 0x8080FF, 0xA6A6A6, 0xD6B4FD, 0x2B2B2B]),
+    ];
+
+    #[test]
+    fn windows_contrast_themes_pair_only_their_own_colors() {
+        for colors in WINDOWS_CONTRAST {
+            let theme = Theme::contrast(&colors);
+            assert!(theme.contrast);
+            assert_eq!(
+                theme.contrast_problems(),
+                Vec::<String>::new(),
+                "{colors:?}"
+            );
+            assert_eq!(theme.on_highlight(theme.primary_text), colors.selected_text);
+            assert_eq!(theme.error_text, colors.link);
+            assert_eq!(
+                theme.error_row, colors.background,
+                "nothing is filled but highlights"
+            );
+        }
+        assert!(Theme::contrast(&WINDOWS_CONTRAST[3]).is_dark);
+        assert!(!Theme::contrast(&WINDOWS_CONTRAST[1]).is_dark);
+        let classic = Theme::CLASSIC;
+        assert_eq!(
+            classic.on_highlight(classic.primary_text),
+            classic.primary_text
+        );
+    }
 
     #[test]
     fn every_theme_meets_its_contrast_limits() {

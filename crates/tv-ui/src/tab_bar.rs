@@ -174,14 +174,17 @@ impl TabBar {
             canvas.push_clip(label);
             canvas.text(&tab.title, label, UI_LEFT, text_color);
             canvas.pop_clip();
-            if self.hovered_close == Some(index) {
+            let close_color = if self.hovered_close == Some(index) {
                 canvas.fill_rect(close, theme.hover_background);
-            }
+                theme.on_highlight(theme.secondary_text)
+            } else {
+                theme.secondary_text
+            };
             canvas.text(
                 "\u{00D7}",
                 Rect::new(close.left + 4.0, close.top, close.right, close.bottom),
                 UI_LEFT,
-                theme.secondary_text,
+                close_color,
             );
         }
     }

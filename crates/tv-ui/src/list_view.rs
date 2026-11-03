@@ -464,8 +464,8 @@ impl ListView {
         } else if selected || self.hovered == Some(index) {
             (
                 Some(theme.hover_background),
-                theme.primary_text,
-                theme.secondary_text,
+                theme.on_highlight(theme.primary_text),
+                theme.on_highlight(theme.secondary_text),
             )
         } else {
             (None, theme.primary_text, theme.secondary_text)

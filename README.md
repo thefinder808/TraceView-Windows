@@ -61,6 +61,8 @@ Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a r
 
 View > Layout: CMTrace hides everything but the grid and details pane, and Layout: Everything shows every pane. View > Save layout as... names the panes you have open, to switch back to later.
 
+Tools > Use TraceView for .log files... lets double-clicked `.log` and `.lo_` files open in TraceView, for your Windows account only. Windows contrast themes are followed whenever they're on.
+
 Settings live in `traceview.toml` and themes in the `themes` folder beside it, in `%APPDATA%\TraceView`, or beside the EXE for a portable copy. Both can be edited by hand while TraceView runs, and load within a second.
 
 View > Edit theme changes any color of the theme in use, with the window recoloring as you type. Editing a built-in theme makes a copy, saved as a small file in the `themes` folder beside `traceview.toml`. Copy a file into that folder to share a theme.

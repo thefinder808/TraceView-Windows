@@ -1,13 +1,20 @@
 //! Services the Windows shell provides: file dialogs, dropped files, the
-//! clipboard, the title bar's color, and the system's light or dark setting.
+//! clipboard, the title bar's color, and the system's light or dark setting
+//! and contrast theme.
 
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use tv_ui::theme::ContrastColors;
 use tv_ui::Color;
 use windows::core::{w, HSTRING, PWSTR};
 use windows::Win32::Foundation::{GlobalFree, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND};
 use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_TEXT_COLOR,
+    DWMWA_USE_IMMERSIVE_DARK_MODE,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetSysColor, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT,
+    COLOR_WINDOW, COLOR_WINDOWTEXT, SYS_COLOR_INDEX,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::DataExchange::{
@@ -18,13 +25,17 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     DragFinish, DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
     ShellExecuteW, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
     FOS_OVERWRITEPROMPT, HDROP, SIGDN_FILESYSPATH,
 };
-use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, SW_SHOWNORMAL};
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, SystemParametersInfoW, MB_ICONERROR, MB_OK, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+};
 
 /// Shows a folder in File Explorer, making it first if it isn't there yet.
 /// Returns false if it couldn't be shown.
@@ -78,6 +89,48 @@ pub(crate) fn system_is_dark() -> bool {
     status == ERROR_SUCCESS && value == 0
 }
 
+/// The colors of the Windows contrast theme in use, or `None` when none is.
+pub(crate) fn contrast_colors() -> Option<ContrastColors> {
+    let mut contrast = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..HIGHCONTRASTW::default()
+    };
+    // SAFETY: the out parameter is a local of the size it states, as this
+    // setting needs.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            Some(std::ptr::from_mut(&mut contrast).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+    if contrast.dwFlags.0 & HCF_HIGHCONTRASTON.0 == 0 {
+        return None;
+    }
+    let color = |index: SYS_COLOR_INDEX| {
+        // SAFETY: reading a system color has no requirements.
+        from_color_ref(unsafe { GetSysColor(index) })
+    };
+    Some(ContrastColors {
+        background: color(COLOR_WINDOW),
+        text: color(COLOR_WINDOWTEXT),
+        link: color(COLOR_HOTLIGHT),
+        disabled: color(COLOR_GRAYTEXT),
+        selected: color(COLOR_HIGHLIGHT),
+        selected_text: color(COLOR_HIGHLIGHTTEXT),
+    })
+}
+
+fn from_color_ref(value: u32) -> Color {
+    Color {
+        r: (value & 0xFF) as u8,
+        g: ((value >> 8) & 0xFF) as u8,
+        b: ((value >> 16) & 0xFF) as u8,
+    }
+}
+
 fn color_ref(color: Color) -> u32 {
     u32::from(color.r) | u32::from(color.g) << 8 | u32::from(color.b) << 16
 }
@@ -102,6 +155,27 @@ pub(crate) fn set_caption_colors(hwnd: HWND, background: Color, text: Color, dar
             4,
         );
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, std::ptr::from_ref(&text).cast(), 4);
+    }
+}
+
+/// Gives the title bar back to Windows, as a contrast theme needs, since
+/// Windows draws it in that theme's colors itself.
+pub(crate) fn default_caption_colors(hwnd: HWND) {
+    let default = DWMWA_COLOR_DEFAULT;
+    // SAFETY: each pointer is to a local of the size passed with it.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            std::ptr::from_ref(&default).cast(),
+            4,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            std::ptr::from_ref(&default).cast(),
+            4,
+        );
     }
 }
 
@@ -265,6 +339,12 @@ mod tests {
     #[test]
     fn colors_use_windows_byte_order() {
         assert_eq!(color_ref(Color::rgb(0x11_22_33)), 0x0033_2211);
+        assert_eq!(from_color_ref(0x0033_2211), Color::rgb(0x11_22_33));
+    }
+
+    #[test]
+    fn reading_the_contrast_theme_does_not_fail() {
+        let _ = contrast_colors();
     }
 
     #[test]

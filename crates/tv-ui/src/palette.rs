@@ -591,9 +591,16 @@ impl Palette {
     fn draw_row(&self, canvas: &mut dyn Canvas, theme: &Theme, index: usize, row: Rect) {
         let found = &self.found[index];
         let item = &self.items[found.item];
-        if index == self.selected {
+        let lit = index == self.selected;
+        if lit {
             canvas.fill_rect(row, theme.hover_background);
         }
+        // Text on the highlight takes its own color where the theme has one.
+        let secondary = if lit {
+            theme.on_highlight(theme.secondary_text)
+        } else {
+            theme.secondary_text
+        };
         let mut right = row.right - ROW_PADDING;
         if !item.shortcut.is_empty() {
             let width = canvas.text_width(&item.shortcut, FontRole::Ui);
@@ -601,12 +608,12 @@ impl Palette {
                 &item.shortcut,
                 Rect::new(right - width, row.top, right, row.bottom),
                 UI_RIGHT,
-                theme.secondary_text,
+                secondary,
             );
             right -= width + GAP;
         }
         let label = Rect::new(row.left + ROW_PADDING, row.top, right, row.bottom);
-        draw_highlighted(canvas, &item.label, &found.positions, label, theme);
+        draw_highlighted(canvas, &item.label, &found.positions, label, theme, lit);
         if !item.detail.is_empty() {
             let left = label.left + canvas.text_width(&item.label, FontRole::Ui) + GAP / 2.0;
             if right - left >= MIN_DETAIL_WIDTH {
@@ -615,7 +622,7 @@ impl Palette {
                     &detail,
                     Rect::new(left, row.top, right, row.bottom),
                     UI_LEFT,
-                    theme.secondary_text,
+                    secondary,
                 );
             }
         }
@@ -631,6 +638,7 @@ fn draw_highlighted(
     positions: &[usize],
     rect: Rect,
     theme: &Theme,
+    lit: bool,
 ) {
     let mut runs: Vec<(Range<usize>, bool)> = Vec::new();
     for (offset, character) in label.char_indices() {
@@ -650,6 +658,11 @@ fn draw_highlighted(
             theme.accent
         } else {
             theme.primary_text
+        };
+        let color = if lit {
+            theme.on_highlight(color)
+        } else {
+            color
         };
         canvas.text(
             &label[range],

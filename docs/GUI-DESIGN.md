@@ -66,7 +66,7 @@ These are what make it feel familiar, so they come first:
 | Error Lookup | Yes, with a Windows code database: HRESULT, Win32, NTSTATUS, SCCM, Intune |
 | Merge selected files into one live view | Yes, including live append |
 | One small EXE, copied anywhere | Yes |
-| Offers to become the `.log` viewer | Yes, but only from a Settings button, never as a prompt at launch, and per-user only |
+| Offers to become the `.log` viewer | Yes, but only from the Tools menu, never as a prompt at launch, and per-user only |
 
 Standard Windows keys are used throughout: Ctrl+O, Ctrl+F, F3 and Shift+F3, Ctrl+G, Ctrl+W, Ctrl+Tab, Ctrl+1-9, Ctrl+K for the command palette. CMTrace's own keys work too: Ctrl+L for Error Lookup and Ctrl+U to pause, so Filter is Ctrl+Shift+F. Every command is remappable.
 
@@ -421,6 +421,30 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Right-clicking a row** opens a menu with Add bookmark, or Remove bookmark if it has one, and Copy, each with its shortcut. Shift+F10 and the menu key open it for the selected row, as they open a context menu anywhere in Windows, and screen readers get it as a menu.
 - **A row outside the selection becomes the selection.** One inside it leaves the selection as it is, so rows can be selected, right-clicked and copied together. The bookmark item is always for the row that was clicked.
 - **It's a toolkit widget,** drawn and stepped through by the same code as the menu bar's menus, so more row actions can join it later.
+
+**Opening `.log` files:**
+
+- **Tools > Use TraceView for .log files...** registers TraceView, for this Windows user only, as a program for `.log` and `.lo_` files, then opens Windows' Default apps page at TraceView. Windows doesn't let a program make itself the default, so the person picks it there. It needs no administrator rights and never prompts at launch.
+- **Tools > Stop using TraceView for .log files** takes the registration back. A type whose default was TraceView then asks again which program to use.
+- **The registration names this EXE's path.** If a portable copy moves, the menu offers "Use this copy for .log files..." to point it at the new place.
+
+**Differences from this design:**
+
+- **It's in the Tools menu,** as there's no settings window to hold a button.
+- **Each file opens its own window,** as CMTrace does. Opening several into one window's tabs needs a single running copy to hand files to, which is a larger change.
+- **No file icon yet.** The EXE has none, so files show Windows' generic icon until release packaging adds one.
+
+**Windows contrast themes:**
+
+- **While a contrast theme is on,** TraceView draws only with its colors, whatever theme is chosen, and switches back live when it's turned off or recolored. The chosen theme is kept for then, and View shows "Theme: Windows contrast, while it's on".
+- **Colors pair only as Windows intends:** text, inactive text and links on the background, and selected text on the selection. Nothing else is filled.
+- **Errors and criticals are in the link color,** and debug rows in the inactive-text color. The Lvl column and the chips name every level, as always.
+- **Hovered and highlighted items use the selection pair,** as do selected text in boxes, chips, menus, lists and the palette.
+- **Rules show as markers and find matches are framed,** since a contrast theme has no fills to spare for them.
+- **The title bar is left to Windows,** which draws it in the contrast theme's colors.
+- **Edit theme is off meanwhile,** since an edit wouldn't show.
+
+**Not covered by automation:** a real contrast theme switched on in Windows Settings, and the Default apps page. Tests use a contrast theme's colors directly, and register in a scratch registry key.
 
 ## Milestones
 
