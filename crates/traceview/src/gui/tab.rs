@@ -902,8 +902,10 @@ impl Tab {
 
     /// Bookmarks the row under the cursor, or removes its bookmark. Returns
     /// that row's file and all its bookmarks, to save.
-    pub fn toggle_bookmark(&mut self) -> Option<(PathBuf, BTreeSet<u32>)> {
-        let row = self.cursor_file_row()?;
+    /// Bookmarks a row of the file or merged timeline, or removes its
+    /// bookmark: the one given, or else the selected one.
+    pub fn toggle_bookmark(&mut self, row: Option<usize>) -> Option<(PathBuf, BTreeSet<u32>)> {
+        let row = row.or_else(|| self.cursor_file_row())?;
         let document = self.document_mut()?;
         let (source, row) = document.locate(row)?;
         let source = &mut document.sources[source];

@@ -2,9 +2,9 @@
 
 use tv_ui::{Key, Modifiers};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_ADD, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F24,
-    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_5, VK_OEM_MINUS, VK_OEM_PLUS, VK_PRIOR, VK_RETURN,
-    VK_RIGHT, VK_SHIFT, VK_SUBTRACT, VK_TAB, VK_UP,
+    GetKeyState, VK_ADD, VK_APPS, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
+    VK_F1, VK_F24, VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_5, VK_OEM_MINUS, VK_OEM_PLUS,
+    VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -40,6 +40,7 @@ pub(crate) fn key_from_virtual(code: u16) -> Option<Key> {
         VK_TAB => Key::Tab,
         VK_BACK => Key::Backspace,
         VK_DELETE => Key::Delete,
+        VK_APPS => Key::Menu,
         // The backslash key on US keyboards, for Ctrl+\.
         VK_OEM_5 => Key::Char('\\'),
         // Plus and minus, for Ctrl+Plus and Ctrl+Minus, from either keyboard.

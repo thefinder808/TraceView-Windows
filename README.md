@@ -48,6 +48,7 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |
+| Right-click a row, Shift+F10 | The row's menu: add or remove its bookmark, or copy the selected rows |
 | Ctrl+B | Sidebar |
 | Ctrl+\ | Split view, with Ctrl+Shift+S to sync the panes by time |
 | Ctrl+U | Pause live updates |

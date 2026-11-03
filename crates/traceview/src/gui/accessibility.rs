@@ -15,7 +15,7 @@ use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
 use super::shortcut_panel::{self, ShortcutPanel};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel};
-use super::workspace::{Focus, Workspace};
+use super::workspace::{Focus, RowMenu, Workspace};
 use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
 };
@@ -77,6 +77,8 @@ const THEMES_LIST_ID: NodeId = NodeId(33);
 const THEMES_NOTE_ID: NodeId = NodeId(34);
 const FIRST_THEME_OPTION_ID: u64 = 720;
 const FIRST_THEME_ITEM_ID: u64 = 7_500;
+const ROW_MENU_ID: NodeId = NodeId(35);
+const FIRST_ROW_MENU_ITEM_ID: u64 = 760;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -459,6 +461,51 @@ fn act_on_formats(workspace: &mut Workspace, request: &ActionRequest, commands: 
     } else if target == FORMATS_FIELD_ID {
         panel.focus = FormatsPart::Field;
     }
+}
+
+/// A row's menu, as a menu whose highlighted item has focus. Returns the
+/// node with focus.
+fn row_menu_nodes(open: &RowMenu, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let menu = &open.menu;
+    let mut focus = ROW_MENU_ID;
+    let mut children = Vec::new();
+    for (index, item) in menu.items.iter().enumerate() {
+        let (
+            MenuItem::Command {
+                label,
+                shortcut,
+                enabled,
+                ..
+            },
+            Some(rect),
+        ) = (item, menu.item_rect(index))
+        else {
+            continue;
+        };
+        let id = NodeId(FIRST_ROW_MENU_ITEM_ID + index as u64);
+        let mut node = Node::new(Role::MenuItem);
+        node.set_label(label.as_str());
+        if !shortcut.is_empty() {
+            node.set_keyboard_shortcut(shortcut.as_str());
+        }
+        if *enabled {
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
+        node.set_bounds(physical(rect, scale));
+        if menu.highlighted_item() == Some(index) {
+            focus = id;
+        }
+        children.push(id);
+        nodes.push((id, node));
+    }
+    let mut node = Node::new(Role::Menu);
+    node.set_label("Row");
+    node.set_bounds(physical(menu.rect(), scale));
+    node.set_children(children);
+    nodes.push((ROW_MENU_ID, node));
+    focus
 }
 
 /// The theme editor, as a modal dialog. Returns the node with focus.
@@ -1017,6 +1064,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if formats_focus.is_some() {
         window_children.push(FORMATS_ID);
     }
+    let row_menu_focus = workspace
+        .row_menu
+        .as_ref()
+        .map(|open| row_menu_nodes(open, scale, &mut nodes));
+    if row_menu_focus.is_some() {
+        window_children.push(ROW_MENU_ID);
+    }
     let themes_focus = workspace
         .themes_panel
         .as_ref()
@@ -1039,6 +1093,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .active_tab()
         .is_some_and(|tab| tab.document().is_some());
     let focus = menu_focus
+        .or(row_menu_focus)
         .or(rules_focus)
         .or(columns_focus)
         .or(fonts_focus)
@@ -1066,7 +1121,17 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
     let target = request.target_node;
     match request.action {
         Action::Focus | Action::Click => {
-            if workspace.shortcut_panel.is_some() {
+            let row_menu_items = workspace
+                .row_menu
+                .as_ref()
+                .map(|open| open.menu.items.len());
+            if let Some(items) = row_menu_items {
+                if let Some(index) = in_range(target, FIRST_ROW_MENU_ITEM_ID, items) {
+                    if request.action == Action::Click {
+                        workspace.press_row_menu_item(index, commands);
+                    }
+                }
+            } else if workspace.shortcut_panel.is_some() {
                 let buttons = shortcut_panel::BUTTONS.len();
                 if let Some(index) = in_range(target, FIRST_SHORTCUT_BUTTON_ID, buttons) {
                     if request.action == Action::Click {

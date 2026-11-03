@@ -6,6 +6,7 @@
 
 pub mod canvas;
 pub mod chip_bar;
+pub mod context_menu;
 pub mod geometry;
 pub mod input;
 pub mod list_view;
