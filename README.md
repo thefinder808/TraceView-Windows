@@ -47,6 +47,8 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Larger, smaller or default log text. View > Fonts picks fonts and row spacing |
 
 Every shortcut here can be changed, and any command can be given one, in Tools > Keyboard shortcuts.
+
+Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a regex whose named groups say where the time, level, component, thread, source and message are.
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |

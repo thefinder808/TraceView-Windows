@@ -4,10 +4,12 @@
 //! Plain-text formats are tried from most specific to most general, in the same
 //! order as the macOS app, plus the CBS and DISM format used on Windows.
 
+use crate::custom::CustomFormat;
 use crate::level::{self, Level};
 use crate::time::{self, Stamp, YearHint};
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 const SCCM_START: &[u8] = b"<![LOG[";
 const SCCM_END: &[u8] = b"]LOG]!>";
@@ -18,6 +20,8 @@ const SCCM_END: &[u8] = b"]LOG]!>";
 pub enum Format {
     Plain = 0,
     Sccm = 1,
+    /// A format defined by a pattern, which the parse context carries.
+    Custom = 2,
 }
 
 impl Format {
@@ -25,15 +29,18 @@ impl Format {
         match value {
             0 => Some(Format::Plain),
             1 => Some(Format::Sccm),
+            2 => Some(Format::Custom),
             _ => None,
         }
     }
 }
 
 /// Facts about the file that some formats need to read a row.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ParseContext {
     pub year_hint: YearHint,
+    /// The definition of a custom format, when the file has one.
+    pub custom: Option<Arc<CustomFormat>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,6 +73,13 @@ pub fn fields<'a>(format: Format, row: &'a [u8], context: &ParseContext) -> Fiel
         Format::Sccm => {
             sccm_fields(line).unwrap_or_else(|| Fields::message_only(line, level::detect(line)))
         }
+        // A line the pattern doesn't match is shown whole, with its level
+        // from its words, as plain text with no time would be.
+        Format::Custom => context
+            .custom
+            .as_deref()
+            .and_then(|custom| custom.fields(line, context))
+            .unwrap_or_else(|| Fields::message_only(line, level::detect(line))),
     }
 }
 
@@ -74,7 +88,7 @@ pub fn fields<'a>(format: Format, row: &'a [u8], context: &ParseContext) -> Fiel
 pub fn searchable(format: Format, row: &[u8]) -> &[u8] {
     let line = trim_line_ending(row);
     match format {
-        Format::Plain => line,
+        Format::Plain | Format::Custom => line,
         Format::Sccm => sccm_message(line).unwrap_or(line),
     }
 }
@@ -489,6 +503,7 @@ mod tests {
             year: 2026,
             month: 6,
         },
+        custom: None,
     };
 
     fn plain(row: &str) -> Fields<'_> {

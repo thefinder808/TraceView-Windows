@@ -130,6 +130,11 @@ impl Commands {
     pub fn accessibility_changed(&mut self) {
         self.accessibility_changed = true;
     }
+
+    /// Whether screen readers will be told about a change.
+    pub fn tells_screen_readers(&self) -> bool {
+        self.accessibility_changed
+    }
 }
 
 pub trait Handler {

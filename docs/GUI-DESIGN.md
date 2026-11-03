@@ -347,6 +347,22 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **One shortcut per command,** rather than several.
 - **Changes are made in the app,** or by hand in `traceview.toml` while it's closed, until live reload arrives.
 
+**Custom log formats:**
+
+- **A format is a regex with named parts:** `time`, `level`, `component`, `thread`, `source` and `message`, plus a name, optional file names such as `u_ex*.log`, and whether dates are day first.
+- **Logs pick their format when they open:** a format naming the file wins, then SCCM, then a format matching at least 80% of the first 20 lines, then plain text. The status bar shows the format's name, and the CLI's output carries it too.
+- **Tools > Log formats** edits them. One box edits the selected format's name, pattern or file names, picked with the buttons below it, and the list ends in a "New format" slot. While a pattern is typed it's tried on the open log's first 20 lines, saying how many match and what the first match's parts are.
+- **"Use for this file"** adds the open log's name to the format and reads the log again with it. Otherwise changes apply to logs opened afterwards.
+- **Each custom format has its own column layout,** showing the parts its pattern names, with the level and message always.
+- **Indexing with a pattern takes about twice as long** as the built-in reader: 2.7 s for the 5 GiB plain log, against 1.3 s.
+
+**Differences from this design:**
+
+- **One row per line.** Lines that don't match, such as a stack trace's, show as rows of their own with no time. Joining them to the row above needs the indexer to find rows by pattern, which is a larger change.
+- **Times need a date.** A `time` part with only a time of day isn't read yet.
+
+**Fixed along the way:** a frame now always brings screen readers up to date. Before, what came from layout, such as the severity chips' counts and an editor's buttons, could stay out of date for them until the next input. The end-to-end check caught it as an intermittent failure once the index cache had to be rebuilt.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |

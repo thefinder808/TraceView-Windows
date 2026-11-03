@@ -136,6 +136,8 @@ struct FileInfo<'a> {
     path: &'a Path,
     size_bytes: u64,
     format: Format,
+    /// `SCCM`, `Text`, or a custom format's own name.
+    format_name: &'a str,
     encoding: Encoding,
     rows: usize,
     cache: tv_engine::CacheUse,
@@ -178,10 +180,11 @@ fn write_error(code: &str, message: &str) {
 
 fn open_log(common: &Common) -> Result<(LogFile, OpenStats), (&'static str, String)> {
     let progress = AtomicU64::new(0);
+    let formats = crate::gui::saved_formats();
     let opened = if common.no_cache {
-        LogFile::open_with_cache(&common.path, None, &progress)
+        LogFile::open_with(&common.path, None, &formats, &progress)
     } else {
-        LogFile::open(&common.path, &progress)
+        LogFile::open_with_formats(&common.path, &formats, &progress)
     };
     opened.map_err(|error| {
         let code = match error.kind() {
@@ -201,6 +204,7 @@ fn file_info<'a>(log: &'a LogFile, stats: &OpenStats) -> FileInfo<'a> {
         path: log.path(),
         size_bytes: log.indexed_len(),
         format: log.format(),
+        format_name: log.format_name(),
         encoding: log.encoding(),
         rows: log.rows(),
         cache: stats.cache,

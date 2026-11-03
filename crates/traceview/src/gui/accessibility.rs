@@ -9,6 +9,7 @@
 use super::columns::Column;
 use super::columns_panel::{self, ColumnsPanel, Part as ColumnsPart};
 use super::fonts_panel::{self, FontsPanel, Part as FontsPart};
+use super::formats_panel::{self, FormatsPanel, FormatsResponse, Part as FormatsPart};
 use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
@@ -62,6 +63,12 @@ const FIRST_FONT_BUTTON_ID: u64 = 660;
 const FIRST_FONT_ITEM_ID: u64 = 7_300;
 const SHORTCUT_ID: NodeId = NodeId(26);
 const FIRST_SHORTCUT_BUTTON_ID: u64 = 680;
+const FORMATS_ID: NodeId = NodeId(27);
+const FORMATS_FIELD_ID: NodeId = NodeId(28);
+const FORMATS_LIST_ID: NodeId = NodeId(29);
+const FORMATS_NOTE_ID: NodeId = NodeId(30);
+const FIRST_FORMAT_OPTION_ID: u64 = 700;
+const FIRST_FORMAT_ITEM_ID: u64 = 7_400;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -330,6 +337,119 @@ fn act_on_fonts(workspace: &mut Workspace, request: &ActionRequest, commands: &m
     } else if let Some(index) = in_range(target, FIRST_FONT_ITEM_ID, panel.list.items.len()) {
         panel.focus = FontsPart::List;
         panel.list.select_id(Some(index as u32));
+    }
+}
+
+/// The log formats editor, as a modal dialog. Returns the node with focus.
+fn formats_nodes(panel: &FormatsPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let mut field = Node::new(Role::TextInput);
+    field.set_label(panel.property().label());
+    field.set_value(panel.field.text());
+    field.set_bounds(physical(panel.field_rect(), scale));
+    field.add_action(Action::Focus);
+    nodes.push((FORMATS_FIELD_ID, field));
+    let mut children = vec![FORMATS_FIELD_ID];
+    let mut focus = FORMATS_FIELD_ID;
+
+    // Name, pattern and files are a choice of one, day first stays pressed,
+    // and the rest are buttons.
+    for (index, chip) in panel.option_chips().iter().enumerate() {
+        let Some(rect) = panel.options.chip_rect(index) else {
+            continue;
+        };
+        let id = NodeId(FIRST_FORMAT_OPTION_ID + index as u64);
+        let mut node = Node::new(if index < 3 {
+            Role::RadioButton
+        } else {
+            Role::Button
+        });
+        node.set_label(chip.label.as_str());
+        if index < 4 {
+            node.set_toggled(chip.active.into());
+        }
+        if panel.option_applies(index) {
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
+        node.add_action(Action::Focus);
+        node.set_bounds(physical(rect, scale));
+        if panel.focus == FormatsPart::Options && panel.options.focus() == Some(index) {
+            focus = id;
+        }
+        children.push(id);
+        nodes.push((id, node));
+    }
+
+    let list = &panel.list;
+    let mut options = Vec::new();
+    for index in list.visible_items() {
+        let (Some(rect), ListItem::Entry { label, detail, .. }) =
+            (list.item_rect(index), &list.items[index])
+        else {
+            continue;
+        };
+        let id = NodeId(FIRST_FORMAT_ITEM_ID + index as u64);
+        let mut node = Node::new(Role::ListBoxOption);
+        node.set_label(format!("{label}, {detail}"));
+        node.set_selected(panel.selected() == index);
+        node.set_bounds(physical(rect, scale));
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        if panel.focus == FormatsPart::List && panel.selected() == index {
+            focus = id;
+        }
+        options.push(id);
+        nodes.push((id, node));
+    }
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Formats, tried in order");
+    list_node.set_children(options);
+    nodes.push((FORMATS_LIST_ID, list_node));
+    children.push(FORMATS_LIST_ID);
+
+    let note = match panel.problem() {
+        Some(problem) => problem.to_string(),
+        None => panel.test().join(". "),
+    };
+    if !note.is_empty() {
+        let mut node = Node::new(Role::Label);
+        node.set_value(note);
+        nodes.push((FORMATS_NOTE_ID, node));
+        children.push(FORMATS_NOTE_ID);
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(formats_panel::TITLE);
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    nodes.push((FORMATS_ID, dialog));
+    focus
+}
+
+/// Carries out a screen reader's request in the log formats editor.
+fn act_on_formats(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Commands) {
+    let Some(panel) = workspace.formats_panel.as_mut() else {
+        return;
+    };
+    let target = request.target_node;
+    let click = request.action == Action::Click;
+    if let Some(index) = in_range(target, FIRST_FORMAT_OPTION_ID, panel.option_chips().len()) {
+        panel.focus = FormatsPart::Options;
+        if click {
+            let response = panel.choose_option(index);
+            workspace.formats_responded(&response, commands);
+        }
+    } else if let Some(index) = in_range(target, FIRST_FORMAT_ITEM_ID, panel.formats.len() + 1) {
+        panel.focus = FormatsPart::List;
+        let changed = panel.select(index);
+        let response = FormatsResponse {
+            changed,
+            ..FormatsResponse::default()
+        };
+        workspace.formats_responded(&response, commands);
+    } else if target == FORMATS_FIELD_ID {
+        panel.focus = FormatsPart::Field;
     }
 }
 
@@ -783,6 +903,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if shortcut_focus.is_some() {
         window_children.push(SHORTCUT_ID);
     }
+    let formats_focus = workspace
+        .formats_panel
+        .as_ref()
+        .map(|panel| formats_nodes(panel, scale, &mut nodes));
+    if formats_focus.is_some() {
+        window_children.push(FORMATS_ID);
+    }
 
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
@@ -802,6 +929,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .or(columns_focus)
         .or(fonts_focus)
         .or(shortcut_focus)
+        .or(formats_focus)
         .unwrap_or(match workspace.focus {
             _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
             _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
@@ -830,6 +958,8 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                         workspace.press_shortcut_button(index, commands);
                     }
                 }
+            } else if workspace.formats_panel.is_some() {
+                act_on_formats(workspace, request, commands);
             } else if workspace.rules_panel.is_some() {
                 act_on_rules(workspace, request);
             } else if workspace.columns_panel.is_some() {

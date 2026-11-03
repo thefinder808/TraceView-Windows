@@ -5,6 +5,7 @@
 //! grid sees a single list of rows. A merged tab keeps the rows of every file in
 //! time order, and each of its rows stands for a row in one of the files.
 
+use super::columns::LogKind;
 use super::details::{DetailTarget, Details};
 use super::export::Export;
 use super::log_view::{LogView, RowSource};
@@ -22,7 +23,7 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use tv_engine::merge::{self, MergedRow};
 use tv_engine::overview as counting;
-use tv_engine::{CacheUse, Change, Control, Format, Level, LogFile, OpenStats};
+use tv_engine::{CacheUse, Change, Control, CustomFormat, Level, LogFile, OpenStats};
 use tv_platform::Waker;
 use tv_ui::text_field::TextField;
 
@@ -231,10 +232,14 @@ pub fn file_name(path: &Path) -> String {
     )
 }
 
-fn open_logs(paths: &[PathBuf], progress: &AtomicU64) -> io::Result<Opened> {
+fn open_logs(
+    paths: &[PathBuf],
+    formats: &[Arc<CustomFormat>],
+    progress: &AtomicU64,
+) -> io::Result<Opened> {
     let mut logs = Vec::with_capacity(paths.len());
     for path in paths {
-        logs.push(LogFile::open(path, progress)?);
+        logs.push(LogFile::open_with_formats(path, formats, progress)?);
     }
     let order = if logs.len() > 1 {
         let refs: Vec<&LogFile> = logs.iter().map(|(log, _)| log).collect();
@@ -273,8 +278,9 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// Opens one log, or merges several.
-    pub fn open(paths: Vec<PathBuf>, waker: &Waker) -> Self {
+    /// Opens one log, or merges several, reading each with a custom format if
+    /// one suits it.
+    pub fn open(paths: Vec<PathBuf>, formats: Vec<Arc<CustomFormat>>, waker: &Waker) -> Self {
         let size = paths
             .iter()
             .map(|path| std::fs::metadata(path).map_or(0, |metadata| metadata.len()))
@@ -285,7 +291,7 @@ impl Tab {
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let open_finished = finished.clone();
         std::thread::spawn(move || {
-            let opened = open_logs(&open_paths, &progress);
+            let opened = open_logs(&open_paths, &formats, &progress);
             open_finished.store(true, Ordering::Release);
             let _ = sender.send(opened);
             open_waker.wake();
@@ -460,10 +466,10 @@ impl Tab {
         }
     }
 
-    /// The format of the tab's first file, which decides its columns.
-    pub fn format(&self) -> Option<Format> {
+    /// The kind of log the tab's first file is, which decides its columns.
+    pub fn kind(&self) -> Option<LogKind> {
         let source = self.document()?.sources.first()?;
-        source.log.read().ok().map(|log| log.format())
+        source.log.read().ok().map(|log| LogKind::of(&log))
     }
 
     /// Marks rows with new highlight rules.
@@ -1024,7 +1030,7 @@ impl Tab {
             let (log, stats) = (&rows.logs[0], &document.sources[0].stats);
             parts.push(super::app::encoding_name(log.encoding()).to_string());
             parts.push(super::app::readable_size(log.indexed_len()));
-            parts.push(super::app::format_name(log.format()).to_string());
+            parts.push(log.format_name().to_string());
             parts.push(format!(
                 "Opened in {:.2} s{}",
                 stats.seconds,
@@ -1076,7 +1082,7 @@ mod tests {
     fn merged_titles_name_the_files() {
         let tab = |paths: &[&str]| Tab {
             paths: paths.iter().map(PathBuf::from).collect(),
-            ..Tab::open(Vec::new(), &Waker::detached())
+            ..Tab::open(Vec::new(), Vec::new(), &Waker::detached())
         };
         assert_eq!(tab(&["C:\\logs\\a.log"]).title(), "a.log");
         assert_eq!(tab(&["a.log", "b.log"]).title(), "a.log + b.log");

@@ -9,8 +9,9 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"TVIDX02\0";
-const HEADER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 4;
+/// Version 3 added the custom format key, so older entries are rebuilt once.
+const MAGIC: &[u8; 8] = b"TVIDX03\0";
+const HEADER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 4 + 8;
 const BYTES_PER_ROW: u64 = 5 + 1 + 4;
 /// The cache's size limit. The oldest entries go first when it's exceeded.
 const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -63,6 +64,7 @@ pub(crate) fn load(dir: &Path, log_path: &Path) -> Option<Entry> {
     let format = Format::from_u8(header[48])?;
     let encoding = Encoding::from_u8(header[49])?;
     let path_len = u32::from_le_bytes(header[50..54].try_into().unwrap());
+    let format_key = read_u64(54);
 
     let expected_len = (HEADER_LEN as u64)
         .checked_add(u64::from(path_len))?
@@ -90,6 +92,7 @@ pub(crate) fn load(dir: &Path, log_path: &Path) -> Option<Entry> {
             encoding,
             format,
             body_offset,
+            format_key,
         },
         rows: RowArrays {
             offsets,
@@ -122,6 +125,7 @@ pub(crate) fn store(
     header[48] = layout.format as u8;
     header[49] = layout.encoding as u8;
     header[50..54].copy_from_slice(&(key.len() as u32).to_le_bytes());
+    header[54..62].copy_from_slice(&layout.format_key.to_le_bytes());
 
     let mut file = fs::File::create(&temp)?;
     file.write_all(&header)?;

@@ -13,6 +13,7 @@ mod details;
 mod export;
 mod fonts;
 mod fonts_panel;
+mod formats_panel;
 mod keymap;
 mod log_view;
 mod lookup;
@@ -33,7 +34,19 @@ mod workspace;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use tv_engine::CustomFormat;
 use tv_platform::{prepare_console_for_gui, ConsoleOutcome, WindowOptions};
+
+/// The custom log formats in the saved settings, so the command line reads
+/// logs as the window does. A missing or broken settings file gives none.
+pub fn saved_formats() -> Vec<Arc<CustomFormat>> {
+    settings::location()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| settings::parse(&text).ok())
+        .map(|saved| settings::compile_formats(&saved.formats))
+        .unwrap_or_default()
+}
 
 fn window_options() -> WindowOptions {
     WindowOptions {

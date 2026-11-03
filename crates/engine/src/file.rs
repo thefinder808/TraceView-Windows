@@ -1,6 +1,7 @@
 //! An opened log: its row index, row reading, and following a live file.
 
 use crate::cache::{self, Stamp as CacheStamp};
+use crate::custom::{self, CustomFormat};
 use crate::encoding::{self, Encoding};
 use crate::index::{self, Layout, RowArrays};
 use crate::level::Level;
@@ -13,6 +14,7 @@ use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Small files index so quickly that a cache entry isn't worth writing.
@@ -66,6 +68,9 @@ pub struct LogFile {
     indexed_len: u64,
     modified: SystemTime,
     fingerprint: u64,
+    /// The custom formats it could be read as, to choose again if the file is
+    /// replaced.
+    formats: Vec<Arc<CustomFormat>>,
 }
 
 /// A refresh that has done its reading and scanning, ready for
@@ -120,19 +125,44 @@ fn modified_nanos(time: SystemTime) -> u64 {
         .map_or(0, |elapsed| elapsed.as_nanos() as u64)
 }
 
-fn detect_layout(file: &File, len: u64) -> io::Result<Layout> {
+/// Reads the start of the file to find its encoding and format. A custom
+/// format meant for the file's name comes first, then SCCM, then a custom
+/// format that matches most of the first lines, and plain text otherwise.
+fn detect_layout(
+    file: &File,
+    len: u64,
+    path: &Path,
+    formats: &[Arc<CustomFormat>],
+) -> io::Result<(Layout, Option<Arc<CustomFormat>>)> {
     let mut head = vec![0u8; HEAD_LEN.min(len as usize)];
     let filled = reader::read_at(file, 0, &mut head)?;
     head.truncate(filled);
     let (encoding, body_offset) = encoding::detect(&head);
     let body = head.get(body_offset as usize..).unwrap_or(&[]);
     let mut scratch = Vec::new();
-    let format = parse::detect_format(encoding.to_utf8(body, &mut scratch));
-    Ok(Layout {
+    let text = encoding.to_utf8(body, &mut scratch);
+    let file_name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let complete = filled as u64 >= len;
+    let custom = custom::for_file_name(formats, &file_name)
+        .or_else(|| {
+            (parse::detect_format(text) == Format::Plain)
+                .then(|| custom::for_contents(formats, text, complete))
+                .flatten()
+        })
+        .cloned();
+    let format = match &custom {
+        Some(_) => Format::Custom,
+        None => parse::detect_format(text),
+    };
+    let layout = Layout {
         encoding,
         format,
         body_offset,
-    })
+        format_key: custom.as_ref().map_or(0, |custom| custom.key()),
+    };
+    Ok((layout, custom))
 }
 
 fn check_size(len: u64) -> io::Result<()> {
@@ -157,9 +187,28 @@ impl LogFile {
         Self::open_with_cache(path, cache::default_dir().as_deref(), progress)
     }
 
+    /// Opens a log using the default index cache, choosing among custom
+    /// formats as well as the built-in ones.
+    pub fn open_with_formats(
+        path: &Path,
+        formats: &[Arc<CustomFormat>],
+        progress: &AtomicU64,
+    ) -> io::Result<(Self, OpenStats)> {
+        Self::open_with(path, cache::default_dir().as_deref(), formats, progress)
+    }
+
     pub fn open_with_cache(
         path: &Path,
         cache_dir: Option<&Path>,
+        progress: &AtomicU64,
+    ) -> io::Result<(Self, OpenStats)> {
+        Self::open_with(path, cache_dir, &[], progress)
+    }
+
+    pub fn open_with(
+        path: &Path,
+        cache_dir: Option<&Path>,
+        formats: &[Arc<CustomFormat>],
         progress: &AtomicU64,
     ) -> io::Result<(Self, OpenStats)> {
         let started = Instant::now();
@@ -169,10 +218,11 @@ impl LogFile {
         let len = metadata.len();
         check_size(len)?;
         let modified = metadata.modified()?;
+        let (layout, custom) = detect_layout(&file, len, &path, formats)?;
         let context = ParseContext {
             year_hint: YearHint::from_system_time(modified),
+            custom,
         };
-        let layout = detect_layout(&file, len)?;
         let use_cache = cache_dir.filter(|_| len >= CACHE_MIN_LEN);
         let cached = use_cache
             .and_then(|dir| cache::load(dir, &path))
@@ -191,11 +241,11 @@ impl LogFile {
                 entry.rows.truncate(keep);
                 entry
                     .rows
-                    .extend(index::scan(&file, len, layout, context, from, progress)?);
+                    .extend(index::scan(&file, len, layout, &context, from, progress)?);
                 (entry.rows, CacheUse::Extended)
             }
             _ => (
-                index::scan(&file, len, layout, context, layout.body_offset, progress)?,
+                index::scan(&file, len, layout, &context, layout.body_offset, progress)?,
                 CacheUse::Miss,
             ),
         };
@@ -227,9 +277,24 @@ impl LogFile {
                 indexed_len: len,
                 modified,
                 fingerprint,
+                formats: formats.to_vec(),
             },
             stats,
         ))
+    }
+
+    /// The custom format the log is read as, if it's one.
+    pub fn custom_format(&self) -> Option<&CustomFormat> {
+        self.context.custom.as_deref()
+    }
+
+    /// The format's name for people: `SCCM`, `Text`, or a custom format's own.
+    pub fn format_name(&self) -> &str {
+        match (self.layout.format, self.custom_format()) {
+            (Format::Custom, Some(custom)) => custom.name(),
+            (Format::Sccm, _) => "SCCM",
+            _ => "Text",
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -387,7 +452,7 @@ impl LogFile {
             && reader::fingerprint(&file, self.indexed_len)? == self.fingerprint;
         let (layout, context, rows, change) = if grew_in_place {
             let (keep, from) = resume_point(&self.rows, self.layout.body_offset);
-            let added = index::scan(&file, len, self.layout, self.context, from, progress)?;
+            let added = index::scan(&file, len, self.layout, &self.context, from, progress)?;
             let total = keep + added.rows();
             check_rows(total)?;
             // Growing the arrays copies every row, so do it here rather than
@@ -400,13 +465,14 @@ impl LogFile {
             let change = Change::Appended {
                 new_rows: total.saturating_sub(self.rows()),
             };
-            (self.layout, self.context, rows, change)
+            (self.layout, self.context.clone(), rows, change)
         } else {
-            let layout = detect_layout(&file, len)?;
+            let (layout, custom) = detect_layout(&file, len, &self.path, &self.formats)?;
             let context = ParseContext {
                 year_hint: YearHint::from_system_time(modified),
+                custom,
             };
-            let rows = index::scan(&file, len, layout, context, layout.body_offset, progress)?;
+            let rows = index::scan(&file, len, layout, &context, layout.body_offset, progress)?;
             check_rows(rows.rows())?;
             (layout, context, NewRows::Replace(rows), Change::Reset)
         };
@@ -586,6 +652,105 @@ mod tests {
         assert_eq!(log.format(), Format::Sccm);
         assert_eq!(log.level(0), Level::Warning);
         assert_eq!(log.offset(0), 3);
+    }
+
+    const PIPES: &str =
+        r"^(?P<time>[^|]+)\|(?P<level>[^|]+)\|(?P<component>[^|]+)\|(?P<message>.*)$";
+
+    fn custom(name: &str, pattern: &str, files: &str) -> Arc<CustomFormat> {
+        Arc::new(CustomFormat::new(name, pattern, files, false).unwrap())
+    }
+
+    fn open_as(path: &Path, formats: &[Arc<CustomFormat>]) -> LogFile {
+        LogFile::open_with(path, None, formats, &AtomicU64::new(0))
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn a_custom_format_is_chosen_by_name_then_by_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("service.dev.log");
+        // Four of the five lines match, which is enough.
+        fs::write(
+            &path,
+            "2026-01-31 10:22:01|ERROR|svc|disk full\n2026-01-31 10:22:02|INFO|svc|all well\n\
+             2026-01-31 10:22:03|INFO|svc|still well\n2026-01-31 10:22:04|WARN|svc|slow\nnot a row\n",
+        )
+        .unwrap();
+        let pipes = custom("Pipes", PIPES, "");
+        let log = open_as(&path, std::slice::from_ref(&pipes));
+        assert_eq!(log.format(), Format::Custom);
+        assert_eq!(log.format_name(), "Pipes");
+        assert_eq!(log.rows(), 5);
+        assert_eq!(log.level(0), Level::Error);
+        assert_eq!(log.level(3), Level::Warning);
+        assert!(log.stamp_seconds(1).is_some());
+        assert_eq!(
+            log.stamp_seconds(4),
+            None,
+            "a line that doesn't match has no time"
+        );
+        let rows = all_rows(&log);
+        let mut scratch = Vec::new();
+        let fields = log.fields(log.text(&rows[0], &mut scratch));
+        assert_eq!(
+            (fields.component, fields.message),
+            (&b"svc"[..], &b"disk full"[..])
+        );
+
+        // A format meant for the file's name wins, even over a better match.
+        let named = custom("Named", r"^(?P<message>.*)$", "*.DEV.log");
+        assert_eq!(
+            open_as(&path, &[pipes.clone(), named]).format_name(),
+            "Named"
+        );
+        // Without any format, it's plain text, as before.
+        assert_eq!(open_uncached(&path).format_name(), "Text");
+    }
+
+    #[test]
+    fn sccm_logs_stay_sccm_unless_a_format_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AppEnforce.log");
+        fs::write(
+            &path,
+            "<![LOG[hello]LOG]!><time=\"10:00:00.000+000\" date=\"04-06-2026\" component=\"A\" context=\"\" type=\"1\" thread=\"1\" file=\"\">\r\n",
+        )
+        .unwrap();
+        let anything = custom("Anything", r"(?P<message>.*)", "");
+        assert_eq!(
+            open_as(&path, std::slice::from_ref(&anything)).format(),
+            Format::Sccm
+        );
+        let named = custom("Enforce", r"(?P<message>.*)", "appenforce.log");
+        assert_eq!(open_as(&path, &[named]).format(), Format::Custom);
+    }
+
+    #[test]
+    fn a_changed_pattern_never_reuses_a_cached_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let path = dir.path().join("large.log");
+        fs::write(&path, large_log()).unwrap();
+        let open = |formats: &[Arc<CustomFormat>]| {
+            LogFile::open_with(&path, Some(&cache_dir), formats, &AtomicU64::new(0))
+                .unwrap()
+                .1
+                .cache
+        };
+        let first = custom("Lines", r"^(?P<time>\S+ \S+) (?P<message>.*)$", "");
+        assert_eq!(open(std::slice::from_ref(&first)), CacheUse::Miss);
+        assert_eq!(open(std::slice::from_ref(&first)), CacheUse::Hit);
+        let renamed = custom("Renamed", r"^(?P<time>\S+ \S+) (?P<message>.*)$", "");
+        assert_eq!(
+            open(&[renamed]),
+            CacheUse::Hit,
+            "the name doesn't change parsing"
+        );
+        let changed = custom("Lines", r"^(?P<time>\S+ \S+) \S+ (?P<message>.*)$", "");
+        assert_eq!(open(&[changed]), CacheUse::Miss);
+        assert_eq!(open(&[]), CacheUse::Miss, "nor does plain text reuse it");
     }
 
     #[test]

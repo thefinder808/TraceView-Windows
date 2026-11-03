@@ -7,7 +7,7 @@
 
 use super::row_cache::RowCells;
 use super::settings::ColumnSetting;
-use tv_engine::Format;
+use tv_engine::{Format, LogFile};
 
 pub const MIN_WIDTH: f32 = 3.0;
 pub const MAX_WIDTH: f32 = 400.0;
@@ -105,16 +105,78 @@ pub struct ColumnSpec {
     pub shown: bool,
 }
 
-/// The settings key for a format's columns.
-pub fn format_key(format: Format) -> &'static str {
-    match format {
-        Format::Plain => "plain",
-        Format::Sccm => "sccm",
+/// What decides a log's columns: its format, and for a custom format, its
+/// name and the parts its pattern names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogKind {
+    pub format: Format,
+    /// A custom format's name, or empty.
+    pub name: String,
+    /// The columns a custom format's pattern fills.
+    pub parts: Vec<Column>,
+}
+
+impl LogKind {
+    pub fn builtin(format: Format) -> Self {
+        Self {
+            format,
+            name: String::new(),
+            parts: Vec::new(),
+        }
+    }
+
+    pub fn of(log: &LogFile) -> Self {
+        match log.custom_format() {
+            Some(custom) => Self {
+                format: Format::Custom,
+                name: custom.name().to_string(),
+                parts: Column::ALL
+                    .into_iter()
+                    .filter(|column| custom.has_part(column.name()))
+                    .collect(),
+            },
+            None => Self::builtin(log.format()),
+        }
+    }
+
+    /// The settings key for its columns.
+    pub fn key(&self) -> String {
+        match self.format {
+            Format::Plain => "plain".to_string(),
+            Format::Sccm => "sccm".to_string(),
+            Format::Custom => format!("custom:{}", self.name.to_lowercase()),
+        }
+    }
+
+    /// What its logs are called, as in "Columns for SCCM logs".
+    pub fn called(&self) -> String {
+        match self.format {
+            Format::Sccm => "SCCM logs".to_string(),
+            Format::Plain => "other logs".to_string(),
+            Format::Custom => format!("{} logs", self.name),
+        }
+    }
+
+    /// Every column in its default order. A custom format shows the parts it
+    /// names, with the level and message always.
+    pub fn defaults(&self) -> Vec<ColumnSpec> {
+        if self.format != Format::Custom {
+            return defaults(self.format);
+        }
+        Column::ALL
+            .into_iter()
+            .map(|column| ColumnSpec {
+                column,
+                width: column.default_width(),
+                shown: matches!(column, Column::Level | Column::Message)
+                    || self.parts.contains(&column),
+            })
+            .collect()
     }
 }
 
-/// Every column in its default order. SCCM logs show the thread, as CMTrace
-/// does, and other logs rarely have one.
+/// Every column in its default order for a built-in format. SCCM logs show
+/// the thread, as CMTrace does, and other logs rarely have one.
 pub fn defaults(format: Format) -> Vec<ColumnSpec> {
     Column::ALL
         .into_iter()
@@ -141,7 +203,7 @@ fn clamp_width(width: f32, column: Column) -> f32 {
 /// Reads saved columns. Each column comes once, a name this version doesn't
 /// know is skipped, any column the file leaves out goes at the end as it
 /// would by default, and the message always shows.
-pub fn from_settings(saved: Option<&[ColumnSetting]>, format: Format) -> Vec<ColumnSpec> {
+pub fn from_settings(saved: Option<&[ColumnSetting]>, kind: &LogKind) -> Vec<ColumnSpec> {
     let mut specs: Vec<ColumnSpec> = Vec::new();
     for setting in saved.unwrap_or_default() {
         let Some(column) = Column::from_name(&setting.name) else {
@@ -155,7 +217,7 @@ pub fn from_settings(saved: Option<&[ColumnSetting]>, format: Format) -> Vec<Col
             });
         }
     }
-    for default in defaults(format) {
+    for default in kind.defaults() {
         if specs.iter().all(|spec| spec.column != default.column) {
             specs.push(default);
         }
@@ -227,7 +289,10 @@ mod tests {
         specs[1].width = 9.0;
         specs[4].shown = true;
         let saved = to_settings(&specs);
-        assert_eq!(from_settings(Some(&saved), Format::Sccm), specs);
+        assert_eq!(
+            from_settings(Some(&saved), &LogKind::builtin(Format::Sccm)),
+            specs
+        );
     }
 
     #[test]
@@ -239,7 +304,7 @@ mod tests {
             setting("sparkle", 10.0, true),
             setting("time", 100_000.0, true),
         ];
-        let specs = from_settings(Some(&saved), Format::Plain);
+        let specs = from_settings(Some(&saved), &LogKind::builtin(Format::Plain));
         let order: Vec<Column> = specs.iter().map(|spec| spec.column).collect();
         assert_eq!(
             order,
