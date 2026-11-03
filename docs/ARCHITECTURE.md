@@ -21,6 +21,7 @@ crates/
     level.rs      severity levels and the keyword fallback
     time.rs       timestamp parsing
     parse.rs      splits one row into fields, for every supported format
+    custom.rs     formats defined by a regex, and choosing one for a file
     index.rs      parallel scan into compact per-row arrays
     cache.rs      on-disk index cache
     file.rs       an open log: row reading, and live refresh split into prepare and apply
@@ -49,6 +50,7 @@ crates/
                   columns (per-format column layouts) and columns_panel (their editor)
                   fonts (fonts, sizes and row spacing) and fonts_panel (their editor)
                   keymap (shortcuts) and shortcut_panel (waits for a new one's keys)
+                  formats_panel (the log formats editor)
                   settings (traceview.toml), export (CSV)
                   lookup (Error Lookup panel), accessibility (screen reader tree)
                   snapshots (whole-window pixel tests), bench (scripted checks, feature-gated)
@@ -93,7 +95,7 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 **Error codes.** Messages come from Windows at run time through `FormatMessageW`: the system table, plus message tables in `ntdll.dll`, `winhttp.dll` and `qmgr.dll`, loaded as data from full System32 paths so none of their code runs. ConfigMgr codes use `srsresources.dll` from an installed console, which is never bundled. No message text is copied into TraceView, so it's in the user's language and matches their Windows. Codes Windows has no text for, such as Windows Update's, still show their hex, signed and facility forms.
 
-**Settings.** One TOML file, `traceview.toml`, holds the theme, layout, recent logs, filter presets, bookmarks, highlight rules, column layouts, fonts and changed shortcuts. It lives in `%APPDATA%\TraceView`, unless a `traceview.toml` sits beside the EXE, which makes that copy portable. It's read once before the first frame, so the window opens in the right theme, and saved on a background thread because `%APPDATA%` can be a network share. Each save writes a new file and swaps it in, so a crash never leaves half a file. A file with a mistake gives the defaults and a message, and it's never overwritten, so the mistake can be fixed by hand. Lists are capped, so a hand-edited or shared file can't make the menus unusable.
+**Settings.** One TOML file, `traceview.toml`, holds the theme, layout, recent logs, filter presets, bookmarks, highlight rules, column layouts, fonts, changed shortcuts and custom log formats. It lives in `%APPDATA%\TraceView`, unless a `traceview.toml` sits beside the EXE, which makes that copy portable. It's read once before the first frame, so the window opens in the right theme, and saved on a background thread because `%APPDATA%` can be a network share. Each save writes a new file and swaps it in, so a crash never leaves half a file. A file with a mistake gives the defaults and a message, and it's never overwritten, so the mistake can be fixed by hand. Lists are capped, so a hand-edited or shared file can't make the menus unusable.
 
 **Severity chips and histogram.** Both cover the whole log and come from the index alone: counting 26.9M rows and a histogram takes about 17 ms. They're counted on a background thread when a log opens and at most once a second during live tail. Chips filter to one exact level, which the engine's query gained for them. The histogram places each untimed row at the time of the row before it, as merging does, so its buckets add up to the chip counts, and it keeps the shadows of earlier spikes as a live log's range stretches, as the Mac app does.
 
@@ -102,6 +104,8 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 **Columns.** Each format keeps its own list of columns in `traceview.toml`: Time, Level, Component, Thread, Source (the file an SCCM row names) and Message, each with an order, a width and whether it shows. A merged tab uses its first file's. Widths are in characters of the grid font, so they'll still fit when fonts become adjustable. The row number always comes first, because bookmark and rule markers sit beside it, and the message always shows. The last shown column runs to the grid's edge. The grid takes its columns from the workspace each frame, except during a header drag, when it keeps its own copy so the drag can preview live, and the result is saved when the mouse is released. A file with odd entries still gives every column once: unknown names are skipped, repeats ignored, widths clamped to 3–400, and anything left out goes at the end as it would by default. Copying rows and the screen reader's row text follow the shown columns in order, while CSV export always writes every field.
 
 **Fonts.** The log grid and the rest of the window each have a font family and size in `traceview.toml`, and the grid has a row spacing. Families are any installed font, listed through DirectWrite's system collection with fixed-width ones marked. Rows are the font's measured line height plus the spacing's padding (1, 3 or 8 pixels), so they always fit their text, and the grid's header and the status bar grow the same way. Log text runs from 8 to 28 pixels. Window text stops at 15, because its bars have fixed heights, and Windows' display scale covers larger. The renderer replaces a family that isn't installed, as when a portable copy moves to another PC, with Consolas or Segoe UI rather than letting Windows pick a font that may not be fixed width, and it checks only when the fonts change, so launch stays at 49 ms.
+
+**Custom formats.** A format a person defines is a name, a regex with named groups (`time`, `level`, `component`, `thread`, `source`, `message`), optional file names with `*` and `?`, and whether dates are day first. Opening a log picks one: a custom format whose file names match comes first, then SCCM, then a custom format whose pattern matches at least 80% of the first 20 lines, then plain text. Each line is a row. A line the pattern doesn't match is shown whole, with no time and its level from its words. The `time` part understands ISO dates, syslog's `Jan 31 10:22:01`, and dates with the year last, as `01/31/2026 1:22:01 PM`. Indexing runs the regex on every line, in parallel, which takes about 2.7 s for the 5 GiB plain log where the built-in reader takes 1.3 s. Patterns run in the `regex` crate's linear-time engine with a 1 MiB size limit, so a shared definition can't hang a scan or use much memory. The index cache records a key for the pattern (version 3 of the cache added it), so an index made with an older pattern is never reused. The CLI reads the same formats from `traceview.toml`.
 
 **Shortcuts.** Every command has a stable name, such as `find`, and a default shortcut, and `traceview.toml` holds only the ones changed, as `find = "Ctrl+J"` or `""` for none, so better defaults can still arrive later. A changed shortcut wins over a default with the same keys. Shortcuts run before text boxes see a key, so each needs Ctrl or a function key, and typing can never run a command. The keys Windows and the app use for editing (Ctrl+A, C, V, X, Y and Z), for picking a tab (Ctrl+1 to 9) and for the menus (Alt and F10) can't be taken, and neither can arrows and other movement keys, which the grid and boxes use with Ctrl. Plus and minus ignore Shift, since many keyboards need it to type them. Menus and the palette read every shortcut from the keymap, so they always show the current ones.
 
@@ -121,6 +125,7 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 | Prefix-tagged | `[VM] 2026-03-28 15:17:57 [info] msg` | |
 | logfmt | `time="..." level=info msg="..."` | Message escapes are left as written |
 | Timestamp first | `2026-04-23T14:32:01 [WARN] msg` | Slashed dates work too, as in `WindowsUpdate.log` |
+| Custom | Defined by a pattern in `traceview.toml` or Tools > Log formats | One row per line |
 | Anything else | Bare text | Severity from keywords |
 
 Not yet supported, from testing against real logs and the Mac app's list: JSON lines, CSV, and `setupapi.dev.log`'s `!` and `!!!` severity markers and section timestamps. `Error Control = 1` in that log also reads as an error today. `DirectX.log`'s `MM/DD/YY` dates aren't parsed, so its rows have no time.

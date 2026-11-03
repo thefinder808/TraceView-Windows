@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cache;
+pub mod custom;
 pub mod encoding;
 pub mod file;
 pub mod index;
@@ -18,6 +19,7 @@ mod reader;
 pub mod summary;
 pub mod time;
 
+pub use custom::CustomFormat;
 pub use encoding::Encoding;
 pub use file::{CacheUse, Change, LogFile, OpenStats, RefreshPlan};
 pub use level::Level;

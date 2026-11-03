@@ -306,6 +306,95 @@ pub fn parse_syslog(bytes: &[u8], hint: YearHint) -> Option<(Stamp, usize)> {
     Some((stamp, end))
 }
 
+/// Reads 1 to `most` digits at `at`, moving past them.
+fn number(bytes: &[u8], at: &mut usize, most: usize) -> Option<(u32, usize)> {
+    let start = *at;
+    while *at - start < most && bytes.get(*at).is_some_and(u8::is_ascii_digit) {
+        *at += 1;
+    }
+    let count = *at - start;
+    if count == 0 {
+        return None;
+    }
+    digits(bytes, start, count).map(|value| (value, count))
+}
+
+/// Reads a timestamp in any shape a custom format's `time` part may hold:
+/// ISO's `2026-01-31 10:22:01`, syslog's `Jan 31 10:22:01`, or a date with the
+/// year last, as `01/31/2026 1:22:01 PM`. `day_first` reads that last kind as
+/// `31/01/2026`. A two-digit year is taken to be after 2000.
+pub fn parse_any(bytes: &[u8], hint: YearHint, day_first: bool) -> Option<Stamp> {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let bytes = &bytes[start..];
+    if let Some(parsed) = parse_iso(bytes) {
+        return Some(parsed.stamp);
+    }
+    if let Some((stamp, _)) = parse_syslog(bytes, hint) {
+        return Some(stamp);
+    }
+    parse_year_last(bytes, day_first)
+}
+
+/// `MM/DD/YYYY HH:MM:SS[.fff][ AM|PM]`, with `/`, `-` or `.` between the date's
+/// parts, and the hour and the date's first two parts in one or two digits.
+fn parse_year_last(bytes: &[u8], day_first: bool) -> Option<Stamp> {
+    let mut at = 0;
+    let (first, _) = number(bytes, &mut at, 2)?;
+    let separator = *bytes
+        .get(at)
+        .filter(|byte| matches!(byte, b'/' | b'-' | b'.'))?;
+    at += 1;
+    let (second, _) = number(bytes, &mut at, 2)?;
+    if bytes.get(at) != Some(&separator) {
+        return None;
+    }
+    at += 1;
+    let year = match number(bytes, &mut at, 4)? {
+        (year, 4) => year,
+        (year, 2) => 2000 + year,
+        _ => return None,
+    };
+    while matches!(bytes.get(at), Some(b' ' | b',' | b'T')) {
+        at += 1;
+    }
+    let (mut hour, _) = number(bytes, &mut at, 2)?;
+    if bytes.get(at) != Some(&b':') {
+        return None;
+    }
+    let minute = digits(bytes, at + 1, 2)?;
+    if bytes.get(at + 3) != Some(&b':') {
+        return None;
+    }
+    let second_of_minute = digits(bytes, at + 4, 2)?;
+    let (millis, mut end) = fraction(bytes, at + 6);
+    while bytes.get(end) == Some(&b' ') {
+        end += 1;
+    }
+    let half = bytes.get(end..end + 2).map(<[u8]>::to_ascii_uppercase);
+    match half.as_deref() {
+        Some(b"AM") if (1..=12).contains(&hour) => hour %= 12,
+        Some(b"PM") if (1..=12).contains(&hour) => hour = hour % 12 + 12,
+        _ => {}
+    }
+    let (month, day) = if day_first {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    Stamp::from_parts(
+        year as i32,
+        month,
+        day,
+        hour,
+        minute,
+        second_of_minute,
+        millis,
+    )
+}
+
 /// Reads a time typed by a person: a full timestamp or just `YYYY-MM-DD`.
 pub fn parse_user_time(text: &str) -> Option<Stamp> {
     let bytes = text.trim().as_bytes();
@@ -340,6 +429,38 @@ mod tests {
         assert_eq!(stamp.label(), "2026-01-16 13:40:00");
         assert_eq!(Stamp::from_seconds(0).label(), "2000-01-01 00:00:00");
         assert_eq!(&stamp.label()[11..], "13:40:00");
+    }
+
+    #[test]
+    fn custom_format_times_take_every_common_shape() {
+        let hint = YearHint {
+            year: 2026,
+            month: 6,
+        };
+        let read = |text: &str, day_first: bool| {
+            parse_any(text.as_bytes(), hint, day_first).map(|stamp| stamp.to_string())
+        };
+        let expected = Some("2026-01-31T13:22:01.000".to_string());
+        assert_eq!(read("2026-01-31 13:22:01", false), expected);
+        assert_eq!(read(" 2026-01-31T13:22:01Z", false), expected);
+        assert_eq!(read("Jan 31 13:22:01", false), expected);
+        assert_eq!(read("01/31/2026 1:22:01 PM", false), expected);
+        assert_eq!(read("1/31/26 13:22:01", false), expected);
+        assert_eq!(read("31.01.2026 13:22:01", true), expected);
+        assert_eq!(read("31-01-2026, 13:22:01", true), expected);
+        assert_eq!(
+            read("01/31/2026 12:05:00.250 am", false).as_deref(),
+            Some("2026-01-31T00:05:00.250")
+        );
+        for wrong in [
+            "31/01/2026 13:22:01",
+            "01/31/202 13:22:01",
+            "13:22:01",
+            "soon",
+            "",
+        ] {
+            assert_eq!(read(wrong, false), None, "{wrong}");
+        }
     }
 
     #[test]

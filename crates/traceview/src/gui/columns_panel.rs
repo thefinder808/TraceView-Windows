@@ -3,8 +3,7 @@
 //! which the mouse can also do by dragging the header. Every change applies at
 //! once.
 
-use super::columns::{self, Column, ColumnSpec, MAX_WIDTH, MIN_WIDTH};
-use tv_engine::Format;
+use super::columns::{Column, ColumnSpec, LogKind, MAX_WIDTH, MIN_WIDTH};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::list_view::{ListItem, ListView};
 use tv_ui::{Align, Canvas, Event, FontRole, Key, MouseButton, Rect, TextStyle, Theme};
@@ -65,16 +64,9 @@ impl ColumnsResponse {
     }
 }
 
-/// What a format's logs are called in the panel's title.
-fn logs_called(format: Format) -> &'static str {
-    match format {
-        Format::Sccm => "SCCM logs",
-        Format::Plain => "other logs",
-    }
-}
-
 pub struct ColumnsPanel {
-    pub format: Format,
+    /// The kind of log whose columns these are.
+    pub kind: LogKind,
     /// Every column in order, as edited.
     pub columns: Vec<ColumnSpec>,
     pub focus: Part,
@@ -98,9 +90,9 @@ pub fn describe(spec: &ColumnSpec) -> String {
 }
 
 impl ColumnsPanel {
-    pub fn new(format: Format, columns: Vec<ColumnSpec>) -> Self {
+    pub fn new(kind: LogKind, columns: Vec<ColumnSpec>) -> Self {
         let mut panel = Self {
-            format,
+            kind,
             columns,
             focus: Part::List,
             list: ListView::default(),
@@ -130,7 +122,7 @@ impl ColumnsPanel {
     }
 
     pub fn title(&self) -> String {
-        format!("Columns for {}", logs_called(self.format))
+        format!("Columns for {}", self.kind.called())
     }
 
     /// The selected column's place in the list.
@@ -201,7 +193,7 @@ impl ColumnsPanel {
             }
             RESET => {
                 let before = self.columns.clone();
-                self.columns = columns::defaults(self.format);
+                self.columns = self.kind.defaults();
                 return self.columns != before;
             }
             _ => return false,
@@ -358,6 +350,8 @@ impl ColumnsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::columns;
+    use tv_engine::Format;
     use tv_ui::recording::RecordingCanvas;
     use tv_ui::{Modifiers, Point};
 
@@ -374,7 +368,8 @@ mod tests {
     const AREA: Rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
 
     fn panel() -> ColumnsPanel {
-        let mut panel = ColumnsPanel::new(Format::Sccm, columns::defaults(Format::Sccm));
+        let kind = LogKind::builtin(Format::Sccm);
+        let mut panel = ColumnsPanel::new(kind, columns::defaults(Format::Sccm));
         panel.arrange(AREA, &mut RecordingCanvas::new(), &Theme::CLASSIC);
         panel
     }

@@ -24,6 +24,7 @@ pub const MOST_RULES: usize = 100;
 const MOST_COLUMN_LAYOUTS: usize = 20;
 const MOST_COLUMNS: usize = 20;
 const MOST_KEYS: usize = 200;
+pub const MOST_FORMATS: usize = 50;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +52,38 @@ pub struct Settings {
     /// Shortcuts changed from the defaults, by command name, such as
     /// `find = "Ctrl+J"`. An empty one means no shortcut.
     pub keys: BTreeMap<String, String>,
+    /// Log formats defined by a pattern, tried in order.
+    pub formats: Vec<FormatSetting>,
+}
+
+/// A log format defined by a pattern. Named groups say where each part of a
+/// line is: `time`, `level`, `component`, `thread`, `source` and `message`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FormatSetting {
+    pub name: String,
+    pub pattern: String,
+    /// File names it's for, separated by `;`, with `*` and `?` wildcards.
+    /// Logs with other names still use it when most of their lines match.
+    pub files: String,
+    /// Reads dates such as `31/01/2026` day first.
+    pub day_first: bool,
+}
+
+impl FormatSetting {
+    pub fn compile(&self) -> Result<tv_engine::CustomFormat, String> {
+        tv_engine::CustomFormat::new(&self.name, &self.pattern, &self.files, self.day_first)
+    }
+}
+
+/// The formats in settings that can be used, ready to read logs with. One
+/// with a mistake is left out until it's fixed.
+pub fn compile_formats(formats: &[FormatSetting]) -> Vec<std::sync::Arc<tv_engine::CustomFormat>> {
+    formats
+        .iter()
+        .filter_map(|format| format.compile().ok())
+        .map(std::sync::Arc::new)
+        .collect()
 }
 
 /// Fonts by the names Windows lists them under, with sizes in pixels at 100%
@@ -106,6 +139,7 @@ impl Default for Settings {
             columns: BTreeMap::new(),
             fonts: FontSettings::default(),
             keys: BTreeMap::new(),
+            formats: Vec::new(),
         }
     }
 }
@@ -198,6 +232,7 @@ impl Settings {
         while self.keys.len() > MOST_KEYS {
             self.keys.pop_last();
         }
+        self.formats.truncate(MOST_FORMATS);
         while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
             self.bookmarks.pop_last();
         }

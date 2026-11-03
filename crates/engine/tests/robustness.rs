@@ -17,6 +17,7 @@ const CONTEXT: ParseContext = ParseContext {
         year: 2026,
         month: 6,
     },
+    custom: None,
 };
 
 /// Pieces of real log syntax, so generated input reaches deep into the parsers

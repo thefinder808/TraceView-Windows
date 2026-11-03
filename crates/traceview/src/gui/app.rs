@@ -9,7 +9,7 @@ use super::settings::{self, Store};
 use super::workspace::Workspace;
 use accesskit::{ActionRequest, TreeUpdate};
 use std::path::PathBuf;
-use tv_engine::{Encoding, Format};
+use tv_engine::Encoding;
 use tv_platform::{Command, Commands, Handler, WindowContext};
 use tv_render::{FrameResult, Presentation, Renderer, DEFAULT_ORDER};
 use tv_ui::Event;
@@ -18,13 +18,6 @@ pub fn encoding_name(encoding: Encoding) -> &'static str {
     match encoding {
         Encoding::Utf8 => "UTF-8",
         Encoding::Utf16Le | Encoding::Utf16Be => "UTF-16",
-    }
-}
-
-pub fn format_name(format: Format) -> &'static str {
-    match format {
-        Format::Plain => "Text",
-        Format::Sccm => "SCCM",
     }
 }
 

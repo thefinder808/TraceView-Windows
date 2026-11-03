@@ -178,6 +178,7 @@ pub fn commands() -> Vec<(u32, String, &'static str)> {
         (command::THEME_SYSTEM, "theme_system", ""),
         (command::ERROR_LOOKUP, "error_lookup", "Ctrl+L"),
         (command::RULES, "rules", "Ctrl+H"),
+        (command::FORMATS, "formats", ""),
     ]
     .into_iter()
     .map(|(id, name, default)| (id, name.to_string(), default))

@@ -2,12 +2,13 @@
 //! focus, layout, drawing and routing input. It draws on any `Canvas`, so tests
 //! drive it without a display.
 
-use super::columns::{self, Column, ColumnSpec};
+use super::columns::{self, Column, ColumnSpec, LogKind};
 use super::columns_panel::ColumnsPanel;
 use super::command_palette::{Action, CommandPalette, Mode};
 use super::details::PANE_HEIGHT;
 use super::fonts::{self, Spacing, Target as FontTarget, LOG_SIZES};
 use super::fonts_panel::{FontsPanel, FontsResponse, Item as FontItem};
+use super::formats_panel::{FormatsPanel, FormatsResponse, Part as FormatsPart, Sample};
 use super::keymap::{self, Keymap};
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
@@ -15,7 +16,7 @@ use super::overview;
 use super::row_cache::{cells_from_row, SharedLog};
 use super::rules::RuleSet;
 use super::rules_panel::{Part, RulesPanel};
-use super::settings::{Preset, Settings, Store};
+use super::settings::{self, Preset, Settings, Store};
 use super::shortcut_panel::{Choice, ShortcutPanel};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
@@ -25,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
-use tv_engine::{Format, Level};
+use tv_engine::{CustomFormat, Format, Level};
 use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
@@ -46,6 +47,8 @@ const UI_LEFT: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
 /// More than this many rows in one copy would make a clipboard entry too large
 /// for most apps to accept anyway.
 const MAX_COPY_ROWS: usize = 100_000;
+/// How many of a log's first rows the formats editor tries a pattern on.
+const SAMPLE_ROWS: usize = 20;
 const WELCOME: &str = "Open a log with Ctrl+O, or drop one here";
 const FILTER_HINT: &str = "Filter (Ctrl+Shift+F): words, /regex/, level:warning, component:Name";
 const FIND_HINT: &str = "Find (Ctrl+F, then F3)";
@@ -93,6 +96,7 @@ pub mod command {
     pub const KEYS: u32 = 64;
     pub const NEXT_TAB: u32 = 65;
     pub const PREVIOUS_TAB: u32 = 66;
+    pub const FORMATS: u32 = 67;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -328,10 +332,14 @@ pub struct Workspace {
     pub columns_panel: Option<ColumnsPanel>,
     /// The fonts editor, while it's open.
     pub fonts_panel: Option<FontsPanel>,
+    /// The log formats editor, while it's open.
+    pub formats_panel: Option<FormatsPanel>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
     /// Which command each shortcut runs.
     keymap: Keymap,
+    /// The custom log formats that compile, which logs are opened with.
+    formats: Vec<Arc<CustomFormat>>,
     /// The shortcut being changed, while it waits for keys.
     pub shortcut_panel: Option<ShortcutPanel>,
     /// What was typed in the list of shortcuts, to bring it back after one changes.
@@ -414,8 +422,10 @@ impl Workspace {
             rules_panel: None,
             columns_panel: None,
             fonts_panel: None,
+            formats_panel: None,
             rules: Arc::default(),
             keymap: Keymap::new(&BTreeMap::new()),
+            formats: Vec::new(),
             shortcut_panel: None,
             keys_query: String::new(),
             settings: Settings::default(),
@@ -446,6 +456,7 @@ impl Workspace {
         self.store = store;
         self.notice = problem;
         self.keymap = Keymap::new(&self.settings.keys);
+        self.formats = settings::compile_formats(&self.settings.formats);
         self.apply_rules();
     }
 
@@ -504,20 +515,19 @@ impl Workspace {
             .collect()
     }
 
-    /// A format's columns, from settings. A tab that isn't open yet has none,
-    /// and is drawn as a text log would be.
-    fn columns_for(&self, format: Option<Format>) -> Vec<ColumnSpec> {
-        let format = format.unwrap_or(Format::Plain);
-        let saved = self.settings.columns.get(columns::format_key(format));
-        columns::from_settings(saved.map(Vec::as_slice), format)
+    /// A kind of log's columns, from settings. A tab that isn't open yet has
+    /// none, and is drawn as a text log would be.
+    fn columns_for(&self, kind: Option<LogKind>) -> Vec<ColumnSpec> {
+        let kind = kind.unwrap_or_else(|| LogKind::builtin(Format::Plain));
+        let saved = self.settings.columns.get(&kind.key());
+        columns::from_settings(saved.map(Vec::as_slice), &kind)
     }
 
-    /// Saves a format's columns. Every tab of that format follows them.
-    fn set_columns(&mut self, format: Format, specs: &[ColumnSpec]) {
-        self.settings.columns.insert(
-            columns::format_key(format).to_string(),
-            columns::to_settings(specs),
-        );
+    /// Saves a kind of log's columns. Every tab of that kind follows them.
+    fn set_columns(&mut self, kind: &LogKind, specs: &[ColumnSpec]) {
+        self.settings
+            .columns
+            .insert(kind.key(), columns::to_settings(specs));
         self.save_settings();
     }
 
@@ -679,6 +689,7 @@ impl Workspace {
                 items: vec![
                     item("Error lookup...", command::ERROR_LOOKUP),
                     item("Highlight rules...", command::RULES),
+                    item("Log formats...", command::FORMATS),
                     item("Keyboard shortcuts...", command::KEYS),
                 ],
             },
@@ -698,7 +709,8 @@ impl Workspace {
                 self.active = index;
                 continue;
             }
-            self.tabs.push(Tab::open(vec![absolute], &self.waker));
+            self.tabs
+                .push(Tab::open(vec![absolute], self.formats.clone(), &self.waker));
             self.active = self.tabs.len() - 1;
         }
         self.focus = Focus::Grid;
@@ -778,7 +790,8 @@ impl Workspace {
         match self.tabs.iter().position(|tab| tab.paths == paths) {
             Some(index) => self.active = index,
             None => {
-                self.tabs.push(Tab::open(paths, &self.waker));
+                self.tabs
+                    .push(Tab::open(paths, self.formats.clone(), &self.waker));
                 self.active = self.tabs.len() - 1;
             }
         }
@@ -1018,16 +1031,22 @@ impl Workspace {
                 self.apply_rules();
             }
             command::COLUMNS => {
-                let format = self
+                let kind = self
                     .active_tab()
-                    .and_then(Tab::format)
-                    .unwrap_or(Format::Plain);
-                let specs = self.columns_for(Some(format));
+                    .and_then(Tab::kind)
+                    .unwrap_or_else(|| LogKind::builtin(Format::Plain));
+                let specs = self.columns_for(Some(kind.clone()));
                 self.close_panels();
-                self.columns_panel = Some(ColumnsPanel::new(format, specs));
+                self.columns_panel = Some(ColumnsPanel::new(kind, specs));
                 commands.push(Command::SetImeEnabled(false));
             }
             command::FONTS => self.open_fonts(FontItem::LogFont, commands),
+            command::FORMATS => {
+                let sample = self.read_sample();
+                self.close_panels();
+                self.formats_panel = Some(FormatsPanel::new(self.settings.formats.clone(), sample));
+                commands.push(Command::SetImeEnabled(true));
+            }
             command::KEYS => {
                 self.keys_query.clear();
                 self.open_palette(Mode::Keys, "", commands);
@@ -1141,8 +1160,8 @@ impl Workspace {
         };
         let response = panel.handle(event);
         if response.changed {
-            let (format, specs) = (panel.format, panel.columns.clone());
-            self.set_columns(format, &specs);
+            let (kind, specs) = (panel.kind.clone(), panel.columns.clone());
+            self.set_columns(&kind, &specs);
         }
         if response.closed {
             self.columns_panel = None;
@@ -1182,11 +1201,91 @@ impl Workspace {
         commands.accessibility_changed();
     }
 
+    /// Reads the active log's first lines on another thread, for the formats
+    /// editor to try patterns on.
+    fn read_sample(&self) -> Option<Receiver<Sample>> {
+        let source = self.active_tab()?.document()?.sources.first()?;
+        let (log, path) = (source.log.clone(), source.path.clone());
+        let (sender, receiver) = channel();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            if let Ok(log) = log.read() {
+                let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
+                let _ = log.read_rows(0..SAMPLE_ROWS, &mut buffer, |_, raw, _| {
+                    let text = log.text(raw, &mut scratch);
+                    // An SCCM row can hold several lines, and only its first is tried.
+                    let line = text.split(|byte| *byte == b'\n').next().unwrap_or(&[]);
+                    let line = line.strip_suffix(b"\r").unwrap_or(line);
+                    if !line.trim_ascii().is_empty() {
+                        lines.push(tv_engine::encoding::display(line).into_owned());
+                    }
+                });
+            }
+            let _ = sender.send(Sample {
+                file_name: file_name(&path),
+                lines,
+            });
+            waker.wake();
+        });
+        Some(receiver)
+    }
+
+    /// The formats editor takes all input while it's open. Changes are saved
+    /// at once, and used for logs opened from then on.
+    fn formats_event(&mut self, event: Event, canvas: &mut dyn Canvas, commands: &mut Commands) {
+        let hwnd = self.hwnd;
+        let Some(panel) = &mut self.formats_panel else {
+            return;
+        };
+        let mut response = panel.handle(event, canvas);
+        if response.wants_paste {
+            if let Some(text) = tv_platform::clipboard_text(hwnd) {
+                response.changed |= panel.paste(&text);
+                response.redraw = true;
+            }
+        }
+        if let Some(text) = response.copy.take() {
+            commands.push(Command::SetClipboard(text));
+        }
+        self.formats_responded(&response, commands);
+    }
+
+    /// Acts on what the formats editor asked for.
+    pub fn formats_responded(&mut self, response: &FormatsResponse, commands: &mut Commands) {
+        if response.changed {
+            if let Some(panel) = &self.formats_panel {
+                self.settings.formats = panel.saved_formats();
+                self.formats = settings::compile_formats(&self.settings.formats);
+                self.save_settings();
+            }
+        }
+        if response.reopen {
+            self.reopen_active_tab();
+        }
+        if response.closed {
+            self.formats_panel = None;
+            commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    /// Reads the active tab's logs again, so a changed format takes effect.
+    fn reopen_active_tab(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let paths = tab.paths.clone();
+        self.tabs[self.active] = Tab::open(paths, self.formats.clone(), &self.waker);
+        self.notice = Some("Reading the log again with the formats".to_string());
+    }
+
     /// Applies a change a screen reader made in the columns editor.
     pub fn columns_edited(&mut self) {
         if let Some(panel) = &self.columns_panel {
-            let (format, specs) = (panel.format, panel.columns.clone());
-            self.set_columns(format, &specs);
+            let (kind, specs) = (panel.kind.clone(), panel.columns.clone());
+            self.set_columns(&kind, &specs);
         }
     }
 
@@ -1607,6 +1706,7 @@ impl Workspace {
         self.rules_panel = None;
         self.columns_panel = None;
         self.fonts_panel = None;
+        self.formats_panel = None;
         self.shortcut_panel = None;
     }
 
@@ -1792,6 +1892,10 @@ impl Workspace {
             self.fonts_event(event, commands);
             return;
         }
+        if self.formats_panel.is_some() {
+            self.formats_event(event, canvas, commands);
+            return;
+        }
         if self.lookup.is_some() {
             self.lookup_event(event, canvas, commands);
             return;
@@ -1947,9 +2051,9 @@ impl Workspace {
         tab.following = tab.view.at_bottom();
         let changed_columns = response
             .columns_changed
-            .then(|| (tab.format(), tab.view.columns().to_vec()));
-        if let Some((Some(format), specs)) = changed_columns {
-            self.set_columns(format, &specs);
+            .then(|| (tab.kind(), tab.view.columns().to_vec()));
+        if let Some((Some(kind), specs)) = changed_columns {
+            self.set_columns(&kind, &specs);
         }
         if response.columns_menu {
             self.run_command(command::COLUMNS, commands);
@@ -1973,6 +2077,9 @@ impl Workspace {
             tab.poll(&waker, &self.settings, &self.rules);
         }
         if let Some(panel) = &mut self.lookup {
+            panel.poll();
+        }
+        if let Some(panel) = &mut self.formats_panel {
             panel.poll();
         }
         self.sidebar.poll();
@@ -2144,12 +2251,15 @@ impl Workspace {
         if let Some(panel) = &mut self.shortcut_panel {
             panel.arrange(below_menu, canvas, theme);
         }
+        if let Some(panel) = &mut self.formats_panel {
+            panel.arrange(below_menu, canvas, theme);
+        }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
             let (Some(index), Some(pane)) = (index, pane) else {
                 continue;
             };
-            let columns = self.columns_for(self.tabs.get(index).and_then(Tab::format));
+            let columns = self.columns_for(self.tabs.get(index).and_then(Tab::kind));
             if let Some(tab) = self.tabs.get_mut(index) {
                 let count = tab.rows().map_or(0, |rows| rows.row_count());
                 tab.view.arrange(pane.grid, count, metrics, &columns);
@@ -2226,6 +2336,10 @@ impl Workspace {
         commands: &mut Commands,
     ) {
         self.arrange(canvas, size, scale);
+        // Some of what screen readers hear comes from layout, such as the chips'
+        // counts and an editor's buttons, so each frame brings them up to date.
+        // Nothing is built unless a screen reader is listening.
+        commands.accessibility_changed();
         let theme = self.theme();
         let layout = self.layout;
         let focus = self.focus;
@@ -2338,6 +2452,12 @@ impl Workspace {
         }
         if let Some(panel) = &self.shortcut_panel {
             panel.draw(canvas, theme);
+        }
+        if let Some(panel) = &mut self.formats_panel {
+            let field_caret = panel.draw(canvas, theme);
+            if panel.focus == FormatsPart::Field {
+                caret = Some(field_caret);
+            }
         }
 
         self.menu.draw_bar(canvas, layout.menu, theme);
@@ -3144,6 +3264,89 @@ mod tests {
         send(&mut second, Event::KeyDown(Key::Enter, NONE));
         assert_eq!(menu_shortcut(&second, command::FIND), "Ctrl+F");
         assert!(second.settings().keys.is_empty());
+    }
+
+    #[test]
+    fn every_frame_brings_screen_readers_up_to_date() {
+        // Chip counts and an editor's buttons come from layout, so a frame drawn
+        // after the last change must still reach screen readers.
+        let (_dir, mut workspace) = opened(10);
+        let mut commands = Commands::default();
+        workspace.draw(&mut RecordingCanvas::new(), SIZE, 1.0, &mut commands);
+        assert!(commands.tells_screen_readers());
+    }
+
+    #[test]
+    fn a_format_typed_in_the_editor_reads_the_log_and_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = dir.path().join("service.log");
+        let text: String = (0..30)
+            .map(|row| {
+                let level = if row % 10 == 3 { "ERROR" } else { "INFO" };
+                format!("2026-01-31 10:22:{:02}|{level}|request {row}\n", row % 60)
+            })
+            .collect();
+        std::fs::write(&log, text).unwrap();
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.open_paths(vec![log.clone()]);
+        settle(&mut first, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        assert_eq!(first.tabs[0].kind().unwrap().format, Format::Plain);
+
+        first.run_command(command::FORMATS, &mut Commands::default());
+        type_text(
+            &mut first,
+            r"^(?P<time>[^|]+)\|(?P<level>[^|]+)\|(?P<message>.*)$",
+        );
+        // The log's first lines are read in the background, and tried once they arrive.
+        settle(&mut first, |workspace| {
+            workspace.formats_panel.as_ref().is_some_and(|panel| {
+                panel
+                    .test()
+                    .first()
+                    .is_some_and(|line| line.starts_with("Matches"))
+            })
+        });
+        let panel = first.formats_panel.as_ref().unwrap();
+        assert_eq!(
+            panel.test()[0],
+            "Matches 20 of the first 20 lines of service.log"
+        );
+        assert_eq!(first.settings().formats.len(), 1, "saved as it's typed");
+
+        // "Use for this file" names the log in the format and reads it again.
+        let response = first.formats_panel.as_mut().unwrap().choose_option(5);
+        first.formats_responded(&response, &mut Commands::default());
+        settle(&mut first, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        let kind = first.tabs[0].kind().unwrap();
+        assert_eq!(
+            (kind.format, kind.name.as_str()),
+            (Format::Custom, "Format 1")
+        );
+        assert!(first.status().contains("Format 1"), "{}", first.status());
+        assert_eq!(
+            shown(&first),
+            [Column::Time, Column::Level, Column::Message],
+            "a custom format shows the parts it names"
+        );
+        assert_eq!(first.tabs[0].rows().unwrap().level(3), Level::Error);
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        assert_eq!(second.settings().formats[0].files, "service.log");
+        second.open_paths(vec![log]);
+        settle(&mut second, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        assert_eq!(second.tabs[0].kind().unwrap().format, Format::Custom);
     }
 
     #[test]

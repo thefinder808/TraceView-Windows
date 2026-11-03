@@ -505,6 +505,47 @@ fn the_shortcut_panel_draws_and_explains_a_refused_key() {
 }
 
 #[test]
+fn the_log_formats_editor_tries_a_pattern_on_the_open_log() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::LIGHT));
+    render(&mut workspace, "formats", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.run_command(command::FORMATS, &mut Commands::default());
+    for character in r#"^<!\[LOG\[(?P<message>.*?)\]LOG\]!><time="(?P<time>[^"]+)""#.chars() {
+        send(&mut workspace, Event::Char(character));
+    }
+    let frame = render(&mut workspace, "formats-editor", 96.0, |workspace| {
+        workspace.formats_panel.as_ref().is_some_and(|panel| {
+            panel
+                .test()
+                .first()
+                .is_some_and(|line| line.starts_with("Matches"))
+        })
+    });
+    let theme = workspace.theme();
+    let panel = workspace.formats_panel.as_ref().unwrap();
+    assert_eq!(
+        panel.test()[0],
+        "Matches 20 of the first 20 lines of PolicyAgent.log"
+    );
+    assert!(
+        panel.test()[1].contains("message Connected to management point"),
+        "{}",
+        panel.test()[1]
+    );
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let field = panel.field_rect();
+    assert!(
+        frame.has_ink(field, theme.input_background),
+        "the pattern didn't draw"
+    );
+}
+
+#[test]
 fn the_sidebar_draws_beside_the_logs() {
     let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     workspace.show_sidebar = true;

@@ -33,6 +33,9 @@ pub struct Layout {
     pub format: Format,
     /// Where text starts, after any byte order mark.
     pub body_offset: u64,
+    /// Which custom format definition the rows were read with, or 0 for a
+    /// built-in format, so an index is never reused after a pattern changes.
+    pub format_key: u64,
 }
 
 #[derive(Debug, Default)]
@@ -130,7 +133,7 @@ struct Scanner<'a> {
     file: &'a File,
     len: u64,
     layout: Layout,
-    context: ParseContext,
+    context: &'a ParseContext,
     from: u64,
     chunk_size: usize,
     lookahead: usize,
@@ -190,7 +193,7 @@ impl Scanner<'_> {
             let row_end = next.map_or(buffer.len(), |found| found + self.newline_len);
             let raw = &buffer[position..row_end];
             let text = self.layout.encoding.to_utf8(raw, scratch);
-            let fields = parse::fields(self.layout.format, text, &self.context);
+            let fields = parse::fields(self.layout.format, text, self.context);
             rows.push(read_start + position as u64, fields.level, fields.stamp);
             if next.is_none() {
                 debug_assert!(at_file_end || row_end >= end_in_buffer);
@@ -208,7 +211,7 @@ pub(crate) fn scan(
     file: &File,
     len: u64,
     layout: Layout,
-    context: ParseContext,
+    context: &ParseContext,
     from: u64,
     progress: &AtomicU64,
 ) -> io::Result<RowArrays> {
@@ -222,7 +225,7 @@ fn scan_with_sizes(
     file: &File,
     len: u64,
     layout: Layout,
-    context: ParseContext,
+    context: &ParseContext,
     from: u64,
     progress: &AtomicU64,
     chunk_size: usize,
@@ -230,7 +233,7 @@ fn scan_with_sizes(
 ) -> io::Result<RowArrays> {
     let encoding = layout.encoding;
     let separator = match layout.format {
-        Format::Plain => encoding.encode_ascii(b"\n"),
+        Format::Plain | Format::Custom => encoding.encode_ascii(b"\n"),
         Format::Sccm => encoding.encode_ascii(b"\n<![LOG["),
     };
     let scanner = Scanner {
@@ -281,6 +284,7 @@ mod tests {
             year: 2026,
             month: 6,
         },
+        custom: None,
     };
 
     /// Returns each row's bytes after scanning with the given chunk size.
@@ -299,12 +303,13 @@ mod tests {
             encoding,
             format,
             body_offset,
+            format_key: 0,
         };
         let rows = scan_with_sizes(
             &file,
             bytes.len() as u64,
             layout,
-            CONTEXT,
+            &CONTEXT,
             body_offset,
             &AtomicU64::new(0),
             chunk_size,
