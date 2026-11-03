@@ -38,7 +38,8 @@ const LOOKUP_ID: NodeId = NodeId(10);
 const LOOKUP_FIELD_ID: NodeId = NodeId(11);
 const LOOKUP_RESULT_ID: NodeId = NodeId(12);
 const FIRST_MENU_ID: u64 = 100;
-const FIRST_MENU_ITEM_ID: u64 = 200;
+/// Menu items have room of their own, since a menu can list many themes and layouts.
+const FIRST_MENU_ITEM_ID: u64 = 900_000;
 const FIRST_TAB_ID: u64 = 300;
 const SIDEBAR_ID: NodeId = NodeId(13);
 const HISTOGRAM_ID: NodeId = NodeId(14);

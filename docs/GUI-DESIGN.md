@@ -89,7 +89,7 @@ This is a main goal, so it's a system rather than a settings page. Everything is
 | Filter presets | Saved and named, with their own shortcuts |
 | Custom formats | A regex with named groups (`time`, `level`, `component`, `message`) adds a format with no code. This also covers logs the app doesn't know about yet |
 | Keyboard | Every command can be rebound |
-| Layout | Sidebar, chips, histogram and status bar can each be hidden. Named layouts switch between them |
+| Layout | Sidebar, chips, histogram and details pane can each be hidden. Named layouts switch between them |
 
 **No plugins or scripts in v1.** Regex-based formats and rules run in the same linear-time engine as search, so a shared theme or rule file can't hang the app or run code. A scripting system would add a security risk in a tool that reads untrusted logs, and I'd want a real need before accepting that.
 
@@ -378,6 +378,22 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Hand edits to a theme file show after a restart,** until live reload arrives.
 
 **Not covered by automation:** using the editor with Narrator, and Open folder on a real desktop.
+
+**Named layouts:**
+
+- **A layout says which panes show:** the sidebar and its width, the severity chips, the histogram and the details pane.
+- **Two are built in.** CMTrace shows the grid and details pane only, and Everything shows every pane. Neither can be deleted or replaced, and both can be given shortcuts in Tools > Keyboard shortcuts.
+- **View > Save layout as...** asks for a name in the palette, as saving a filter preset does. Saving under a name already used replaces that layout.
+- **Each layout is a View menu item,** checked when the window shows what it does. Changing a pane by hand unchecks it. Ctrl+K lists them too, along with "Delete layout" for saved ones.
+- **Menus too tall for the window wrap into a second column,** so a long list of themes and layouts stays reachable.
+
+**Differences from this design:**
+
+- **The status bar always shows.** It carries row counts, Live or Paused, export progress and every message, and it's one 22-pixel bar.
+- **Split view isn't part of a layout,** since it needs two open logs.
+- **Saved layouts have no shortcuts of their own.** Ctrl+K and a few letters of the name reach one, as with filter presets.
+
+**Fixed along the way:** the sidebar's width was saved as 0 whenever settings were saved in a session where the sidebar never showed, so it next opened at its narrowest. Its chosen width is saved now.
 
 **Fixed along the way:** a frame now always brings screen readers up to date. Before, what came from layout, such as the severity chips' counts and an editor's buttons, could stay out of date for them until the next input. The end-to-end check caught it as an intermittent failure once the index cache had to be rebuilt.
 
