@@ -333,6 +333,20 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Row height is a choice of three spacings,** not a number, so a row can never be too short for its font.
 - **The number pad's keys** used to arrive as lowercase letters, which no shortcut used, and now map to nothing except plus and minus.
 
+**Keyboard shortcuts:**
+
+- **Tools > Keyboard shortcuts** lists every command with its shortcut, in the command palette, so typing finds one. Enter on a command waits for the new keys. Backspace removes the shortcut, Delete restores the default, and Esc leaves it alone. The list comes back as it was afterwards, and its last entry resets every shortcut.
+- **Any command can have a shortcut,** including menu commands that had none, and next and previous tab, which were Ctrl+Tab and Ctrl+Shift+Tab only.
+- **Taking keys another command has moves them,** and the status bar says so, as in "Next error is now Ctrl+F, which Find had".
+- **Keys the app keeps say why when pressed,** as in "Ctrl+V is kept for editing". A shortcut needs Ctrl or a function key, so typing in a box never runs one.
+- **Menus and the palette show the current shortcuts.**
+
+**Differences from this design:**
+
+- **Ctrl+1 to Ctrl+9, copy, select all and Exit can't be changed.** They're the keys Windows and CMTrace users already rely on for those, and the text boxes use the same editing keys.
+- **One shortcut per command,** rather than several.
+- **Changes are made in the app,** or by hand in `traceview.toml` while it's closed, until live reload arrives.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |

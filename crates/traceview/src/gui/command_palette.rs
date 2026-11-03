@@ -21,6 +21,10 @@ pub enum Action {
     SavePreset(String),
     /// A font family, by name.
     SetFont(Target, String),
+    /// Asks for a command's new shortcut.
+    Rebind(u32),
+    /// Puts every shortcut back to its default.
+    ResetKeys,
     /// A hint that does nothing when chosen.
     Nothing,
 }
@@ -32,6 +36,8 @@ pub enum Mode {
     SavePreset,
     /// Lists installed fonts for the log or the window.
     Font(Target),
+    /// Lists commands with their shortcuts, to change one.
+    Keys,
 }
 
 /// What happened, for the workspace to act on.
@@ -93,6 +99,7 @@ impl CommandPalette {
             Mode::SavePreset => "Name for this filter preset",
             Mode::Font(Target::Log) => "Type to find a font. Fixed-width fonts line logs up best",
             Mode::Font(Target::Window) => "Type to find a font",
+            Mode::Keys => "Type to find a command, then press Enter to change its shortcut",
         }
     }
 
@@ -103,6 +110,7 @@ impl CommandPalette {
             Mode::SavePreset => "Save filter preset",
             Mode::Font(Target::Log) => "Choose the log font",
             Mode::Font(Target::Window) => "Choose the window font",
+            Mode::Keys => "Keyboard shortcuts",
         }
     }
 
@@ -153,7 +161,7 @@ impl CommandPalette {
                 }
                 None => self.everything.clone(),
             },
-            Mode::Font(_) => self.everything.clone(),
+            Mode::Font(_) | Mode::Keys => self.everything.clone(),
         };
         let (mut items, actions): (Vec<PaletteItem>, Vec<Action>) = listed.into_iter().unzip();
         for (id, item) in items.iter_mut().enumerate() {

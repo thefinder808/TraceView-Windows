@@ -12,6 +12,7 @@ use super::fonts_panel::{self, FontsPanel, Part as FontsPart};
 use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
+use super::shortcut_panel::{self, ShortcutPanel};
 use super::workspace::{Focus, Workspace};
 use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
@@ -59,6 +60,8 @@ const FONTS_ID: NodeId = NodeId(24);
 const FONTS_LIST_ID: NodeId = NodeId(25);
 const FIRST_FONT_BUTTON_ID: u64 = 660;
 const FIRST_FONT_ITEM_ID: u64 = 7_300;
+const SHORTCUT_ID: NodeId = NodeId(26);
+const FIRST_SHORTCUT_BUTTON_ID: u64 = 680;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -328,6 +331,33 @@ fn act_on_fonts(workspace: &mut Workspace, request: &ActionRequest, commands: &m
         panel.focus = FontsPart::List;
         panel.list.select_id(Some(index as u32));
     }
+}
+
+/// The panel waiting for a shortcut, as a modal dialog that has focus itself,
+/// since it listens for keys rather than offering a box to type in.
+fn shortcut_nodes(panel: &ShortcutPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let mut children = Vec::new();
+    for (index, chip) in panel.button_chips().iter().enumerate() {
+        let Some(rect) = panel.buttons.chip_rect(index) else {
+            continue;
+        };
+        let id = NodeId(FIRST_SHORTCUT_BUTTON_ID + index as u64);
+        let mut node = Node::new(Role::Button);
+        node.set_label(chip.label.as_str());
+        node.add_action(Action::Click);
+        node.set_bounds(physical(rect, scale));
+        children.push(id);
+        nodes.push((id, node));
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(panel.title());
+    dialog.set_description(panel.prompt());
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    dialog.add_action(Action::Focus);
+    nodes.push((SHORTCUT_ID, dialog));
+    SHORTCUT_ID
 }
 
 /// The highlight rules editor, as a modal dialog. Returns the node with focus.
@@ -746,6 +776,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if fonts_focus.is_some() {
         window_children.push(FONTS_ID);
     }
+    let shortcut_focus = workspace
+        .shortcut_panel
+        .as_ref()
+        .map(|panel| shortcut_nodes(panel, scale, &mut nodes));
+    if shortcut_focus.is_some() {
+        window_children.push(SHORTCUT_ID);
+    }
 
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
@@ -764,6 +801,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .or(rules_focus)
         .or(columns_focus)
         .or(fonts_focus)
+        .or(shortcut_focus)
         .unwrap_or(match workspace.focus {
             _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
             _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
@@ -785,7 +823,14 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
     let target = request.target_node;
     match request.action {
         Action::Focus | Action::Click => {
-            if workspace.rules_panel.is_some() {
+            if workspace.shortcut_panel.is_some() {
+                let buttons = shortcut_panel::BUTTONS.len();
+                if let Some(index) = in_range(target, FIRST_SHORTCUT_BUTTON_ID, buttons) {
+                    if request.action == Action::Click {
+                        workspace.press_shortcut_button(index, commands);
+                    }
+                }
+            } else if workspace.rules_panel.is_some() {
                 act_on_rules(workspace, request);
             } else if workspace.columns_panel.is_some() {
                 act_on_columns(workspace, request);
@@ -1050,6 +1095,54 @@ mod tests {
             node(&update, row_id(1)).label(),
             Some("Row 2, Error, 2026-01-01 10:00:00.000, disk full 1")
         );
+    }
+
+    #[test]
+    fn the_shortcut_panel_is_a_dialog_that_says_what_it_wants() {
+        let (_dir, mut workspace) = opened();
+        let mut commands = Commands::default();
+        workspace.run_command(super::super::workspace::command::KEYS, &mut commands);
+        for character in "toggle bookmark".chars() {
+            workspace.event(
+                Event::Char(character),
+                &mut RecordingCanvas::new(),
+                &mut commands,
+            );
+        }
+        workspace.event(
+            Event::KeyDown(Key::Enter, Modifiers::default()),
+            &mut RecordingCanvas::new(),
+            &mut commands,
+        );
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            (1000.0, 600.0),
+            1.0,
+            &mut commands,
+        );
+        let update = build(&workspace, 1.0);
+        assert_eq!(update.focus, SHORTCUT_ID);
+        let dialog = node(&update, SHORTCUT_ID);
+        assert_eq!(dialog.label(), Some("Shortcut for Toggle bookmark"));
+        assert_eq!(
+            dialog.description(),
+            Some("Press the new keys. Now Ctrl+D, and by default Ctrl+D.")
+        );
+        // The Remove button takes the shortcut away.
+        act(
+            &mut workspace,
+            &ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(FIRST_SHORTCUT_BUTTON_ID),
+                data: None,
+            },
+            &mut commands,
+        );
+        assert!(workspace.shortcut_panel.is_none());
+        assert!(workspace
+            .status()
+            .contains("Toggle bookmark has no shortcut now"));
     }
 
     #[test]
