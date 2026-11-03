@@ -6,6 +6,8 @@
 //! It's virtual, so only the rows on screen exist as nodes, and each one's text
 //! reads as a complete sentence.
 
+use super::columns::Column;
+use super::columns_panel::{self, ColumnsPanel, Part as ColumnsPart};
 use super::command_palette::Mode;
 use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
@@ -49,6 +51,10 @@ const RULES_NOTE_ID: NodeId = NodeId(21);
 const FIRST_RULE_COLOR_ID: u64 = 600;
 const FIRST_RULE_OPTION_ID: u64 = 620;
 const FIRST_RULE_ID: u64 = 7_000;
+const COLUMNS_ID: NodeId = NodeId(22);
+const COLUMNS_LIST_ID: NodeId = NodeId(23);
+const FIRST_COLUMN_BUTTON_ID: u64 = 640;
+const FIRST_COLUMN_ITEM_ID: u64 = 7_200;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -80,7 +86,10 @@ fn physical(rect: Rect, scale: f32) -> AccessRect {
     )
 }
 
-fn row_label(source: &dyn RowSource, row: usize) -> String {
+/// A row as one sentence: its number and severity, then the columns on screen
+/// in their order. The severity is said even when its column is hidden, as the
+/// row's color shows it anyway.
+fn row_label(source: &dyn RowSource, row: usize, columns: &[Column]) -> String {
     let mut level = level_name(source.level(row)).to_string();
     if source.bookmarked(row) {
         level.push_str(", bookmarked");
@@ -98,7 +107,7 @@ fn row_label(source: &dyn RowSource, row: usize) -> String {
                 });
             }
             let mut label = format!("Row {number}, {level}");
-            for part in [&cells.time, &cells.component, &cells.message] {
+            for part in columns.iter().map(|column| column.text(&cells)) {
                 if !part.is_empty() {
                     label.push_str(", ");
                     label.push_str(part);
@@ -121,11 +130,12 @@ fn grid_nodes(
     let mut row_ids = Vec::new();
     if let Some(source) = source {
         let selection = view.selection();
+        let columns: Vec<Column> = view.shown_columns().collect();
         for row in view.visible_rows() {
             let id = row_id(row);
             row_ids.push(id);
             let mut node = Node::new(Role::ListBoxOption);
-            node.set_label(row_label(source, row));
+            node.set_label(row_label(source, row, &columns));
             node.set_position_in_set(row + 1);
             node.set_size_of_set(source.row_count());
             node.set_bounds(physical(view.row_rect(row), scale));
@@ -149,6 +159,93 @@ fn grid_nodes(
     view.cursor()
         .filter(|row| source.is_some() && visible.contains(row))
         .map_or(GRID_ID, row_id)
+}
+
+/// The columns editor, as a modal dialog. Returns the node with focus.
+fn columns_nodes(panel: &ColumnsPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let list = &panel.list;
+    let mut focus = COLUMNS_LIST_ID;
+    let mut options = Vec::new();
+    for index in list.visible_items() {
+        let (Some(rect), Some(spec)) = (list.item_rect(index), panel.columns.get(index)) else {
+            continue;
+        };
+        let id = NodeId(FIRST_COLUMN_ITEM_ID + index as u64);
+        let mut node = Node::new(Role::ListBoxOption);
+        node.set_label(format!(
+            "{}, {}",
+            spec.column.label(),
+            columns_panel::describe(spec)
+        ));
+        node.set_selected(panel.selected() == index);
+        node.set_bounds(physical(rect, scale));
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        if panel.focus == ColumnsPart::List && panel.selected() == index {
+            focus = id;
+        }
+        options.push(id);
+        nodes.push((id, node));
+    }
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Columns, left to right");
+    list_node.set_children(options);
+    nodes.push((COLUMNS_LIST_ID, list_node));
+    let mut children = vec![COLUMNS_LIST_ID];
+
+    for (index, chip) in panel.button_chips().iter().enumerate() {
+        let Some(rect) = panel.buttons.chip_rect(index) else {
+            continue;
+        };
+        let id = NodeId(FIRST_COLUMN_BUTTON_ID + index as u64);
+        let mut node = Node::new(Role::Button);
+        node.set_label(chip.label.as_str());
+        if index == 0 {
+            node.set_toggled(chip.active.into());
+        }
+        if panel.button_applies(index) {
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
+        node.add_action(Action::Focus);
+        node.set_bounds(physical(rect, scale));
+        if panel.focus == ColumnsPart::Buttons && panel.buttons.focus() == Some(index) {
+            focus = id;
+        }
+        children.push(id);
+        nodes.push((id, node));
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(panel.title());
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    nodes.push((COLUMNS_ID, dialog));
+    focus
+}
+
+/// Carries out a screen reader's request in the columns editor. Clicking a
+/// button presses it, and focusing a column selects it.
+fn act_on_columns(workspace: &mut Workspace, request: &ActionRequest) {
+    let Some(panel) = workspace.columns_panel.as_mut() else {
+        return;
+    };
+    let target = request.target_node;
+    let changed =
+        if let Some(index) = in_range(target, FIRST_COLUMN_BUTTON_ID, panel.button_chips().len()) {
+            panel.focus = ColumnsPart::Buttons;
+            request.action == Action::Click && panel.press(index)
+        } else if let Some(index) = in_range(target, FIRST_COLUMN_ITEM_ID, panel.columns.len()) {
+            panel.focus = ColumnsPart::List;
+            panel.select(index);
+            false
+        } else {
+            false
+        };
+    if changed {
+        workspace.columns_edited();
+    }
 }
 
 /// The highlight rules editor, as a modal dialog. Returns the node with focus.
@@ -556,6 +653,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if rules_focus.is_some() {
         window_children.push(RULES_ID);
     }
+    let columns_focus = workspace
+        .columns_panel
+        .as_ref()
+        .map(|panel| columns_nodes(panel, scale, &mut nodes));
+    if columns_focus.is_some() {
+        window_children.push(COLUMNS_ID);
+    }
 
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
@@ -570,14 +674,17 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     let has_fields = workspace
         .active_tab()
         .is_some_and(|tab| tab.document().is_some());
-    let focus = menu_focus.or(rules_focus).unwrap_or(match workspace.focus {
-        _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
-        _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
-        Focus::Sidebar if workspace.show_sidebar => sidebar_focus,
-        Focus::Filter if has_fields => FILTER_ID,
-        Focus::Find if has_fields => FIND_ID,
-        _ => grid_focus,
-    });
+    let focus = menu_focus
+        .or(rules_focus)
+        .or(columns_focus)
+        .unwrap_or(match workspace.focus {
+            _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
+            _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
+            Focus::Sidebar if workspace.show_sidebar => sidebar_focus,
+            Focus::Filter if has_fields => FILTER_ID,
+            Focus::Find if has_fields => FIND_ID,
+            _ => grid_focus,
+        });
     TreeUpdate {
         nodes,
         tree: Some(TreeInfo::new(WINDOW_ID)),
@@ -593,6 +700,8 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
         Action::Focus | Action::Click => {
             if workspace.rules_panel.is_some() {
                 act_on_rules(workspace, request);
+            } else if workspace.columns_panel.is_some() {
+                act_on_columns(workspace, request);
             } else if let Some(row) = row_from_id(target) {
                 if let Some(tab) = workspace.active_tab_mut() {
                     tab.view.select(row, false);
@@ -794,6 +903,64 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(10), "{label}");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn the_columns_editor_is_a_modal_dialog_and_rows_follow_the_columns() {
+        let (_dir, mut workspace) = opened();
+        let mut commands = Commands::default();
+        workspace.run_command(super::super::workspace::command::COLUMNS, &mut commands);
+        let draw = |workspace: &mut Workspace| {
+            let mut commands = Commands::default();
+            workspace.woken(&mut commands);
+            workspace.draw(
+                &mut RecordingCanvas::new(),
+                (1000.0, 600.0),
+                1.0,
+                &mut commands,
+            );
+        };
+        draw(&mut workspace);
+        let update = build(&workspace, 1.0);
+        assert_eq!(node(&update, COLUMNS_ID).role(), Role::Dialog);
+        assert_eq!(
+            node(&update, COLUMNS_ID).label(),
+            Some("Columns for other logs")
+        );
+        let time = NodeId(FIRST_COLUMN_ITEM_ID);
+        assert_eq!(update.focus, time);
+        assert_eq!(
+            node(&update, time).label(),
+            Some("Time, shown, 23 characters wide")
+        );
+        assert!(node(&update, NodeId(FIRST_COLUMN_BUTTON_ID + 1)).is_disabled());
+
+        // Choosing the component and pressing Shown hides it.
+        let click = |workspace: &mut Workspace, target: NodeId| {
+            act(
+                workspace,
+                &ActionRequest {
+                    action: Action::Click,
+                    target_tree: TreeId::ROOT,
+                    target_node: target,
+                    data: None,
+                },
+                &mut Commands::default(),
+            );
+        };
+        click(&mut workspace, NodeId(FIRST_COLUMN_ITEM_ID + 2));
+        click(&mut workspace, NodeId(FIRST_COLUMN_BUTTON_ID));
+        workspace.event(
+            Event::KeyDown(Key::Escape, Modifiers::default()),
+            &mut RecordingCanvas::new(),
+            &mut commands,
+        );
+        draw(&mut workspace);
+        let update = build(&workspace, 1.0);
+        assert_eq!(
+            node(&update, row_id(1)).label(),
+            Some("Row 2, Error, 2026-01-01 10:00:00.000, disk full 1")
+        );
     }
 
     #[test]

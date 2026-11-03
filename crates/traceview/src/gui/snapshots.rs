@@ -2,8 +2,10 @@
 //! pixels. Set `TV_SNAPSHOT_DIR` to also save each frame as a PNG to look at.
 
 use super::app::fonts_for;
+use super::columns::Column;
 use super::log_view::RowSource;
 use super::settings::{Rule, Settings, Store};
+use super::workspace::command;
 use super::workspace::{ThemeChoice, Workspace};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -409,6 +411,35 @@ fn the_highlight_rules_editor_draws_over_the_logs() {
     assert!(
         frame.has_ink(first_rule, theme.sidebar_background),
         "the rule list didn't draw"
+    );
+}
+
+#[test]
+fn sccm_logs_show_the_thread_and_the_columns_editor_draws() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CONSOLE));
+    let frame = render(&mut workspace, "columns", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    let theme = workspace.theme();
+    let view = &workspace.tabs[0].view;
+    let thread = view.header_rect(Column::Thread).unwrap();
+    assert!(
+        frame.has_ink(thread, theme.header_background),
+        "the Thread header didn't draw"
+    );
+    workspace.run_command(command::COLUMNS, &mut Commands::default());
+    let frame = render(&mut workspace, "columns-editor", 96.0, |_| true);
+    let panel = workspace.columns_panel.as_ref().unwrap();
+    assert_eq!(panel.title(), "Columns for SCCM logs");
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let first = panel.list.item_rect(0).unwrap();
+    assert!(
+        frame.has_ink(first, theme.selected_row),
+        "the column list didn't draw"
     );
 }
 

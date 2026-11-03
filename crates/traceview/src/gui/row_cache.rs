@@ -22,6 +22,8 @@ pub struct RowCells {
     pub time: String,
     pub component: String,
     pub thread: String,
+    /// The source file that wrote the row, as SCCM logs name it.
+    pub source: String,
     pub message: String,
     /// How the first highlight rule that matches the row shows on it.
     pub mark: Option<Mark>,
@@ -51,6 +53,7 @@ fn cells_from_text(log: &LogFile, text: &[u8]) -> RowCells {
         time: fields.stamp.map(display_time).unwrap_or_default(),
         component: encoding::display(fields.component).into_owned(),
         thread: encoding::display(fields.thread).into_owned(),
+        source: encoding::display(fields.source).into_owned(),
         message: encoding::display(first_line(fields.message)).into_owned(),
         mark: None,
     }
@@ -347,6 +350,7 @@ mod tests {
         let cells = wait_for(&cache, 0);
         assert_eq!(cells.message, "first");
         assert_eq!(cells.thread, "7");
+        assert_eq!(cells.source, "a.cpp");
     }
 
     #[test]

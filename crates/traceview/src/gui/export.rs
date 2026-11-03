@@ -75,8 +75,8 @@ impl Export {
         // A byte order mark tells Excel the file is UTF-8.
         output.write_all("\u{FEFF}".as_bytes())?;
         let mut text = String::from(match self.names {
-            Some(_) => "Row,File,Time,Level,Component,Thread,Message\r\n",
-            None => "Row,Time,Level,Component,Thread,Message\r\n",
+            Some(_) => "Row,File,Time,Level,Component,Thread,Source,Message\r\n",
+            None => "Row,Time,Level,Component,Thread,Source,Message\r\n",
         });
         let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
         let mut shown = self.rows.start;
@@ -114,7 +114,12 @@ impl Export {
                 }
                 text.push(',');
                 text.push_str(level_name(log.level(row)));
-                for value in [fields.component, fields.thread, fields.message] {
+                for value in [
+                    fields.component,
+                    fields.thread,
+                    fields.source,
+                    fields.message,
+                ] {
                     text.push(',');
                     cell(&encoding::display(value), &mut text);
                 }
@@ -171,9 +176,9 @@ mod tests {
         );
         assert_eq!(
             csv(&whole(log, 0..2)),
-            "\u{FEFF}Row,Time,Level,Component,Thread,Message\r\n\
-             1,2026-01-01 10:00:00.000,Error,app,,\"disk full, again\"\r\n\
-             2,,Information,,,\"plain \"\"quoted\"\" café\"\r\n"
+            "\u{FEFF}Row,Time,Level,Component,Thread,Source,Message\r\n\
+             1,2026-01-01 10:00:00.000,Error,app,,,\"disk full, again\"\r\n\
+             2,,Information,,,,\"plain \"\"quoted\"\" café\"\r\n"
         );
     }
 
@@ -214,9 +219,9 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "5,,Information,,,line 4",
-                "6,,Information,,,line 5",
-                "901,,Information,,,line 900"
+                "5,,Information,,,,line 4",
+                "6,,Information,,,,line 5",
+                "901,,Information,,,,line 900"
             ]
         );
         assert_eq!(done.load(Ordering::Relaxed), 3);
@@ -243,14 +248,14 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "\u{FEFF}Row,File,Time,Level,Component,Thread,Message"
+            "\u{FEFF}Row,File,Time,Level,Component,Thread,Source,Message"
         );
         assert_eq!(
             &lines[1..],
             [
-                "1,a.log,,Information,,,a0",
-                "2,b.log,,Information,,,b0",
-                "3,a.log,,Information,,,a1"
+                "1,a.log,,Information,,,,a0",
+                "2,b.log,,Information,,,,b0",
+                "3,a.log,,Information,,,,a1"
             ]
         );
     }
@@ -262,6 +267,6 @@ mod tests {
         let log = open(&dir, "a.log", &text);
         let output = csv(&whole(log, 0..5000));
         assert_eq!(output.lines().count(), 5001);
-        assert!(output.ends_with("5000,,Information,,,line 4999\r\n"));
+        assert!(output.ends_with("5000,,Information,,,,line 4999\r\n"));
     }
 }
