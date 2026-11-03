@@ -20,6 +20,8 @@ use super::settings::{self, Preset, Settings, Store};
 use super::shortcut_panel::{Choice, ShortcutPanel};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
+use super::themes::{self, FileTheme};
+use super::themes_panel::{Part as ThemesPart, ThemesPanel, ThemesResponse};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
@@ -97,6 +99,9 @@ pub mod command {
     pub const NEXT_TAB: u32 = 65;
     pub const PREVIOUS_TAB: u32 = 66;
     pub const FORMATS: u32 = 67;
+    pub const EDIT_THEME: u32 = 68;
+    /// Themes from files, in the order they load, from this number on.
+    pub const FILE_THEMES: u32 = 100;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,10 +119,21 @@ pub enum ThemeChoice {
     Fixed(&'static Theme),
 }
 
-/// The theme a menu command picks, if it picks one.
-fn theme_for_command(id: u32) -> Option<&'static Theme> {
+/// The built-in theme a menu command picks, if it picks one.
+fn builtin_theme_for(id: u32) -> Option<&'static Theme> {
     id.checked_sub(command::THEMES)
         .and_then(|index| Theme::ALL.get(index as usize).copied())
+}
+
+/// `base`, or `base 2`, `base 3` and so on, whichever isn't taken yet.
+fn free_theme_name(base: &str, taken: &[String]) -> String {
+    (1..)
+        .map(|number| match number {
+            1 => base.to_string(),
+            _ => format!("{base} {number}"),
+        })
+        .find(|name| !themes::name_taken(name, taken))
+        .unwrap_or_else(|| base.to_string())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -334,6 +350,13 @@ pub struct Workspace {
     pub fonts_panel: Option<FontsPanel>,
     /// The log formats editor, while it's open.
     pub formats_panel: Option<FormatsPanel>,
+    /// The theme editor, while it's open.
+    pub themes_panel: Option<ThemesPanel>,
+    /// Themes read from files, after the built-in ones.
+    file_themes: Vec<FileTheme>,
+    /// Where theme files go, beside the settings file. `None` when settings
+    /// aren't saved, as in tests.
+    themes_folder: Option<PathBuf>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
     /// Which command each shortcut runs.
@@ -423,6 +446,9 @@ impl Workspace {
             columns_panel: None,
             fonts_panel: None,
             formats_panel: None,
+            themes_panel: None,
+            file_themes: Vec::new(),
+            themes_folder: None,
             rules: Arc::default(),
             keymap: Keymap::new(&BTreeMap::new()),
             formats: Vec::new(),
@@ -445,8 +471,22 @@ impl Workspace {
     /// Starts from saved settings, and saves changes back through `store`.
     /// `problem` says why the settings file couldn't be used, if it couldn't.
     pub fn use_settings(&mut self, settings: Settings, store: Store, problem: Option<String>) {
-        self.theme_choice =
-            Theme::by_name(&settings.theme).map_or(ThemeChoice::System, ThemeChoice::Fixed);
+        self.themes_folder = store.folder().map(|folder| folder.join(themes::FOLDER));
+        let (file_themes, theme_problems) = self
+            .themes_folder
+            .as_deref()
+            .map(themes::load)
+            .unwrap_or_default();
+        self.file_themes = file_themes;
+        self.theme_choice = self
+            .theme_named(&settings.theme)
+            .map_or(ThemeChoice::System, ThemeChoice::Fixed);
+        // A settings problem matters more than a theme file's.
+        let problem = problem.or_else(|| match theme_problems.as_slice() {
+            [] => None,
+            [only] => Some(only.clone()),
+            [first, rest @ ..] => Some(format!("{first}, and {} more", rest.len())),
+        });
         self.show_details = settings.details_pane;
         self.show_sidebar = settings.sidebar;
         self.show_chips = settings.chips;
@@ -559,6 +599,24 @@ impl Workspace {
         self.store.save(&self.settings);
     }
 
+    /// A built-in theme or one from a file, by name in any case.
+    fn theme_named(&self, name: &str) -> Option<&'static Theme> {
+        Theme::by_name(name).or_else(|| {
+            self.file_themes
+                .iter()
+                .map(|file| file.theme)
+                .find(|theme| theme.name.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// The theme a menu command picks, if it picks one.
+    fn theme_for(&self, id: u32) -> Option<&'static Theme> {
+        builtin_theme_for(id).or_else(|| {
+            let index = id.checked_sub(command::FILE_THEMES)? as usize;
+            self.file_themes.get(index).map(|file| file.theme)
+        })
+    }
+
     pub fn theme(&self) -> &'static Theme {
         match self.theme_choice {
             ThemeChoice::System => Theme::for_system(self.system_is_dark),
@@ -669,6 +727,7 @@ impl Workspace {
                     ),
                     item("Columns...", command::COLUMNS),
                     item("Fonts...", command::FONTS),
+                    item("Edit theme...", command::EDIT_THEME),
                     item("Larger log text", command::LARGER_TEXT),
                     item("Smaller log text", command::SMALLER_TEXT),
                     MenuItem::Separator,
@@ -678,10 +737,17 @@ impl Workspace {
                     ),
                 ]
                 .into_iter()
-                .chain(Theme::ALL.iter().zip(command::THEMES..).map(|(choice, id)| {
-                    let name = format!("Theme: {}", choice.name);
-                    checked(item(&name, id), matches!(theme, ThemeChoice::Fixed(fixed) if fixed.name == choice.name))
-                }))
+                .chain(
+                    Theme::ALL
+                        .iter()
+                        .copied()
+                        .zip(command::THEMES..)
+                        .chain(self.file_themes.iter().map(|file| file.theme).zip(command::FILE_THEMES..))
+                        .map(|(choice, id)| {
+                            let name = format!("Theme: {}", choice.name);
+                            checked(item(&name, id), matches!(theme, ThemeChoice::Fixed(fixed) if fixed.name == choice.name))
+                        }),
+                )
                 .collect(),
             },
             Menu {
@@ -999,9 +1065,10 @@ impl Workspace {
                 }
             }
             command::THEME_SYSTEM => self.theme_choice = ThemeChoice::System,
-            id if theme_for_command(id).is_some() => {
-                self.theme_choice =
-                    theme_for_command(id).map_or(ThemeChoice::System, ThemeChoice::Fixed);
+            id if self.theme_for(id).is_some() => {
+                self.theme_choice = self
+                    .theme_for(id)
+                    .map_or(ThemeChoice::System, ThemeChoice::Fixed);
             }
             command::ERROR_LOOKUP => {
                 // Start with the selected row's first code, as most lookups are for that.
@@ -1041,6 +1108,7 @@ impl Workspace {
                 commands.push(Command::SetImeEnabled(false));
             }
             command::FONTS => self.open_fonts(FontItem::LogFont, commands),
+            command::EDIT_THEME => self.open_theme_editor(commands),
             command::FORMATS => {
                 let sample = self.read_sample();
                 self.close_panels();
@@ -1073,7 +1141,7 @@ impl Workspace {
                 | command::THEME_SYSTEM
                 | command::HIGHLIGHTING
                 | command::RULES
-        ) || theme_for_command(id).is_some()
+        ) || self.theme_for(id).is_some()
         {
             self.save_settings();
         }
@@ -1195,6 +1263,113 @@ impl Workspace {
             self.open_palette(Mode::Font(target), "", commands);
         } else if response.closed {
             self.fonts_panel = None;
+            commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    /// Opens the theme editor on the theme in use. A built-in theme is edited
+    /// as a copy, made with the first change.
+    fn open_theme_editor(&mut self, commands: &mut Commands) {
+        let theme = self.theme();
+        let path = self
+            .file_themes
+            .iter()
+            .find(|file| file.theme.name == theme.name)
+            .map(|file| file.path.clone());
+        let taken = themes::taken_names(
+            &self.file_themes,
+            self.themes_folder.as_deref(),
+            path.as_deref(),
+        );
+        let name = match path {
+            Some(_) => theme.name.to_string(),
+            None => free_theme_name(&format!("{} copy", theme.name), &taken),
+        };
+        self.close_panels();
+        self.themes_panel = Some(ThemesPanel::new(&name, *theme, path, taken));
+        commands.push(Command::SetImeEnabled(true));
+    }
+
+    /// The theme editor takes all input while it's open.
+    fn themes_event(&mut self, event: Event, canvas: &mut dyn Canvas, commands: &mut Commands) {
+        let hwnd = self.hwnd;
+        let Some(panel) = &mut self.themes_panel else {
+            return;
+        };
+        let mut response = panel.handle(event, canvas);
+        if response.wants_paste {
+            if let Some(text) = tv_platform::clipboard_text(hwnd) {
+                response.changed |= panel.paste(&text);
+                response.redraw = true;
+            }
+        }
+        if let Some(text) = response.copy.take() {
+            commands.push(Command::SetClipboard(text));
+        }
+        self.themes_responded(&response, commands);
+    }
+
+    /// Acts on what the theme editor asked for. A changed theme is used at
+    /// once and saved to its file, which a new name renames.
+    pub fn themes_responded(&mut self, response: &ThemesResponse, commands: &mut Commands) {
+        if response.changed {
+            if let Some(panel) = &mut self.themes_panel {
+                let kept = themes::keep(&panel.name, panel.theme);
+                let old = panel.path.clone();
+                // A file keeps its own name until the theme is renamed.
+                let renamed = self
+                    .file_themes
+                    .iter()
+                    .find(|file| Some(&file.path) == old.as_ref())
+                    .is_none_or(|file| file.theme.name != panel.name);
+                let target = match &old {
+                    Some(old) if !renamed => Some(old.clone()),
+                    _ => self
+                        .themes_folder
+                        .as_ref()
+                        .map(|folder| folder.join(themes::file_name(&panel.name))),
+                };
+                if let (Some(old), Some(new)) = (&old, &target) {
+                    if old != new && old.is_file() {
+                        let _ = std::fs::rename(old, new);
+                    }
+                }
+                let saved = target.as_deref().map(|path| themes::save(path, kept));
+                panel.path = target.clone();
+                self.notice = match saved {
+                    Some(Ok(())) => None,
+                    Some(Err(error)) => Some(format!("Couldn't save the theme: {error}")),
+                    None => Some(
+                        "The theme can't be saved, because there's no settings folder".to_string(),
+                    ),
+                };
+                if let Some(path) = target {
+                    let entry = self
+                        .file_themes
+                        .iter_mut()
+                        .find(|file| Some(&file.path) == old.as_ref());
+                    match entry {
+                        Some(file) => *file = FileTheme { theme: kept, path },
+                        None => self.file_themes.push(FileTheme { theme: kept, path }),
+                    }
+                }
+                self.theme_choice = ThemeChoice::Fixed(kept);
+                self.save_settings();
+            }
+        }
+        if response.open_folder {
+            let shown = self
+                .themes_folder
+                .as_deref()
+                .is_some_and(tv_platform::show_folder);
+            if !shown {
+                self.notice = Some("The themes folder couldn't be shown".to_string());
+            }
+        }
+        if response.closed {
+            self.themes_panel = None;
             commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
         }
         commands.redraw();
@@ -1707,6 +1882,7 @@ impl Workspace {
         self.columns_panel = None;
         self.fonts_panel = None;
         self.formats_panel = None;
+        self.themes_panel = None;
         self.shortcut_panel = None;
     }
 
@@ -1894,6 +2070,10 @@ impl Workspace {
         }
         if self.formats_panel.is_some() {
             self.formats_event(event, canvas, commands);
+            return;
+        }
+        if self.themes_panel.is_some() {
+            self.themes_event(event, canvas, commands);
             return;
         }
         if self.lookup.is_some() {
@@ -2254,6 +2434,9 @@ impl Workspace {
         if let Some(panel) = &mut self.formats_panel {
             panel.arrange(below_menu, canvas, theme);
         }
+        if let Some(panel) = &mut self.themes_panel {
+            panel.arrange(below_menu, canvas, theme);
+        }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
             let (Some(index), Some(pane)) = (index, pane) else {
@@ -2459,6 +2642,12 @@ impl Workspace {
                 caret = Some(field_caret);
             }
         }
+        if let Some(panel) = &mut self.themes_panel {
+            let field_caret = panel.draw(canvas, theme);
+            if panel.focus == ThemesPart::Field {
+                caret = Some(field_caret);
+            }
+        }
 
         self.menu.draw_bar(canvas, layout.menu, theme);
         self.menu.draw_popup(canvas, theme);
@@ -2503,6 +2692,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use tv_ui::recording::RecordingCanvas;
+    use tv_ui::Color;
 
     const SIZE: (f32, f32) = (1200.0, 700.0);
     const NONE: Modifiers = Modifiers {
@@ -3068,6 +3258,74 @@ mod tests {
         assert_eq!(restored.theme().name, "Console");
         assert!(!restored.show_details);
         assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
+    }
+
+    fn retype_theme_box(workspace: &mut Workspace, text: &str) {
+        workspace.themes_panel.as_mut().unwrap().field.select_all();
+        type_text(workspace, text);
+    }
+
+    #[test]
+    fn editing_a_built_in_theme_saves_a_copy_that_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let folder = dir.path().join(themes::FOLDER);
+        // A hand-edited file with a mistake isn't loaded, but isn't written over either.
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("Classic copy.toml"),
+            "name = \"Classic copy\"\nsparkle = 1\n",
+        )
+        .unwrap();
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        assert!(first
+            .status()
+            .contains("Theme file Classic copy.toml wasn't used"));
+        first.run_command(command::THEMES, &mut Commands::default());
+        assert_eq!(first.theme().name, "Classic");
+        first.run_command(command::EDIT_THEME, &mut Commands::default());
+        let panel = first.themes_panel.as_ref().unwrap();
+        assert_eq!(panel.name, "Classic copy 2");
+        assert!(panel.path.is_none());
+
+        send(&mut first, Event::KeyDown(Key::Down, NONE));
+        retype_theme_box(&mut first, "#102030");
+        assert_eq!(first.theme().name, "Classic copy 2");
+        assert_eq!(first.theme().grid_background, Color::rgb(0x10_20_30));
+        assert_ne!(
+            Theme::CLASSIC.grid_background,
+            Color::rgb(0x10_20_30),
+            "built-ins never change"
+        );
+        assert!(folder.join("Classic copy 2.toml").is_file());
+
+        // A new name renames the file, on Enter.
+        first.themes_panel.as_mut().unwrap().choose_option(1);
+        retype_theme_box(&mut first, "Paper");
+        send(&mut first, Event::KeyDown(Key::Enter, NONE));
+        assert!(folder.join("Paper.toml").is_file());
+        assert!(!folder.join("Classic copy 2.toml").exists());
+        assert!(folder.join("Classic copy.toml").is_file());
+        send(&mut first, Event::KeyDown(Key::Escape, NONE));
+        assert!(first.themes_panel.is_none());
+        assert_eq!(first.file_themes.len(), 1);
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        assert_eq!(second.theme().name, "Paper");
+        assert_eq!(second.theme().grid_background, Color::rgb(0x10_20_30));
+        // A file theme is edited in place.
+        second.run_command(command::EDIT_THEME, &mut Commands::default());
+        let panel = second.themes_panel.as_ref().unwrap();
+        assert_eq!(panel.name, "Paper");
+        assert_eq!(
+            panel.path.as_deref(),
+            Some(folder.join("Paper.toml").as_path())
+        );
     }
 
     fn is_marked(workspace: &Workspace, row: usize) -> bool {

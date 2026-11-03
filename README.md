@@ -45,10 +45,6 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+H | Highlight rules: color or mark rows that match, as in `download failed level:error` |
 | Drag a header, or its edge | Move or resize a column. Right-click the header, or use View > Columns, to show and hide them |
 | Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Larger, smaller or default log text. View > Fonts picks fonts and row spacing |
-
-Every shortcut here can be changed, and any command can be given one, in Tools > Keyboard shortcuts.
-
-Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a regex whose named groups say where the time, level, component, thread, source and message are.
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |
@@ -57,6 +53,12 @@ Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a r
 | Ctrl+U | Pause live updates |
 | Ctrl+Shift+M | Merge the open logs into one timeline |
 | Alt or F10 | The menus |
+
+Every shortcut here can be changed, and any command can be given one, in Tools > Keyboard shortcuts.
+
+Logs TraceView doesn't know can be taught to it in Tools > Log formats, with a regex whose named groups say where the time, level, component, thread, source and message are.
+
+View > Edit theme changes any color of the theme in use, with the window recoloring as you type. Editing a built-in theme makes a copy, saved as a small file in the `themes` folder beside `traceview.toml`. Copy a file into that folder to share a theme.
 
 Search a log from the command line, with results as JSON:
 

@@ -14,6 +14,7 @@ use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
 use super::shortcut_panel::{self, ShortcutPanel};
+use super::themes_panel::{Part as ThemesPart, ThemesPanel};
 use super::workspace::{Focus, Workspace};
 use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
@@ -69,6 +70,12 @@ const FORMATS_LIST_ID: NodeId = NodeId(29);
 const FORMATS_NOTE_ID: NodeId = NodeId(30);
 const FIRST_FORMAT_OPTION_ID: u64 = 700;
 const FIRST_FORMAT_ITEM_ID: u64 = 7_400;
+const THEMES_ID: NodeId = NodeId(31);
+const THEMES_FIELD_ID: NodeId = NodeId(32);
+const THEMES_LIST_ID: NodeId = NodeId(33);
+const THEMES_NOTE_ID: NodeId = NodeId(34);
+const FIRST_THEME_OPTION_ID: u64 = 720;
+const FIRST_THEME_ITEM_ID: u64 = 7_500;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -450,6 +457,105 @@ fn act_on_formats(workspace: &mut Workspace, request: &ActionRequest, commands: 
         workspace.formats_responded(&response, commands);
     } else if target == FORMATS_FIELD_ID {
         panel.focus = FormatsPart::Field;
+    }
+}
+
+/// The theme editor, as a modal dialog. Returns the node with focus.
+fn themes_nodes(panel: &ThemesPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let mut field = Node::new(Role::TextInput);
+    field.set_label(panel.field_label());
+    field.set_value(panel.field.text());
+    field.set_bounds(physical(panel.field_rect(), scale));
+    field.add_action(Action::Focus);
+    nodes.push((THEMES_FIELD_ID, field));
+    let mut children = vec![THEMES_FIELD_ID];
+    let mut focus = THEMES_FIELD_ID;
+
+    // Color and name are a choice of one, dark stays pressed, and the folder
+    // is a button.
+    for (index, chip) in panel.option_chips().iter().enumerate() {
+        let Some(rect) = panel.options.chip_rect(index) else {
+            continue;
+        };
+        let id = NodeId(FIRST_THEME_OPTION_ID + index as u64);
+        let mut node = Node::new(if index < 2 {
+            Role::RadioButton
+        } else {
+            Role::Button
+        });
+        node.set_label(chip.label.as_str());
+        if index < 3 {
+            node.set_toggled(chip.active.into());
+        }
+        node.add_action(Action::Click);
+        node.add_action(Action::Focus);
+        node.set_bounds(physical(rect, scale));
+        if panel.focus == ThemesPart::Options && panel.options.focus() == Some(index) {
+            focus = id;
+        }
+        children.push(id);
+        nodes.push((id, node));
+    }
+
+    let list = &panel.list;
+    let mut options = Vec::new();
+    for index in list.visible_items() {
+        let (Some(rect), ListItem::Entry { label, detail, .. }) =
+            (list.item_rect(index), &list.items[index])
+        else {
+            continue;
+        };
+        let id = NodeId(FIRST_THEME_ITEM_ID + index as u64);
+        let mut node = Node::new(Role::ListBoxOption);
+        node.set_label(format!("{label}, {detail}"));
+        node.set_selected(panel.selected() == index);
+        node.set_bounds(physical(rect, scale));
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        if panel.focus == ThemesPart::List && panel.selected() == index {
+            focus = id;
+        }
+        options.push(id);
+        nodes.push((id, node));
+    }
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Colors");
+    list_node.set_children(options);
+    nodes.push((THEMES_LIST_ID, list_node));
+    children.push(THEMES_LIST_ID);
+
+    if let Some(note) = panel.note() {
+        let mut node = Node::new(Role::Label);
+        node.set_value(note);
+        nodes.push((THEMES_NOTE_ID, node));
+        children.push(THEMES_NOTE_ID);
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(panel.title());
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    nodes.push((THEMES_ID, dialog));
+    focus
+}
+
+/// Carries out a screen reader's request in the theme editor.
+fn act_on_themes(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Commands) {
+    let Some(panel) = workspace.themes_panel.as_mut() else {
+        return;
+    };
+    let target = request.target_node;
+    if let Some(index) = in_range(target, FIRST_THEME_OPTION_ID, panel.option_chips().len()) {
+        panel.focus = ThemesPart::Options;
+        if request.action == Action::Click {
+            let response = panel.choose_option(index);
+            workspace.themes_responded(&response, commands);
+        }
+    } else if let Some(index) = in_range(target, FIRST_THEME_ITEM_ID, panel.list.items.len()) {
+        panel.focus = ThemesPart::List;
+        panel.select(index);
+    } else if target == THEMES_FIELD_ID {
+        panel.focus = ThemesPart::Field;
     }
 }
 
@@ -910,6 +1016,13 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     if formats_focus.is_some() {
         window_children.push(FORMATS_ID);
     }
+    let themes_focus = workspace
+        .themes_panel
+        .as_ref()
+        .map(|panel| themes_nodes(panel, scale, &mut nodes));
+    if themes_focus.is_some() {
+        window_children.push(THEMES_ID);
+    }
 
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
@@ -930,6 +1043,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         .or(fonts_focus)
         .or(shortcut_focus)
         .or(formats_focus)
+        .or(themes_focus)
         .unwrap_or(match workspace.focus {
             _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
             _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
@@ -960,6 +1074,8 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 }
             } else if workspace.formats_panel.is_some() {
                 act_on_formats(workspace, request, commands);
+            } else if workspace.themes_panel.is_some() {
+                act_on_themes(workspace, request, commands);
             } else if workspace.rules_panel.is_some() {
                 act_on_rules(workspace, request);
             } else if workspace.columns_panel.is_some() {

@@ -29,6 +29,8 @@ mod sidebar;
 #[cfg(test)]
 mod snapshots;
 mod tab;
+mod themes;
+mod themes_panel;
 mod watch;
 mod workspace;
 

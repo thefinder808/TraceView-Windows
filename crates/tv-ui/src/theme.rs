@@ -382,146 +382,247 @@ impl Theme {
             .into_iter()
             .find(|theme| theme.name.eq_ignore_ascii_case(name))
     }
+
+    /// Every pair whose contrast falls short: text needs 4.5:1 against what
+    /// it's drawn on, as WCAG asks, and bars and markers need 3:1. Each says
+    /// which pair it is and by how much, for a theme file's author.
+    pub fn contrast_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let mut check = |name: String, first: Color, second: Color, needed: f64| {
+            let ratio = contrast(first, second);
+            if ratio < needed {
+                problems.push(format!("{name}: {ratio:.1} to 1, below {needed}"));
+            }
+        };
+        for (name, text, background) in self.text_pairs() {
+            check(format!("{name} text"), text, background, 4.5);
+        }
+        for (name, mark, background) in [
+            ("Info bar", self.histogram_info, self.histogram_background),
+            (
+                "Warning bar",
+                self.histogram_warning,
+                self.histogram_background,
+            ),
+            ("Error bar", self.histogram_error, self.histogram_background),
+            ("Bookmark", self.bookmark, self.grid_background),
+        ] {
+            check(name.to_string(), mark, background, 3.0);
+        }
+        // A rule's row is read like any other, its marker can land on a
+        // severity row, and the rules editor writes each color's name in its
+        // marker shade.
+        for (name, color) in RULE_COLOR_NAMES.iter().zip(self.rule_colors) {
+            for (part, first, second, needed) in [
+                ("row text", color.text, color.row, 4.5),
+                (
+                    "name in the editor",
+                    color.marker,
+                    self.chip_background,
+                    4.5,
+                ),
+                ("marker", color.marker, self.grid_background, 4.5),
+                ("marker on a warning", color.marker, self.warning_row, 3.0),
+                ("marker on an error", color.marker, self.error_row, 3.0),
+                (
+                    "marker on a critical row",
+                    color.marker,
+                    self.critical_row,
+                    3.0,
+                ),
+            ] {
+                check(format!("{name} rule {part}"), first, second, needed);
+            }
+        }
+        problems
+    }
+
+    fn text_pairs(&self) -> [(&'static str, Color, Color); 28] {
+        [
+            ("Primary", self.primary_text, self.grid_background),
+            ("Secondary", self.secondary_text, self.grid_background),
+            ("Row number", self.tertiary_text, self.grid_background),
+            ("Timestamp", self.timestamp_text, self.grid_background),
+            ("Component", self.component_text, self.grid_background),
+            ("Notice", self.notice_text, self.grid_background),
+            ("Debug", self.debug_text, self.grid_background),
+            ("Warning", self.warning_text, self.warning_row),
+            ("Error", self.error_text, self.error_row),
+            ("Critical", self.critical_text, self.critical_row),
+            ("Selected", self.selected_text, self.selected_row),
+            ("Header", self.primary_text, self.header_background),
+            ("Status", self.secondary_text, self.status_background),
+            ("Input", self.primary_text, self.input_background),
+            ("Panel", self.primary_text, self.panel_background),
+            ("Hover", self.primary_text, self.hover_background),
+            ("Find match", self.primary_text, self.highlight_row),
+            ("Error find match", self.error_text, self.highlight_row),
+            ("Error chip", self.histogram_error, self.chip_background),
+            ("Warning chip", self.histogram_warning, self.chip_background),
+            ("Notice chip", self.notice_text, self.chip_background),
+            ("Debug chip", self.debug_text, self.chip_background),
+            ("Text selection", self.primary_text, self.text_selection),
+            ("Menu label", self.secondary_text, self.panel_background),
+            ("Section", self.section_text, self.sidebar_background),
+            ("Sidebar", self.primary_text, self.sidebar_background),
+            ("Chip", self.primary_text, self.chip_background),
+            (
+                "Active chip",
+                self.chip_active_text,
+                self.chip_active_background,
+            ),
+        ]
+    }
+}
+
+/// WCAG relative luminance contrast between two colors, from 1 to 21.
+pub fn contrast(first: Color, second: Color) -> f64 {
+    let luminance = |color: Color| {
+        let channel = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    };
+    let (a, b) = (luminance(first), luminance(second));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// Names each color field once, for theme files: [`COLOR_TOKENS`] lists the
+/// names, and `color` and `set_color` reach a field by its name.
+macro_rules! color_tokens {
+    ($($field:ident),* $(,)?) => {
+        /// Every color a theme file can set, by the name it uses. The highlight
+        /// rule colors are set separately, by color name.
+        pub const COLOR_TOKENS: &[&str] = &[$(stringify!($field)),*];
+
+        impl Theme {
+            pub fn color(&self, token: &str) -> Option<Color> {
+                match token {
+                    $(stringify!($field) => Some(self.$field),)*
+                    _ => None,
+                }
+            }
+
+            /// Returns false for a name that isn't a color token.
+            pub fn set_color(&mut self, token: &str, color: Color) -> bool {
+                match token {
+                    $(stringify!($field) => {
+                        self.$field = color;
+                        true
+                    })*
+                    _ => false,
+                }
+            }
+        }
+    };
+}
+
+// Every `Color` field of `Theme` belongs here, so theme files can set it.
+color_tokens!(
+    window_background,
+    grid_background,
+    header_background,
+    status_background,
+    scrollbar_track,
+    scrollbar_thumb,
+    border,
+    primary_text,
+    secondary_text,
+    tertiary_text,
+    timestamp_text,
+    component_text,
+    placeholder_text,
+    selected_row,
+    selected_text,
+    warning_row,
+    warning_text,
+    error_row,
+    error_text,
+    critical_row,
+    critical_text,
+    notice_text,
+    debug_text,
+    accent,
+    input_background,
+    panel_background,
+    hover_background,
+    highlight_row,
+    text_selection,
+    sidebar_background,
+    section_text,
+    chip_background,
+    chip_active_background,
+    chip_active_text,
+    histogram_background,
+    histogram_info,
+    histogram_warning,
+    histogram_error,
+    histogram_window,
+    bookmark,
+);
+
+/// A token's name as people read it: `grid_background` is "Grid background".
+pub fn token_label(token: &str) -> String {
+    let spaced = token.replace('_', " ");
+    let mut characters = spaced.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// WCAG relative luminance contrast, which log text has to meet.
-    fn contrast(first: Color, second: Color) -> f64 {
-        let luminance = |color: Color| {
-            let channel = |value: u8| {
-                let value = f64::from(value) / 255.0;
-                if value <= 0.03928 {
-                    value / 12.92
-                } else {
-                    ((value + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
-        };
-        let (a, b) = (luminance(first), luminance(second));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
-
     #[test]
-    fn log_text_meets_contrast_requirements_in_every_theme() {
+    fn every_theme_meets_its_contrast_limits() {
         for theme in Theme::ALL {
-            for (name, text, background) in [
-                ("primary", theme.primary_text, theme.grid_background),
-                ("secondary", theme.secondary_text, theme.grid_background),
-                ("row number", theme.tertiary_text, theme.grid_background),
-                ("timestamp", theme.timestamp_text, theme.grid_background),
-                ("component", theme.component_text, theme.grid_background),
-                ("notice", theme.notice_text, theme.grid_background),
-                ("debug", theme.debug_text, theme.grid_background),
-                ("warning", theme.warning_text, theme.warning_row),
-                ("error", theme.error_text, theme.error_row),
-                ("critical", theme.critical_text, theme.critical_row),
-                ("selected", theme.selected_text, theme.selected_row),
-                ("header", theme.primary_text, theme.header_background),
-                ("status", theme.secondary_text, theme.status_background),
-                ("input", theme.primary_text, theme.input_background),
-                ("panel", theme.primary_text, theme.panel_background),
-                ("hover", theme.primary_text, theme.hover_background),
-                ("find match", theme.primary_text, theme.highlight_row),
-                ("error find match", theme.error_text, theme.highlight_row),
-                ("error chip", theme.histogram_error, theme.chip_background),
-                (
-                    "warning chip",
-                    theme.histogram_warning,
-                    theme.chip_background,
-                ),
-                ("notice chip", theme.notice_text, theme.chip_background),
-                ("debug chip", theme.debug_text, theme.chip_background),
-                ("text selection", theme.primary_text, theme.text_selection),
-                ("menu label", theme.secondary_text, theme.panel_background),
-                ("section", theme.section_text, theme.sidebar_background),
-                ("sidebar", theme.primary_text, theme.sidebar_background),
-                ("chip", theme.primary_text, theme.chip_background),
-                (
-                    "active chip",
-                    theme.chip_active_text,
-                    theme.chip_active_background,
-                ),
-            ] {
-                let ratio = contrast(text, background);
-                assert!(
-                    ratio >= 4.5,
-                    "{} theme, {name} text: {ratio:.2} is below 4.5",
-                    theme.name
-                );
-            }
+            assert_eq!(
+                theme.contrast_problems(),
+                Vec::<String>::new(),
+                "{} theme",
+                theme.name
+            );
         }
     }
 
-    /// Bars and markers are not text, so WCAG 1.4.11 asks for 3:1.
     #[test]
-    fn histogram_bars_and_bookmarks_stand_out_in_every_theme() {
-        for theme in Theme::ALL {
-            for (name, mark, background) in [
-                ("info bar", theme.histogram_info, theme.histogram_background),
-                (
-                    "warning bar",
-                    theme.histogram_warning,
-                    theme.histogram_background,
-                ),
-                (
-                    "error bar",
-                    theme.histogram_error,
-                    theme.histogram_background,
-                ),
-                ("bookmark", theme.bookmark, theme.grid_background),
-            ] {
-                let ratio = contrast(mark, background);
-                assert!(
-                    ratio >= 3.0,
-                    "{} theme, {name}: {ratio:.2} is below 3",
-                    theme.name
-                );
-            }
-        }
+    fn a_weak_pair_is_named_with_its_ratio() {
+        let mut theme = Theme::CLASSIC;
+        theme.primary_text = Color::rgb(0xBBBBBB);
+        let problems = theme.contrast_problems();
+        assert!(
+            problems[0].starts_with("Primary text: 1.9 to 1, below 4.5"),
+            "{problems:?}"
+        );
     }
 
-    /// A rule's row is read like any other, its marker can land on a severity
-    /// row, and the editor writes each color's name in its marker shade.
     #[test]
-    fn highlight_rule_colors_stay_readable_in_every_theme() {
-        for theme in Theme::ALL {
-            for (name, color) in RULE_COLOR_NAMES.iter().zip(theme.rule_colors) {
-                for (part, ratio, needed) in [
-                    ("row text", contrast(color.text, color.row), 4.5),
-                    (
-                        "name in the editor",
-                        contrast(color.marker, theme.chip_background),
-                        4.5,
-                    ),
-                    ("marker", contrast(color.marker, theme.grid_background), 4.5),
-                    (
-                        "marker on a warning",
-                        contrast(color.marker, theme.warning_row),
-                        3.0,
-                    ),
-                    (
-                        "marker on an error",
-                        contrast(color.marker, theme.error_row),
-                        3.0,
-                    ),
-                    (
-                        "marker on a critical row",
-                        contrast(color.marker, theme.critical_row),
-                        3.0,
-                    ),
-                ] {
-                    assert!(
-                        ratio >= needed,
-                        "{} theme, {name} {part}: {ratio:.2} is below {needed}",
-                        theme.name
-                    );
-                }
-            }
+    fn every_color_is_a_token() {
+        // Each field set to a different color, then read back by its token.
+        let mut theme = Theme::CLASSIC;
+        for (index, token) in COLOR_TOKENS.iter().enumerate() {
+            assert!(
+                theme.set_color(token, Color::rgb(index as u32 + 1)),
+                "{token}"
+            );
         }
+        for (index, token) in COLOR_TOKENS.iter().enumerate() {
+            assert_eq!(
+                theme.color(token),
+                Some(Color::rgb(index as u32 + 1)),
+                "{token}"
+            );
+        }
+        assert!(!theme.set_color("sparkle", Color::rgb(0)));
+        assert_eq!(theme.color("name"), None);
+        assert_eq!(COLOR_TOKENS.len(), 40);
+        assert_eq!(token_label("grid_background"), "Grid background");
     }
 
     #[test]
