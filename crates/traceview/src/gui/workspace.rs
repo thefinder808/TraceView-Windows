@@ -8,6 +8,7 @@ use super::command_palette::{Action, CommandPalette, Mode};
 use super::details::PANE_HEIGHT;
 use super::fonts::{self, Spacing, Target as FontTarget, LOG_SIZES};
 use super::fonts_panel::{FontsPanel, FontsResponse, Item as FontItem};
+use super::keymap::{self, Keymap};
 use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
@@ -15,8 +16,10 @@ use super::row_cache::{cells_from_row, SharedLog};
 use super::rules::RuleSet;
 use super::rules_panel::{Part, RulesPanel};
 use super::settings::{Preset, Settings, Store};
+use super::shortcut_panel::{Choice, ShortcutPanel};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -87,6 +90,9 @@ pub mod command {
     pub const LARGER_TEXT: u32 = 61;
     pub const SMALLER_TEXT: u32 = 62;
     pub const DEFAULT_TEXT: u32 = 63;
+    pub const KEYS: u32 = 64;
+    pub const NEXT_TAB: u32 = 65;
+    pub const PREVIOUS_TAB: u32 = 66;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,6 +330,12 @@ pub struct Workspace {
     pub fonts_panel: Option<FontsPanel>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
+    /// Which command each shortcut runs.
+    keymap: Keymap,
+    /// The shortcut being changed, while it waits for keys.
+    pub shortcut_panel: Option<ShortcutPanel>,
+    /// What was typed in the list of shortcuts, to bring it back after one changes.
+    keys_query: String,
     settings: Settings,
     store: Store,
     menu: MenuBar,
@@ -403,6 +415,9 @@ impl Workspace {
             columns_panel: None,
             fonts_panel: None,
             rules: Arc::default(),
+            keymap: Keymap::new(&BTreeMap::new()),
+            shortcut_panel: None,
+            keys_query: String::new(),
             settings: Settings::default(),
             store: Store::disabled(),
             menu: MenuBar::default(),
@@ -430,6 +445,7 @@ impl Workspace {
         self.settings = settings;
         self.store = store;
         self.notice = problem;
+        self.keymap = Keymap::new(&self.settings.keys);
         self.apply_rules();
     }
 
@@ -584,14 +600,16 @@ impl Workspace {
     fn build_menus(&self) -> Vec<Menu> {
         let theme = self.theme_choice;
         let paused = self.active_tab().is_some_and(Tab::is_paused);
+        // Shortcuts come from the keymap, so menus always show the current ones.
+        let item = |label: &str, id: u32| MenuItem::command(label, &self.keymap.label_for(id), id);
         vec![
             Menu {
                 title: "File".to_string(),
                 items: vec![
-                    MenuItem::command("Open...", "Ctrl+O", command::OPEN),
-                    MenuItem::command("Merge open logs", "Ctrl+Shift+M", command::MERGE),
-                    MenuItem::command("Export rows as CSV...", "", command::EXPORT),
-                    MenuItem::command("Close tab", "Ctrl+W", command::CLOSE_TAB),
+                    item("Open...", command::OPEN),
+                    item("Merge open logs", command::MERGE),
+                    item("Export rows as CSV...", command::EXPORT),
+                    item("Close tab", command::CLOSE_TAB),
                     MenuItem::Separator,
                     MenuItem::command("Exit", "Alt+F4", command::EXIT),
                 ],
@@ -602,65 +620,66 @@ impl Workspace {
                     MenuItem::command("Copy rows", "Ctrl+C", command::COPY),
                     MenuItem::command("Select all", "Ctrl+A", command::SELECT_ALL),
                     MenuItem::Separator,
-                    MenuItem::command("Find...", "Ctrl+F", command::FIND),
-                    MenuItem::command("Find next", "F3", command::FIND_NEXT),
-                    MenuItem::command("Find previous", "Shift+F3", command::FIND_PREVIOUS),
-                    MenuItem::command("Go to row...", "Ctrl+G", command::GO_TO_ROW),
-                    MenuItem::command("Next error", "Ctrl+E", command::NEXT_ERROR),
-                    MenuItem::command("Previous error", "Ctrl+Shift+E", command::PREVIOUS_ERROR),
+                    item("Find...", command::FIND),
+                    item("Find next", command::FIND_NEXT),
+                    item("Find previous", command::FIND_PREVIOUS),
+                    item("Go to row...", command::GO_TO_ROW),
+                    item("Next error", command::NEXT_ERROR),
+                    item("Previous error", command::PREVIOUS_ERROR),
                     MenuItem::Separator,
-                    MenuItem::command("Toggle bookmark", "Ctrl+D", command::BOOKMARK),
-                    MenuItem::command("Next bookmark", "F2", command::NEXT_BOOKMARK),
-                    MenuItem::command("Previous bookmark", "Shift+F2", command::PREVIOUS_BOOKMARK),
+                    item("Toggle bookmark", command::BOOKMARK),
+                    item("Next bookmark", command::NEXT_BOOKMARK),
+                    item("Previous bookmark", command::PREVIOUS_BOOKMARK),
                 ],
             },
             Menu {
                 title: "View".to_string(),
                 items: vec![
-                    MenuItem::command("Filter...", "Ctrl+Shift+F", command::FILTER),
-                    MenuItem::command("Clear filter", "", command::CLEAR_FILTER),
-                    MenuItem::command("Save filter as preset...", "", command::SAVE_PRESET),
-                    MenuItem::command("Command palette...", "Ctrl+K", command::PALETTE),
+                    item("Filter...", command::FILTER),
+                    item("Clear filter", command::CLEAR_FILTER),
+                    item("Save filter as preset...", command::SAVE_PRESET),
+                    item("Command palette...", command::PALETTE),
                     MenuItem::Separator,
-                    checked(MenuItem::command("Sidebar", "Ctrl+B", command::SIDEBAR), self.show_sidebar),
-                    checked(MenuItem::command("Split view", "Ctrl+\\", command::SPLIT), self.split.is_some()),
-                    checked(MenuItem::command("Sync split panes", "Ctrl+Shift+S", command::SYNC), self.split.as_ref().is_some_and(|split| split.sync)),
-                    checked(MenuItem::command("Severity chips", "", command::CHIPS), self.show_chips),
-                    checked(MenuItem::command("Histogram", "", command::HISTOGRAM), self.show_histogram),
+                    checked(item("Sidebar", command::SIDEBAR), self.show_sidebar),
+                    checked(item("Split view", command::SPLIT), self.split.is_some()),
+                    checked(item("Sync split panes", command::SYNC), self.split.as_ref().is_some_and(|split| split.sync)),
+                    checked(item("Severity chips", command::CHIPS), self.show_chips),
+                    checked(item("Histogram", command::HISTOGRAM), self.show_histogram),
                     checked(
-                        MenuItem::command("Details pane", "", command::DETAILS),
+                        item("Details pane", command::DETAILS),
                         self.show_details,
                     ),
                     checked(
-                        MenuItem::command("Pause live updates", "Ctrl+U", command::PAUSE),
+                        item("Pause live updates", command::PAUSE),
                         paused,
                     ),
                     checked(
-                        MenuItem::command("Use highlight rules", "", command::HIGHLIGHTING),
+                        item("Use highlight rules", command::HIGHLIGHTING),
                         self.settings.highlighting,
                     ),
-                    MenuItem::command("Columns...", "", command::COLUMNS),
-                    MenuItem::command("Fonts...", "", command::FONTS),
-                    MenuItem::command("Larger log text", "Ctrl+Plus", command::LARGER_TEXT),
-                    MenuItem::command("Smaller log text", "Ctrl+Minus", command::SMALLER_TEXT),
+                    item("Columns...", command::COLUMNS),
+                    item("Fonts...", command::FONTS),
+                    item("Larger log text", command::LARGER_TEXT),
+                    item("Smaller log text", command::SMALLER_TEXT),
                     MenuItem::Separator,
                     checked(
-                        MenuItem::command("Theme: follow Windows", "", command::THEME_SYSTEM),
+                        item("Theme: follow Windows", command::THEME_SYSTEM),
                         theme == ThemeChoice::System,
                     ),
                 ]
                 .into_iter()
                 .chain(Theme::ALL.iter().zip(command::THEMES..).map(|(choice, id)| {
                     let name = format!("Theme: {}", choice.name);
-                    checked(MenuItem::command(&name, "", id), matches!(theme, ThemeChoice::Fixed(fixed) if fixed.name == choice.name))
+                    checked(item(&name, id), matches!(theme, ThemeChoice::Fixed(fixed) if fixed.name == choice.name))
                 }))
                 .collect(),
             },
             Menu {
                 title: "Tools".to_string(),
                 items: vec![
-                    MenuItem::command("Error lookup...", "Ctrl+L", command::ERROR_LOOKUP),
-                    MenuItem::command("Highlight rules...", "Ctrl+H", command::RULES),
+                    item("Error lookup...", command::ERROR_LOOKUP),
+                    item("Highlight rules...", command::RULES),
+                    item("Keyboard shortcuts...", command::KEYS),
                 ],
             },
         ]
@@ -1009,6 +1028,18 @@ impl Workspace {
                 commands.push(Command::SetImeEnabled(false));
             }
             command::FONTS => self.open_fonts(FontItem::LogFont, commands),
+            command::KEYS => {
+                self.keys_query.clear();
+                self.open_palette(Mode::Keys, "", commands);
+            }
+            command::NEXT_TAB | command::PREVIOUS_TAB if !self.tabs.is_empty() => {
+                let count = self.tabs.len();
+                self.active = if id == command::PREVIOUS_TAB {
+                    (self.active + count - 1) % count
+                } else {
+                    (self.active + 1) % count
+                };
+            }
             command::LARGER_TEXT => self.resize_log_text(Some(true)),
             command::SMALLER_TEXT => self.resize_log_text(Some(false)),
             command::DEFAULT_TEXT => self.resize_log_text(None),
@@ -1032,60 +1063,26 @@ impl Workspace {
     }
 
     /// Handles shortcuts that work whatever has focus. Returns true if used.
+    /// Runs the command a key press is a shortcut for. Returns true if used.
     fn shortcut(&mut self, key: Key, modifiers: Modifiers, commands: &mut Commands) -> bool {
-        let Modifiers { ctrl, shift, alt } = modifiers;
-        if alt {
-            return false;
+        // Ctrl+1 to Ctrl+9 always pick a tab, so they aren't in the keymap.
+        if let (Key::Char(digit @ '1'..='9'), true, false, false) =
+            (key, modifiers.ctrl, modifiers.shift, modifiers.alt)
+        {
+            let index = digit as usize - '1' as usize;
+            if index < self.tabs.len() {
+                self.active = index;
+                commands.redraw();
+            }
+            return true;
         }
-        let id = match (key, ctrl, shift) {
-            (Key::Char('O'), true, false) => command::OPEN,
-            (Key::Char('W'), true, false) => command::CLOSE_TAB,
-            (Key::Char('F'), true, false) => command::FIND,
-            (Key::Char('F'), true, true) => command::FILTER,
-            (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
-            (Key::Char('H'), true, false) => command::RULES,
-            // Shift is allowed, since Ctrl+Plus on the main keyboard needs it.
-            (Key::Char('='), true, _) => command::LARGER_TEXT,
-            (Key::Char('-'), true, _) => command::SMALLER_TEXT,
-            (Key::Char('0'), true, false) => command::DEFAULT_TEXT,
-            (Key::Char('U'), true, false) => command::PAUSE,
-            (Key::Char('B'), true, false) => command::SIDEBAR,
-            (Key::Char('K'), true, false) => command::PALETTE,
-            (Key::Char('\\'), true, false) => command::SPLIT,
-            (Key::Char('S'), true, true) => command::SYNC,
-            (Key::Char('G'), true, false) => command::GO_TO_ROW,
-            (Key::Char('D'), true, false) => command::BOOKMARK,
-            (Key::F(2), false, false) => command::NEXT_BOOKMARK,
-            (Key::F(2), false, true) => command::PREVIOUS_BOOKMARK,
-            (Key::Char('M'), true, true) => command::MERGE,
-            (Key::F(3), false, false) => command::FIND_NEXT,
-            (Key::F(3), false, true) => command::FIND_PREVIOUS,
-            (Key::Char('E'), true, false) => command::NEXT_ERROR,
-            (Key::Char('E'), true, true) => command::PREVIOUS_ERROR,
-            (Key::Tab, true, _) => {
-                if !self.tabs.is_empty() {
-                    let count = self.tabs.len();
-                    self.active = if shift {
-                        (self.active + count - 1) % count
-                    } else {
-                        (self.active + 1) % count
-                    };
-                    commands.redraw();
-                }
-                return true;
+        match self.keymap.command_for(key, modifiers) {
+            Some(id) => {
+                self.run_command(id, commands);
+                true
             }
-            (Key::Char(digit @ '1'..='9'), true, false) => {
-                let index = digit as usize - '1' as usize;
-                if index < self.tabs.len() {
-                    self.active = index;
-                    commands.redraw();
-                }
-                return true;
-            }
-            _ => return false,
-        };
-        self.run_command(id, commands);
-        true
+            None => false,
+        }
     }
 
     fn handle_field(&mut self, focus: Focus, response: FieldResponse, commands: &mut Commands) {
@@ -1471,10 +1468,124 @@ impl Workspace {
         entries
     }
 
+    /// Every command a shortcut can run, with its shortcut now, for the list
+    /// of shortcuts. Commands outside the menus come after them.
+    fn keys_entries(&self) -> Vec<(PaletteItem, Action)> {
+        let mut entries = Vec::new();
+        for menu in self.build_menus() {
+            for item in menu.items {
+                if let MenuItem::Command {
+                    label,
+                    shortcut,
+                    command,
+                    ..
+                } = item
+                {
+                    if keymap::name_of(command).is_some() {
+                        entries.push((
+                            PaletteItem::new(
+                                label.trim_end_matches("..."),
+                                &menu.title,
+                                &shortcut,
+                                0,
+                            ),
+                            Action::Rebind(command),
+                        ));
+                    }
+                }
+            }
+        }
+        for (id, label, area) in [
+            (command::NEXT_TAB, "Next tab", "Tabs"),
+            (command::PREVIOUS_TAB, "Previous tab", "Tabs"),
+            (command::DEFAULT_TEXT, "Default log text size", "View"),
+        ] {
+            entries.push((
+                PaletteItem::new(label, area, &self.keymap.label_for(id), 0),
+                Action::Rebind(id),
+            ));
+        }
+        entries.push((
+            PaletteItem::new("Reset every shortcut to its default", "", "", 0),
+            Action::ResetKeys,
+        ));
+        entries
+    }
+
+    /// A command's name, as the list of shortcuts shows it.
+    fn command_label(&self, id: u32) -> String {
+        self.keys_entries()
+            .into_iter()
+            .find(|(_, action)| *action == Action::Rebind(id))
+            .map_or_else(String::new, |(item, _)| item.label)
+    }
+
+    /// Opens the list of shortcuts again, as it was, after one changed.
+    fn reopen_keys(&mut self, commands: &mut Commands) {
+        let query = self.keys_query.clone();
+        self.open_palette(Mode::Keys, &query, commands);
+    }
+
+    /// Does what was chosen for a command's shortcut, and says what changed.
+    fn shortcut_chosen(&mut self, id: u32, choice: Choice, commands: &mut Commands) {
+        let shortcut = match choice {
+            Choice::Set(shortcut) => Some(shortcut),
+            Choice::Remove => None,
+            Choice::Default => keymap::default_of(id),
+            Choice::Cancel => {
+                self.reopen_keys(commands);
+                return;
+            }
+        };
+        let label = self.command_label(id);
+        let lost = keymap::assign(&mut self.settings.keys, id, shortcut);
+        self.keymap = Keymap::new(&self.settings.keys);
+        let mut notice = match self.keymap.shortcut_for(id) {
+            Some(shortcut) => format!("{label} is now {}", shortcut.label()),
+            None => format!("{label} has no shortcut now"),
+        };
+        if let Some(other) = lost {
+            notice.push_str(&format!(", which {} had", self.command_label(other)));
+        }
+        self.notice = Some(notice);
+        self.save_settings();
+        self.reopen_keys(commands);
+    }
+
+    /// The panel waiting for a shortcut takes all input.
+    fn shortcut_event(&mut self, event: Event, commands: &mut Commands) {
+        let Some(panel) = &mut self.shortcut_panel else {
+            return;
+        };
+        let response = panel.handle(event);
+        let id = panel.command;
+        if let Some(choice) = response.choice {
+            self.shortcut_panel = None;
+            self.shortcut_chosen(id, choice, commands);
+        }
+        if response.redraw || response.choice.is_some() {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    /// Presses a button in the panel waiting for a shortcut, as a screen reader can.
+    pub fn press_shortcut_button(&mut self, index: usize, commands: &mut Commands) {
+        let Some(panel) = &self.shortcut_panel else {
+            return;
+        };
+        if let Some(choice) = panel.press(index) {
+            let id = panel.command;
+            self.shortcut_panel = None;
+            self.shortcut_chosen(id, choice, commands);
+        }
+    }
+
     fn open_palette(&mut self, mode: Mode, query: &str, commands: &mut Commands) {
         let rows = self.active_tab().map_or(0, Tab::total_rows);
         let entries = match mode {
             Mode::Font(target) => self.font_entries(target),
+            Mode::Keys => self.keys_entries(),
             Mode::Everything | Mode::SavePreset => self.palette_entries(),
         };
         let mut palette = CommandPalette::open(mode, entries, rows, query);
@@ -1496,6 +1607,7 @@ impl Workspace {
         self.rules_panel = None;
         self.columns_panel = None;
         self.fonts_panel = None;
+        self.shortcut_panel = None;
     }
 
     fn open_fonts(&mut self, selected: FontItem, commands: &mut Commands) {
@@ -1525,6 +1637,9 @@ impl Workspace {
             }
         }
         let mode = palette.mode();
+        if mode == Mode::Keys {
+            self.keys_query = palette.palette.query().to_string();
+        }
         if outcome.cancelled || outcome.chosen.is_some() {
             self.close_palette(commands);
         }
@@ -1575,6 +1690,25 @@ impl Workspace {
                 let removed = self.settings.presets.remove(index);
                 self.notice = Some(format!("Deleted filter preset {}", removed.name));
                 self.save_settings();
+            }
+            Action::Rebind(id) => {
+                let label = self.command_label(id);
+                let panel = ShortcutPanel::new(
+                    id,
+                    &label,
+                    self.keymap.shortcut_for(id),
+                    keymap::default_of(id),
+                );
+                self.close_panels();
+                self.shortcut_panel = Some(panel);
+                commands.push(Command::SetImeEnabled(false));
+            }
+            Action::ResetKeys => {
+                self.settings.keys.clear();
+                self.keymap = Keymap::new(&self.settings.keys);
+                self.notice = Some("Every shortcut is back to its default".to_string());
+                self.save_settings();
+                self.reopen_keys(commands);
             }
             Action::SetFont(target, name) => {
                 match target {
@@ -1641,6 +1775,10 @@ impl Workspace {
             if response.consumed {
                 return;
             }
+        }
+        if self.shortcut_panel.is_some() {
+            self.shortcut_event(event, commands);
+            return;
         }
         if self.rules_panel.is_some() {
             self.rules_event(event, canvas, commands);
@@ -2003,6 +2141,9 @@ impl Workspace {
         if let Some(panel) = &mut self.fonts_panel {
             panel.arrange(below_menu, canvas, theme);
         }
+        if let Some(panel) = &mut self.shortcut_panel {
+            panel.arrange(below_menu, canvas, theme);
+        }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
             let (Some(index), Some(pane)) = (index, pane) else {
@@ -2193,6 +2334,9 @@ impl Workspace {
             panel.draw(canvas, theme);
         }
         if let Some(panel) = &self.fonts_panel {
+            panel.draw(canvas, theme);
+        }
+        if let Some(panel) = &self.shortcut_panel {
             panel.draw(canvas, theme);
         }
 
@@ -2922,6 +3066,97 @@ mod tests {
         );
         send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
         assert!(workspace.columns_panel.is_none());
+    }
+
+    fn menu_shortcut(workspace: &Workspace, id: u32) -> String {
+        workspace
+            .build_menus()
+            .into_iter()
+            .flat_map(|menu| menu.items)
+            .find_map(|item| match item {
+                MenuItem::Command {
+                    shortcut, command, ..
+                } if command == id => Some(shortcut),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn shortcuts_change_through_the_list_and_are_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.open_paths(vec![log.clone()]);
+        settle(&mut first, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+
+        first.run_command(command::KEYS, &mut Commands::default());
+        type_text(&mut first, "next error");
+        let palette = first.palette.as_ref().unwrap();
+        let item = palette.palette.matched_item(0).unwrap();
+        assert_eq!(
+            (item.label.as_str(), item.shortcut.as_str()),
+            ("Next error", "Ctrl+E")
+        );
+        send(&mut first, Event::KeyDown(Key::Enter, NONE));
+        let panel = first.shortcut_panel.as_ref().unwrap();
+        assert_eq!(panel.title(), "Shortcut for Next error");
+        // Ctrl+F is Find's, so it moves, and isn't run while being chosen.
+        send(&mut first, Event::KeyDown(Key::Char('F'), CTRL));
+        assert_eq!(first.focus, Focus::Grid);
+        assert!(first.shortcut_panel.is_none());
+        assert!(
+            first
+                .status()
+                .contains("Next error is now Ctrl+F, which Find had"),
+            "{}",
+            first.status()
+        );
+        let palette = first.palette.as_ref().unwrap();
+        assert_eq!(palette.mode(), Mode::Keys);
+        assert_eq!(
+            palette.palette.query(),
+            "next error",
+            "the list comes back as it was"
+        );
+        send(&mut first, Event::KeyDown(Key::Escape, NONE));
+        assert_eq!(menu_shortcut(&first, command::NEXT_ERROR), "Ctrl+F");
+        assert_eq!(menu_shortcut(&first, command::FIND), "");
+        send(&mut first, Event::KeyDown(Key::Char('F'), CTRL));
+        assert_eq!(
+            first.tabs[0].cursor_file_row(),
+            Some(3),
+            "Ctrl+F found the first error"
+        );
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        assert_eq!(menu_shortcut(&second, command::NEXT_ERROR), "Ctrl+F");
+        second.run_command(command::KEYS, &mut Commands::default());
+        type_text(&mut second, "reset every");
+        send(&mut second, Event::KeyDown(Key::Enter, NONE));
+        assert_eq!(menu_shortcut(&second, command::FIND), "Ctrl+F");
+        assert!(second.settings().keys.is_empty());
+    }
+
+    #[test]
+    fn a_shortcut_can_be_removed_or_given_back_its_default() {
+        let (_dir, mut workspace) = opened(10);
+        for (key, expected) in [(Key::Backspace, ""), (Key::Delete, "Ctrl+K")] {
+            workspace.run_command(command::KEYS, &mut Commands::default());
+            type_text(&mut workspace, "command palette");
+            send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+            send(&mut workspace, Event::KeyDown(key, NONE));
+            assert_eq!(menu_shortcut(&workspace, command::PALETTE), expected);
+            send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@ const MOST_BOOKMARKS_PER_LOG: usize = 10_000;
 pub const MOST_RULES: usize = 100;
 const MOST_COLUMN_LAYOUTS: usize = 20;
 const MOST_COLUMNS: usize = 20;
+const MOST_KEYS: usize = 200;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,6 +48,9 @@ pub struct Settings {
     /// The grid's columns for each log format, by format name, such as `sccm`.
     pub columns: BTreeMap<String, Vec<ColumnSetting>>,
     pub fonts: FontSettings,
+    /// Shortcuts changed from the defaults, by command name, such as
+    /// `find = "Ctrl+J"`. An empty one means no shortcut.
+    pub keys: BTreeMap<String, String>,
 }
 
 /// Fonts by the names Windows lists them under, with sizes in pixels at 100%
@@ -101,6 +105,7 @@ impl Default for Settings {
             rules: Vec::new(),
             columns: BTreeMap::new(),
             fonts: FontSettings::default(),
+            keys: BTreeMap::new(),
         }
     }
 }
@@ -189,6 +194,9 @@ impl Settings {
         }
         for columns in self.columns.values_mut() {
             columns.truncate(MOST_COLUMNS);
+        }
+        while self.keys.len() > MOST_KEYS {
+            self.keys.pop_last();
         }
         while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
             self.bookmarks.pop_last();

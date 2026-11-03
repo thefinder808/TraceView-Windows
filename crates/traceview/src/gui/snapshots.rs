@@ -471,6 +471,40 @@ fn rows_fit_their_font_at_every_size() {
 }
 
 #[test]
+fn the_shortcut_panel_draws_and_explains_a_refused_key() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::DARK));
+    render(&mut workspace, "keys", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.run_command(command::KEYS, &mut Commands::default());
+    for character in "split view".chars() {
+        send(&mut workspace, Event::Char(character));
+    }
+    render(&mut workspace, "keys-list", 96.0, |_| true);
+    send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+    send(&mut workspace, Event::KeyDown(Key::Char('V'), CTRL));
+    let frame = render(&mut workspace, "keys-capture", 96.0, |_| true);
+    let theme = workspace.theme();
+    let panel = workspace.shortcut_panel.as_ref().unwrap();
+    assert!(panel.prompt().contains("Ctrl+V is kept for editing"));
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let problem = Rect::new(
+        rect.left + 14.0,
+        rect.top + 54.0,
+        rect.right - 14.0,
+        rect.top + 76.0,
+    );
+    assert!(
+        frame.has_ink(problem, theme.panel_background),
+        "the reason didn't draw"
+    );
+}
+
+#[test]
 fn the_sidebar_draws_beside_the_logs() {
     let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     workspace.show_sidebar = true;

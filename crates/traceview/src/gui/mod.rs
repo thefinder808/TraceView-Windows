@@ -13,6 +13,7 @@ mod details;
 mod export;
 mod fonts;
 mod fonts_panel;
+mod keymap;
 mod log_view;
 mod lookup;
 mod overview;
@@ -22,6 +23,7 @@ mod rules;
 mod rules_panel;
 mod search;
 mod settings;
+mod shortcut_panel;
 mod sidebar;
 #[cfg(test)]
 mod snapshots;
