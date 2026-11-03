@@ -8,6 +8,8 @@
 
 use super::command_palette::Mode;
 use super::log_view::{level_name, LogView, RowSource};
+use super::rules::Style;
+use super::rules_panel::{self, Part, RulesPanel};
 use super::workspace::{Focus, Workspace};
 use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
@@ -15,6 +17,7 @@ use accesskit::{
 use tv_platform::Commands;
 use tv_ui::list_view::ListItem;
 use tv_ui::menu::MenuItem;
+use tv_ui::theme::RULE_COLOR_NAMES;
 use tv_ui::Rect;
 
 const WINDOW_ID: NodeId = NodeId(1);
@@ -39,6 +42,13 @@ const PALETTE_ID: NodeId = NodeId(15);
 const PALETTE_FIELD_ID: NodeId = NodeId(16);
 const PALETTE_LIST_ID: NodeId = NodeId(17);
 const FIRST_PALETTE_ID: u64 = 5_000;
+const RULES_ID: NodeId = NodeId(18);
+const RULES_FIELD_ID: NodeId = NodeId(19);
+const RULES_LIST_ID: NodeId = NodeId(20);
+const RULES_NOTE_ID: NodeId = NodeId(21);
+const FIRST_RULE_COLOR_ID: u64 = 600;
+const FIRST_RULE_OPTION_ID: u64 = 620;
+const FIRST_RULE_ID: u64 = 7_000;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
@@ -78,6 +88,15 @@ fn row_label(source: &dyn RowSource, row: usize) -> String {
     let number = source.file_row(row) + 1;
     match source.cells(row) {
         Some(cells) => {
+            if let Some(mark) = cells.mark {
+                let color = RULE_COLOR_NAMES
+                    .get(mark.color)
+                    .map_or_else(String::new, |name| name.to_lowercase());
+                level.push_str(&match mark.style {
+                    Style::Row => format!(", highlighted {color}"),
+                    Style::Marker => format!(", marked {color}"),
+                });
+            }
             let mut label = format!("Row {number}, {level}");
             for part in [&cells.time, &cells.component, &cells.message] {
                 if !part.is_empty() {
@@ -130,6 +149,135 @@ fn grid_nodes(
     view.cursor()
         .filter(|row| source.is_some() && visible.contains(row))
         .map_or(GRID_ID, row_id)
+}
+
+/// The highlight rules editor, as a modal dialog. Returns the node with focus.
+fn rules_nodes(panel: &RulesPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let mut children = vec![RULES_FIELD_ID];
+    let mut field = Node::new(Role::TextInput);
+    field.set_label("Rule pattern");
+    field.set_value(panel.field.text());
+    field.set_bounds(physical(panel.field_rect(), scale));
+    field.add_action(Action::Focus);
+    nodes.push((RULES_FIELD_ID, field));
+    let mut focus = RULES_FIELD_ID;
+
+    // Colors and the two styles are each a choice of one, and the rest are buttons.
+    let bars = [
+        (
+            panel.color_chips(),
+            &panel.colors,
+            FIRST_RULE_COLOR_ID,
+            Part::Colors,
+        ),
+        (
+            panel.option_chips(),
+            &panel.options,
+            FIRST_RULE_OPTION_ID,
+            Part::Options,
+        ),
+    ];
+    for (chips, bar, first, part) in bars {
+        for (index, chip) in chips.iter().enumerate() {
+            let Some(rect) = bar.chip_rect(index) else {
+                continue;
+            };
+            let id = NodeId(first + index as u64);
+            let choice = part == Part::Colors || index < 2;
+            let mut node = Node::new(if choice {
+                Role::RadioButton
+            } else {
+                Role::Button
+            });
+            node.set_label(chip.label.as_str());
+            if choice || RulesPanel::option_is_toggle(index) {
+                node.set_toggled(chip.active.into());
+            }
+            if part == Part::Options && !panel.option_applies(index) {
+                node.set_disabled();
+            } else {
+                node.add_action(Action::Click);
+            }
+            node.add_action(Action::Focus);
+            node.set_bounds(physical(rect, scale));
+            if panel.focus == part && bar.focus() == Some(index) {
+                focus = id;
+            }
+            children.push(id);
+            nodes.push((id, node));
+        }
+    }
+
+    let list = &panel.list;
+    let mut options = Vec::new();
+    for index in list.visible_items() {
+        let (Some(rect), ListItem::Entry { label, detail, .. }) =
+            (list.item_rect(index), &list.items[index])
+        else {
+            continue;
+        };
+        let id = NodeId(FIRST_RULE_ID + index as u64);
+        let mut node = Node::new(Role::ListBoxOption);
+        node.set_label(format!("{label}, {detail}"));
+        node.set_selected(panel.selected() == index);
+        node.set_bounds(physical(rect, scale));
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        if panel.focus == Part::List && panel.selected() == index {
+            focus = id;
+        }
+        options.push(id);
+        nodes.push((id, node));
+    }
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Rules, first match first");
+    list_node.set_children(options);
+    nodes.push((RULES_LIST_ID, list_node));
+    children.push(RULES_LIST_ID);
+
+    if let Some(problem) = panel.problem() {
+        let mut note = Node::new(Role::Label);
+        note.set_value(problem);
+        nodes.push((RULES_NOTE_ID, note));
+        children.push(RULES_NOTE_ID);
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(rules_panel::TITLE);
+    dialog.set_modal();
+    dialog.set_bounds(physical(panel.rect(), scale));
+    dialog.set_children(children);
+    nodes.push((RULES_ID, dialog));
+    focus
+}
+
+/// Carries out a screen reader's request in the rules editor. Clicking a
+/// color or option presses it, and focusing a rule selects it.
+fn act_on_rules(workspace: &mut Workspace, request: &ActionRequest) {
+    let Some(panel) = workspace.rules_panel.as_mut() else {
+        return;
+    };
+    let target = request.target_node;
+    let click = request.action == Action::Click;
+    let changed = if let Some(index) =
+        in_range(target, FIRST_RULE_COLOR_ID, panel.color_chips().len())
+    {
+        panel.focus = Part::Colors;
+        click && panel.choose_color(index)
+    } else if let Some(index) = in_range(target, FIRST_RULE_OPTION_ID, panel.option_chips().len()) {
+        panel.focus = Part::Options;
+        click && panel.option_applies(index) && panel.choose_option(index)
+    } else if let Some(index) = in_range(target, FIRST_RULE_ID, panel.rules.len() + 1) {
+        panel.focus = Part::List;
+        panel.select(index)
+    } else {
+        if target == RULES_FIELD_ID {
+            panel.focus = Part::Field;
+        }
+        false
+    };
+    if changed {
+        workspace.rules_edited();
+    }
 }
 
 pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
@@ -239,7 +387,10 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
             let Some(rect) = rect else { continue };
             let id = NodeId(FIRST_CHIP_ID + index as u64);
             let mut node = Node::new(Role::Button);
-            node.set_label(format!("{}, {}", chip.label, chip.count));
+            node.set_label(match chip.count {
+                Some(count) => format!("{}, {count}", chip.label),
+                None => chip.label.clone(),
+            });
             node.set_toggled(chip.active.into());
             node.set_bounds(physical(rect, scale));
             node.add_action(Action::Click);
@@ -398,6 +549,14 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         window_children.push(PALETTE_ID);
     }
 
+    let rules_focus = workspace
+        .rules_panel
+        .as_ref()
+        .map(|panel| rules_nodes(panel, scale, &mut nodes));
+    if rules_focus.is_some() {
+        window_children.push(RULES_ID);
+    }
+
     let mut status = Node::new(Role::Status);
     status.set_label(workspace.status());
     nodes.push((STATUS_ID, status));
@@ -411,7 +570,7 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     let has_fields = workspace
         .active_tab()
         .is_some_and(|tab| tab.document().is_some());
-    let focus = menu_focus.unwrap_or(match workspace.focus {
+    let focus = menu_focus.or(rules_focus).unwrap_or(match workspace.focus {
         _ if workspace.palette.is_some() => PALETTE_FIELD_ID,
         _ if workspace.lookup.is_some() => LOOKUP_FIELD_ID,
         Focus::Sidebar if workspace.show_sidebar => sidebar_focus,
@@ -432,7 +591,9 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
     let target = request.target_node;
     match request.action {
         Action::Focus | Action::Click => {
-            if let Some(row) = row_from_id(target) {
+            if workspace.rules_panel.is_some() {
+                act_on_rules(workspace, request);
+            } else if let Some(row) = row_from_id(target) {
                 if let Some(tab) = workspace.active_tab_mut() {
                     tab.view.select(row, false);
                     tab.following = tab.view.at_bottom();
@@ -555,6 +716,84 @@ mod tests {
             Some("Row 2, Error, 2026-01-01 10:00:00.000, app, disk full 1")
         );
         assert_eq!(node(&update, row_id(0)).size_of_set(), Some(1000));
+    }
+
+    #[test]
+    fn the_rules_editor_is_a_modal_dialog_a_screen_reader_can_drive() {
+        let (_dir, mut workspace) = opened();
+        let mut commands = Commands::default();
+        workspace.run_command(super::super::workspace::command::RULES, &mut commands);
+        for character in "disk full 1".chars() {
+            workspace.event(
+                Event::Char(character),
+                &mut RecordingCanvas::new(),
+                &mut commands,
+            );
+        }
+        let draw = |workspace: &mut Workspace| {
+            let mut commands = Commands::default();
+            workspace.woken(&mut commands);
+            workspace.draw(
+                &mut RecordingCanvas::new(),
+                (1000.0, 600.0),
+                1.0,
+                &mut commands,
+            );
+        };
+        draw(&mut workspace);
+        let update = build(&workspace, 1.0);
+        assert_eq!(node(&update, RULES_ID).role(), Role::Dialog);
+        assert!(node(&update, RULES_ID).is_modal());
+        assert_eq!(update.focus, RULES_FIELD_ID);
+        assert_eq!(node(&update, RULES_FIELD_ID).value(), Some("disk full 1"));
+        let yellow = NodeId(FIRST_RULE_COLOR_ID + 2);
+        assert_eq!(node(&update, yellow).role(), Role::RadioButton);
+        assert_eq!(
+            node(&update, yellow).toggled(),
+            Some(accesskit::Toggled::True)
+        );
+        assert!(
+            node(&update, NodeId(FIRST_RULE_OPTION_ID + 3)).is_disabled(),
+            "nothing above to move past"
+        );
+
+        // Clicking Blue recolors the rule.
+        let blue = NodeId(FIRST_RULE_COLOR_ID + 4);
+        act(
+            &mut workspace,
+            &ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: blue,
+                data: None,
+            },
+            &mut commands,
+        );
+        assert_eq!(
+            workspace.rules_panel.as_ref().unwrap().rules[0].color,
+            "blue"
+        );
+        assert_eq!(workspace.rules_panel.as_ref().unwrap().focus, Part::Colors);
+
+        // Row 2 matches, and says so.
+        let started = Instant::now();
+        loop {
+            draw(&mut workspace);
+            let update = build(&workspace, 1.0);
+            let label = node(&update, row_id(1))
+                .label()
+                .unwrap_or_default()
+                .to_string();
+            if label.contains("highlighted blue") {
+                assert!(
+                    label.starts_with("Row 2, Error, highlighted blue, "),
+                    "{label}"
+                );
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "{label}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

@@ -42,6 +42,7 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/` |
 | Ctrl+E, Ctrl+Shift+E | Next and previous error |
 | Ctrl+L | Error Lookup |
+| Ctrl+H | Highlight rules: color or mark rows that match, as in `download failed level:error` |
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |

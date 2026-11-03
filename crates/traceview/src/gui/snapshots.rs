@@ -3,6 +3,7 @@
 
 use super::app::fonts_for;
 use super::log_view::RowSource;
+use super::settings::{Rule, Settings, Store};
 use super::workspace::{ThemeChoice, Workspace};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -329,6 +330,89 @@ fn error_lookup_explains_the_selected_rows_code() {
 }
 
 #[test]
+fn highlight_rules_color_rows_and_mark_them_in_every_theme() {
+    for theme in Theme::ALL {
+        let (_dir, mut workspace) = opened(ThemeChoice::Fixed(theme));
+        let settings = Settings {
+            rules: vec![
+                Rule {
+                    pattern: "hash mismatch".to_string(),
+                    color: "blue".to_string(),
+                    ..Rule::default()
+                },
+                Rule {
+                    pattern: "Retrying".to_string(),
+                    color: "red".to_string(),
+                    style: "marker".to_string(),
+                    ..Rule::default()
+                },
+            ],
+            ..Settings::default()
+        };
+        workspace.use_settings(settings, Store::disabled(), None);
+        workspace.theme_choice = ThemeChoice::Fixed(theme);
+        let name = format!("rules-{}", theme.name.to_lowercase());
+        let frame = render(&mut workspace, &name, 96.0, |workspace| {
+            workspace.tabs[0]
+                .rows()
+                .and_then(|rows| rows.cells(5))
+                .is_some_and(|cells| cells.mark.is_some())
+        });
+        let colors = theme.rule_colors;
+        // Row 6 is an error matching the blue rule, which colors the whole row.
+        assert_eq!(
+            frame.row_color(&workspace, 5),
+            colors[4].row,
+            "{name}: rule row"
+        );
+        // Row 4 is a warning matching the red marker rule, so it stays a warning.
+        assert_eq!(frame.row_color(&workspace, 3), theme.warning_row, "{name}");
+        let marker = workspace.tabs[0].view.marker_rect(3);
+        assert_eq!(
+            frame.at(marker.left + 2.0, marker.top + marker.height() / 2.0),
+            colors[0].marker,
+            "{name}: marker"
+        );
+    }
+}
+
+#[test]
+fn the_highlight_rules_editor_draws_over_the_logs() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::DARK));
+    let settings = Settings {
+        rules: vec![Rule {
+            pattern: "download failed level:error".to_string(),
+            ..Rule::default()
+        }],
+        ..Settings::default()
+    };
+    workspace.use_settings(settings, Store::disabled(), None);
+    workspace.theme_choice = ThemeChoice::Fixed(&Theme::DARK);
+    render(&mut workspace, "rules-editor", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    send(&mut workspace, Event::KeyDown(Key::Char('H'), CTRL));
+    let frame = render(&mut workspace, "rules-editor", 96.0, |_| true);
+    let theme = workspace.theme();
+    let panel = workspace.rules_panel.as_ref().unwrap();
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
+    );
+    let field = panel.field_rect();
+    assert_eq!(
+        frame.at(field.right - 4.0, field.top + field.height() / 2.0),
+        theme.input_background
+    );
+    let first_rule = panel.list.item_rect(0).unwrap();
+    assert!(
+        frame.has_ink(first_rule, theme.sidebar_background),
+        "the rule list didn't draw"
+    );
+}
+
+#[test]
 fn the_sidebar_draws_beside_the_logs() {
     let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     workspace.show_sidebar = true;
@@ -358,7 +442,7 @@ fn chips_and_the_histogram_draw_above_the_grid() {
         .chip_list()
         .find(|(chip, _)| chip.label == "Error")
         .unwrap();
-    assert_eq!(error_chip.count, 571);
+    assert_eq!(error_chip.count, Some(571));
     assert!(frame.has_ink(rect.unwrap(), theme.chip_background));
     let bars = workspace.histogram_rect();
     let error_bar = Rect::new(bars.left, bars.top, bars.right - 4.0, bars.top + 28.0);

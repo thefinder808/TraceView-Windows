@@ -14,6 +14,8 @@ mod lookup;
 mod overview;
 mod places;
 mod row_cache;
+mod rules;
+mod rules_panel;
 mod search;
 mod settings;
 mod sidebar;

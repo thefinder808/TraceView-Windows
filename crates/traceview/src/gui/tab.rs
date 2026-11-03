@@ -10,6 +10,7 @@ use super::export::Export;
 use super::log_view::{LogView, RowSource};
 use super::overview::Overview;
 use super::row_cache::{RowCache, RowCells, SharedLog};
+use super::rules::RuleSet;
 use super::search::{self, Matches, Target};
 use super::settings::Settings;
 use super::watch::{Applied, Watcher};
@@ -459,8 +460,17 @@ impl Tab {
         }
     }
 
+    /// Marks rows with new highlight rules.
+    pub fn set_rules(&mut self, rules: &Arc<RuleSet>) {
+        if let Some(document) = self.document_mut() {
+            for source in &mut document.sources {
+                source.cache.set_rules(rules.clone());
+            }
+        }
+    }
+
     /// Picks up finished background work. Returns true if anything changed.
-    pub fn poll(&mut self, waker: &Waker, settings: &Settings) -> bool {
+    pub fn poll(&mut self, waker: &Waker, settings: &Settings, rules: &Arc<RuleSet>) -> bool {
         let mut changed = self.details.poll_changed();
         if let Content::Opening(opening) = &self.content {
             match opening.result.try_recv() {
@@ -472,9 +482,11 @@ impl Tab {
                         .map(|((log, stats), path)| {
                             let log: SharedLog = Arc::new(RwLock::new(log));
                             let wake = waker.clone();
+                            let mut cache = RowCache::new(log.clone(), move || wake.wake());
+                            cache.set_rules(rules.clone());
                             Source {
                                 path: path.clone(),
-                                cache: RowCache::new(log.clone(), move || wake.wake()),
+                                cache,
                                 watcher: Watcher::start(log.clone(), waker.clone()),
                                 bookmarks: settings.bookmarks_for(path),
                                 log,

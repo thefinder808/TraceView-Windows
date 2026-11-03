@@ -8,6 +8,8 @@ use super::log_view::{snap, Metrics, RowSource};
 use super::lookup::{first_code, LookupPanel};
 use super::overview;
 use super::row_cache::{cells_from_row, SharedLog};
+use super::rules::RuleSet;
+use super::rules_panel::{Part, RulesPanel};
 use super::settings::{Preset, Settings, Store};
 use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
@@ -59,9 +61,11 @@ pub mod command {
     pub const CLEAR_FILTER: u32 = 21;
     pub const DETAILS: u32 = 22;
     pub const THEME_SYSTEM: u32 = 23;
+    pub const HIGHLIGHTING: u32 = 24;
     pub const SIDEBAR: u32 = 26;
     pub const CHIPS: u32 = 27;
     pub const HISTOGRAM: u32 = 28;
+    pub const RULES: u32 = 29;
     /// The themes, in `Theme::ALL` order, from this number on.
     pub const THEMES: u32 = 40;
     pub const ERROR_LOOKUP: u32 = 30;
@@ -303,6 +307,10 @@ pub struct Workspace {
     pub lookup: Option<LookupPanel>,
     /// The command palette, while it's open.
     pub palette: Option<CommandPalette>,
+    /// The highlight rules editor, while it's open.
+    pub rules_panel: Option<RulesPanel>,
+    /// The highlight rules every tab's rows are marked with.
+    rules: Arc<RuleSet>,
     settings: Settings,
     store: Store,
     menu: MenuBar,
@@ -372,6 +380,8 @@ impl Workspace {
             system_is_dark,
             lookup: None,
             palette: None,
+            rules_panel: None,
+            rules: Arc::default(),
             settings: Settings::default(),
             store: Store::disabled(),
             menu: MenuBar::default(),
@@ -399,6 +409,28 @@ impl Workspace {
         self.settings = settings;
         self.store = store;
         self.notice = problem;
+        self.apply_rules();
+    }
+
+    /// Compiles the highlight rules and marks every tab's rows with them.
+    fn apply_rules(&mut self) {
+        self.rules = Arc::new(if self.settings.highlighting {
+            RuleSet::compile(&self.settings.rules)
+        } else {
+            RuleSet::default()
+        });
+        for tab in &mut self.tabs {
+            tab.set_rules(&self.rules);
+        }
+    }
+
+    /// Applies and saves what the rules editor holds, after it changed them.
+    pub fn rules_edited(&mut self) {
+        if let Some(panel) = &self.rules_panel {
+            self.settings.rules = panel.saved_rules();
+            self.apply_rules();
+            self.save_settings();
+        }
     }
 
     #[cfg(test)]
@@ -522,6 +554,10 @@ impl Workspace {
                         MenuItem::command("Pause live updates", "Ctrl+U", command::PAUSE),
                         paused,
                     ),
+                    checked(
+                        MenuItem::command("Use highlight rules", "", command::HIGHLIGHTING),
+                        self.settings.highlighting,
+                    ),
                     MenuItem::Separator,
                     checked(
                         MenuItem::command("Theme: follow Windows", "", command::THEME_SYSTEM),
@@ -537,11 +573,10 @@ impl Workspace {
             },
             Menu {
                 title: "Tools".to_string(),
-                items: vec![MenuItem::command(
-                    "Error lookup...",
-                    "Ctrl+L",
-                    command::ERROR_LOOKUP,
-                )],
+                items: vec![
+                    MenuItem::command("Error lookup...", "Ctrl+L", command::ERROR_LOOKUP),
+                    MenuItem::command("Highlight rules...", "Ctrl+H", command::RULES),
+                ],
             },
         ]
     }
@@ -860,7 +895,23 @@ impl Workspace {
                 let mut panel = LookupPanel::new(&code, &waker);
                 panel.arrange(self.layout.grid);
                 self.lookup = Some(panel);
+                self.rules_panel = None;
                 commands.push(Command::SetImeEnabled(true));
+            }
+            command::RULES => {
+                // Editing rules that are switched off would show nothing.
+                if !self.settings.highlighting {
+                    self.settings.highlighting = true;
+                    self.apply_rules();
+                }
+                self.rules_panel = Some(RulesPanel::new(self.settings.rules.clone()));
+                self.lookup = None;
+                self.palette = None;
+                commands.push(Command::SetImeEnabled(true));
+            }
+            command::HIGHLIGHTING => {
+                self.settings.highlighting = !self.settings.highlighting;
+                self.apply_rules();
             }
             _ => {}
         }
@@ -871,6 +922,8 @@ impl Workspace {
                 | command::CHIPS
                 | command::HISTOGRAM
                 | command::THEME_SYSTEM
+                | command::HIGHLIGHTING
+                | command::RULES
         ) || theme_for_command(id).is_some()
         {
             self.save_settings();
@@ -891,6 +944,7 @@ impl Workspace {
             (Key::Char('F'), true, false) => command::FIND,
             (Key::Char('F'), true, true) => command::FILTER,
             (Key::Char('L'), true, false) => command::ERROR_LOOKUP,
+            (Key::Char('H'), true, false) => command::RULES,
             (Key::Char('U'), true, false) => command::PAUSE,
             (Key::Char('B'), true, false) => command::SIDEBAR,
             (Key::Char('K'), true, false) => command::PALETTE,
@@ -974,6 +1028,41 @@ impl Workspace {
             || response.submitted.is_some()
             || response.wants_paste
         {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    fn close_rules(&mut self, commands: &mut Commands) {
+        self.rules_panel = None;
+        commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    /// The rules editor takes all input while it's open, and every change to a
+    /// rule applies at once.
+    fn rules_event(&mut self, event: Event, canvas: &mut dyn Canvas, commands: &mut Commands) {
+        let hwnd = self.hwnd;
+        let Some(panel) = &mut self.rules_panel else {
+            return;
+        };
+        let mut response = panel.handle(event, canvas);
+        if response.wants_paste {
+            if let Some(text) = tv_platform::clipboard_text(hwnd) {
+                response.changed |= panel.paste(&text);
+                response.redraw = true;
+            }
+        }
+        if let Some(text) = response.copy.take() {
+            commands.push(Command::SetClipboard(text));
+        }
+        if response.changed {
+            self.rules_edited();
+        }
+        if response.closed {
+            self.close_rules(commands);
+        } else if response.redraw || response.changed {
             commands.redraw();
             commands.accessibility_changed();
         }
@@ -1229,6 +1318,7 @@ impl Workspace {
         ));
         self.palette = Some(palette);
         self.lookup = None;
+        self.rules_panel = None;
         commands.push(Command::SetImeEnabled(true));
     }
 
@@ -1353,6 +1443,10 @@ impl Workspace {
             if response.consumed {
                 return;
             }
+        }
+        if self.rules_panel.is_some() {
+            self.rules_event(event, canvas, commands);
+            return;
         }
         if self.lookup.is_some() {
             self.lookup_event(event, canvas, commands);
@@ -1509,7 +1603,7 @@ impl Workspace {
     pub fn woken(&mut self, commands: &mut Commands) {
         let waker = self.waker.clone();
         for tab in &mut self.tabs {
-            tab.poll(&waker, &self.settings);
+            tab.poll(&waker, &self.settings, &self.rules);
         }
         if let Some(panel) = &mut self.lookup {
             panel.poll();
@@ -1663,6 +1757,13 @@ impl Workspace {
         }
         if let Some(palette) = &mut self.palette {
             palette.arrange(Rect::new(0.0, self.layout.menu.bottom, size.0, size.1));
+        }
+        if let Some(panel) = &mut self.rules_panel {
+            panel.arrange(
+                Rect::new(0.0, self.layout.menu.bottom, size.0, size.1),
+                canvas,
+                theme,
+            );
         }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
@@ -1842,6 +1943,12 @@ impl Workspace {
         }
         if let Some(palette) = &mut self.palette {
             caret = Some(palette.draw(canvas, theme));
+        }
+        if let Some(panel) = &mut self.rules_panel {
+            let field_caret = panel.draw(canvas, theme);
+            if panel.focus == Part::Field {
+                caret = Some(field_caret);
+            }
         }
 
         self.menu.draw_bar(canvas, layout.menu, theme);
@@ -2446,6 +2553,72 @@ mod tests {
         assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
     }
 
+    fn is_marked(workspace: &Workspace, row: usize) -> bool {
+        workspace.tabs[0]
+            .rows()
+            .and_then(|rows| rows.cells(row))
+            .is_some_and(|cells| cells.mark.is_some())
+    }
+
+    #[test]
+    fn highlight_rules_mark_rows_as_typed_and_are_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.open_paths(vec![log.clone()]);
+        settle(&mut first, |workspace| {
+            workspace.tabs[0]
+                .rows()
+                .is_some_and(|rows| rows.cells(99).is_some())
+        });
+        send(&mut first, Event::KeyDown(Key::Char('H'), CTRL));
+        assert!(first.rules_panel.is_some());
+        // The log opens at its newest rows, so rows 90 to 99 are on screen.
+        type_text(&mut first, "message 9");
+        settle(&mut first, |workspace| is_marked(workspace, 95));
+        assert!(!is_marked(&first, 85));
+        assert_eq!(first.settings().rules.len(), 1);
+        send(&mut first, Event::KeyDown(Key::Escape, NONE));
+        assert!(first.rules_panel.is_none());
+
+        // Turned off together, and on again.
+        first.run_command(command::HIGHLIGHTING, &mut Commands::default());
+        settle(&mut first, |workspace| !is_marked(workspace, 95));
+        first.run_command(command::HIGHLIGHTING, &mut Commands::default());
+        settle(&mut first, |workspace| is_marked(workspace, 95));
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        second.open_paths(vec![log]);
+        settle(&mut second, |workspace| {
+            workspace
+                .tabs
+                .first()
+                .is_some_and(|tab| tab.document().is_some())
+                && is_marked(workspace, 99)
+        });
+    }
+
+    #[test]
+    fn the_rules_editor_turns_rules_back_on_and_takes_all_input() {
+        let (_dir, mut workspace) = opened(10);
+        workspace.run_command(command::HIGHLIGHTING, &mut Commands::default());
+        assert!(!workspace.settings().highlighting);
+        send(&mut workspace, Event::KeyDown(Key::Char('H'), CTRL));
+        assert!(workspace.settings().highlighting);
+        // Ctrl+F would focus the find box, but the editor has the keyboard.
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+        assert_eq!(workspace.focus, Focus::Grid);
+        assert!(workspace.rules_panel.is_some());
+        send(&mut workspace, Event::KeyDown(Key::Char('K'), CTRL));
+        assert!(workspace.palette.is_none());
+    }
+
     #[test]
     fn bookmarks_toggle_step_and_are_remembered() {
         let dir = tempfile::tempdir().unwrap();
@@ -2663,7 +2836,13 @@ mod tests {
     fn chip_summary(workspace: &Workspace) -> Vec<(String, usize, bool)> {
         workspace
             .chip_list()
-            .map(|(chip, _)| (chip.label.clone(), chip.count, chip.active))
+            .map(|(chip, _)| {
+                (
+                    chip.label.clone(),
+                    chip.count.unwrap_or_default(),
+                    chip.active,
+                )
+            })
             .collect()
     }
 

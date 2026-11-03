@@ -2,6 +2,7 @@
 //! the `Canvas` and `RowSource` interfaces, so it's tested without a window.
 
 use super::row_cache::RowCells;
+use super::rules::Style;
 use std::sync::Arc;
 use tv_engine::Level;
 use tv_ui::scrollbar::{self, Press, ScrollState};
@@ -18,6 +19,8 @@ const COMPONENT_CHARS: f32 = 22.0;
 const MIN_ROW_NUMBER_CHARS: f32 = 6.0;
 /// The bookmark marker, a bar at the left edge of the row number.
 const BOOKMARK_WIDTH: f32 = 3.0;
+/// A highlight rule's marker, a bar between the row number and the time.
+const MARKER_WIDTH: f32 = 4.0;
 
 /// Where rows come from. The GUI backs this with the row cache.
 pub trait RowSource {
@@ -424,6 +427,15 @@ impl LogView {
         self.layout.body
     }
 
+    /// Where a highlight rule's marker goes: in the gap between the row number
+    /// and the time.
+    pub fn marker_rect(&self, row: usize) -> Rect {
+        let rect = self.row_rect(row);
+        let gap = self.layout.time_left - self.layout.row_number_right;
+        let left = self.layout.row_number_right + (gap - MARKER_WIDTH) / 2.0;
+        Rect::new(left, rect.top + 1.0, left + MARKER_WIDTH, rect.bottom - 1.0)
+    }
+
     fn draw_header(&self, canvas: &mut dyn Canvas, theme: &Theme) {
         let layout = &self.layout;
         let header = layout.header;
@@ -458,23 +470,44 @@ impl LogView {
         let layout = &self.layout;
         let rect = self.row_rect(row);
         let level = source.level(row);
+        let cells = source.cells(row);
+        let mark = cells.as_ref().and_then(|cells| cells.mark);
         let selected = self.is_selected(row);
         let highlighted = !selected && source.highlighted(row);
-        let (background, message_color) = match level {
+        // A rule's row color gives way to the selection and to find matches,
+        // which are what someone is looking at right now.
+        let rule_row = mark
+            .filter(|mark| mark.style == Style::Row)
+            .and_then(|mark| theme.rule_colors.get(mark.color));
+        let (background, message_color) = match (level, rule_row) {
             _ if selected => (Some(theme.selected_row), theme.selected_text),
-            Level::Critical | Level::Error if highlighted => {
+            (Level::Critical | Level::Error, _) if highlighted => {
                 (Some(theme.highlight_row), theme.error_text)
             }
             _ if highlighted => (Some(theme.highlight_row), theme.primary_text),
-            Level::Critical => (Some(theme.critical_row), theme.critical_text),
-            Level::Error => (Some(theme.error_row), theme.error_text),
-            Level::Warning => (Some(theme.warning_row), theme.warning_text),
-            Level::Notice => (None, theme.notice_text),
-            Level::Debug => (None, theme.debug_text),
-            Level::Info => (None, theme.primary_text),
+            (_, Some(colors)) => (Some(colors.row), colors.text),
+            (Level::Critical, None) => (Some(theme.critical_row), theme.critical_text),
+            (Level::Error, None) => (Some(theme.error_row), theme.error_text),
+            (Level::Warning, None) => (Some(theme.warning_row), theme.warning_text),
+            (Level::Notice, None) => (None, theme.notice_text),
+            (Level::Debug, None) => (None, theme.debug_text),
+            (Level::Info, None) => (None, theme.primary_text),
         };
         if let Some(color) = background {
             canvas.fill_rect(rect, color);
+        }
+        let marker = mark
+            .filter(|mark| mark.style == Style::Marker)
+            .and_then(|mark| theme.rule_colors.get(mark.color));
+        if let Some(colors) = marker {
+            canvas.fill_rect(
+                self.marker_rect(row),
+                if selected {
+                    theme.selected_text
+                } else {
+                    colors.marker
+                },
+            );
         }
         if source.bookmarked(row) {
             let marker = Rect::new(
@@ -516,7 +549,7 @@ impl LogView {
             GRID_LEFT,
             message_color,
         );
-        match source.cells(row) {
+        match cells {
             Some(cells) => {
                 canvas.text(
                     &cells.time,
@@ -567,6 +600,7 @@ impl LogView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::rules::Mark;
     use tv_ui::recording::{DrawOp, RecordingCanvas};
     use tv_ui::Modifiers;
 
@@ -616,9 +650,53 @@ mod tests {
                     component: "App".to_string(),
                     thread: "1".to_string(),
                     message: format!("message {row}"),
+                    mark: None,
                 })
             })
         }
+    }
+
+    /// A hundred rows that all match one highlight rule. Row 5 is also a find match.
+    struct MarkedRows(Mark);
+
+    impl RowSource for MarkedRows {
+        fn row_count(&self) -> usize {
+            100
+        }
+
+        fn level(&self, row: usize) -> Level {
+            FakeRows {
+                count: 100,
+                loaded: true,
+            }
+            .level(row)
+        }
+
+        fn cells(&self, row: usize) -> Option<Arc<RowCells>> {
+            Some(Arc::new(RowCells {
+                message: format!("message {row}"),
+                mark: Some(self.0),
+                ..RowCells::default()
+            }))
+        }
+
+        fn highlighted(&self, row: usize) -> bool {
+            row == 5
+        }
+    }
+
+    fn fill_at(canvas: &RecordingCanvas, rect: Rect) -> Option<Color> {
+        canvas.ops.iter().find_map(|op| match op {
+            DrawOp::Fill(filled, color) if *filled == rect => Some(*color),
+            _ => None,
+        })
+    }
+
+    fn text_color(canvas: &RecordingCanvas, text: &str) -> Option<Color> {
+        canvas.ops.iter().find_map(|op| match op {
+            DrawOp::Text(drawn, _, _, color) if drawn == text => Some(*color),
+            _ => None,
+        })
     }
 
     fn view(rows: usize) -> LogView {
@@ -920,6 +998,59 @@ mod tests {
             _ => None,
         });
         assert_eq!(row_fill, Some(theme.selected_row));
+    }
+
+    #[test]
+    fn rule_rows_take_their_color_but_selection_and_find_win() {
+        let mut view = view(100);
+        view.select(3, false);
+        let theme = Theme::CLASSIC;
+        let blue = theme.rule_colors[4];
+        let mut canvas = RecordingCanvas::new();
+        let rows = MarkedRows(Mark {
+            color: 4,
+            style: Style::Row,
+        });
+        view.draw(&mut canvas, &rows, &theme);
+        assert_eq!(fill_at(&canvas, view.row_rect(0)), Some(blue.row));
+        assert_eq!(text_color(&canvas, "message 0"), Some(blue.text));
+        // Row 1 is an error, and the rule's color replaces the severity's.
+        assert_eq!(fill_at(&canvas, view.row_rect(1)), Some(blue.row));
+        assert_eq!(fill_at(&canvas, view.row_rect(3)), Some(theme.selected_row));
+        assert_eq!(
+            fill_at(&canvas, view.row_rect(5)),
+            Some(theme.highlight_row)
+        );
+    }
+
+    #[test]
+    fn markers_sit_by_the_number_and_keep_the_severity_color() {
+        let mut view = view(100);
+        view.select(2, false);
+        let theme = Theme::CLASSIC;
+        let red = theme.rule_colors[0];
+        let mut canvas = RecordingCanvas::new();
+        let rows = MarkedRows(Mark {
+            color: 0,
+            style: Style::Marker,
+        });
+        view.draw(&mut canvas, &rows, &theme);
+        assert_eq!(fill_at(&canvas, view.row_rect(1)), Some(theme.error_row));
+        let markers: Vec<(Rect, Color)> = canvas
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                DrawOp::Fill(rect, color) if rect.width() == MARKER_WIDTH => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), view.visible_rows().len());
+        let (first, color) = markers[0];
+        assert!(first.left > view.layout.row_number_right);
+        assert!(first.right < view.layout.time_left);
+        assert_eq!(color, red.marker);
+        // On the selected row it takes the selection's text color, as bookmarks do.
+        assert_eq!(markers[2].1, theme.selected_text);
     }
 
     #[test]

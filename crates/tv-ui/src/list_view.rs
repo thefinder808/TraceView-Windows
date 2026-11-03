@@ -3,7 +3,7 @@
 //! rows on screen are drawn, so a list of thousands of entries stays cheap.
 
 use crate::canvas::{Align, Canvas, FontRole, TextStyle};
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Color, Point, Rect};
 use crate::input::{Event, Key, MouseButton};
 use crate::scrollbar::{self, Press, ScrollState};
 use crate::theme::Theme;
@@ -15,6 +15,7 @@ const HEADING_INDENT: f32 = 10.0;
 const ENTRY_INDENT: f32 = 18.0;
 const RIGHT_PADDING: f32 = 8.0;
 const DETAIL_GAP: f32 = 8.0;
+const SWATCH_SIZE: f32 = 12.0;
 /// A detail with less room than this isn't drawn at all.
 const MIN_DETAIL_WIDTH: f32 = 24.0;
 const ELLIPSIS: &str = "\u{2026}";
@@ -30,6 +31,8 @@ pub enum ListItem {
         detail: String,
         /// The app's own identifier, which comes back when the entry is activated.
         id: u32,
+        /// A square of color before the label, such as a highlight rule's.
+        swatch: Option<Color>,
     },
 }
 
@@ -43,7 +46,16 @@ impl ListItem {
             label: label.to_string(),
             detail: detail.to_string(),
             id,
+            swatch: None,
         }
+    }
+
+    /// The same entry with a square of color before its label.
+    pub fn with_swatch(mut self, color: Color) -> Self {
+        if let ListItem::Entry { swatch, .. } = &mut self {
+            *swatch = Some(color);
+        }
+        self
     }
 
     /// The entry's identifier, or `None` for a heading.
@@ -433,7 +445,13 @@ impl ListView {
         index: usize,
         rect: Rect,
     ) {
-        let ListItem::Entry { label, detail, .. } = &self.items[index] else {
+        let ListItem::Entry {
+            label,
+            detail,
+            swatch,
+            ..
+        } = &self.items[index]
+        else {
             return;
         };
         let selected = self.selected == Some(index);
@@ -455,12 +473,26 @@ impl ListView {
         if let Some(color) = background {
             canvas.fill_rect(rect, color);
         }
-        let text = Rect::new(
+        let mut text = Rect::new(
             rect.left + ENTRY_INDENT,
             rect.top,
             rect.right - RIGHT_PADDING,
             rect.bottom,
         );
+        if let Some(color) = swatch {
+            let middle = (rect.top + rect.bottom) / 2.0;
+            let half = SWATCH_SIZE / 2.0;
+            canvas.fill_rect(
+                Rect::new(
+                    text.left,
+                    middle - half,
+                    text.left + SWATCH_SIZE,
+                    middle + half,
+                ),
+                *color,
+            );
+            text.left += SWATCH_SIZE + DETAIL_GAP;
+        }
         let (label, label_width) = fit(canvas, label, text.width(), FontRole::Ui);
         canvas.text(&label, text, UI_LEFT, label_color);
         let detail_left = text.left + label_width + DETAIL_GAP;

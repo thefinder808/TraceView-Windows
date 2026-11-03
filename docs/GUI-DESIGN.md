@@ -235,7 +235,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Merge works on open tabs,** rather than through a checkbox in the Open dialog. You open several logs at once, then press Ctrl+Shift+M.
 - **Error Lookup has no Intune or Windows Update text,** because Windows has none. Those codes still show their hex, signed and facility forms. ConfigMgr text needs a console installed, and that hasn't been tested.
 - **Live tail checks each file every 250 ms** rather than waiting for change notifications. Windows reports changes late for files a writer holds open, and unreliably on network shares.
-- **Highlight rules in chosen colors** wait for the rule editor in milestone 5. Find covers one highlight for now.
+- **Highlight rules in chosen colors** waited for milestone 5. Find covered one highlight until then.
 - **IME** is built: IMM32's composition window sits at the caret, and the IME is on only while a text box has focus. It hasn't been tried with a real IME, because none is installed here.
 
 **Not covered by automation, so these need a person:** choosing several files in the Open dialog, drag and drop, an IME, Narrator, and a day of real use alongside CMTrace.
@@ -280,6 +280,26 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Only the focused pane** of a split view is in the screen reader tree. Screen reader users work in one pane at a time anyway.
 
 **Not covered by automation, so these need a person:** the ARM64 EXE on a real ARM64 PC, how the sidebar, chips and split view feel, and Narrator with the new controls.
+
+## Milestone 5 so far
+
+**Highlight rules** (Tools > Highlight rules, Ctrl+H, as CMTrace's Highlight is):
+
+- **A rule is filter box text,** such as `download failed level:error`, `component:PolicyAgent` or `/0x8007[0-9a-f]{4}/`. That covers "pattern and optional level or component" with a syntax people already know.
+- **Each rule has a color and a style.** The six colors are red, orange, yellow, green, blue and purple. The whole row can take the color, which replaces the severity color, or a marker can sit beside the row number, which keeps it.
+- **The first rule that matches a row wins.** Rules are reordered with Ctrl+Up and Ctrl+Down, or the Move buttons.
+- **View > Use highlight rules** turns them all off or on together. Opening the editor turns them on.
+- **Every change applies at once,** so rows light up while a pattern is typed, and it's saved to `traceview.toml` straight away.
+- **The editor** is one floating panel: the pattern box, then the colors, then the style, On and Move/Delete buttons, then the list of rules ending in a "New rule" slot. Typing into the slot adds a rule. Tab moves between the parts, and screen readers get a modal dialog with radio buttons for the colors and styles. Rows that match say "highlighted blue" or "marked blue".
+
+**Differences from this design:**
+
+- **Colors are named palette entries, not any color.** Each theme defines its own shade of each, tested for contrast, so a rule picked in Classic stays readable in Dark. Theme files will be able to change the shades.
+- **There's no text-color-only style.** Text in a chosen color can't be held to contrast against every severity row, and the marker already keeps the severity visible.
+- **No format condition.** With two formats, the filter syntax's level, component and thread cover what's needed.
+- **Rules live in `traceview.toml`,** not a file of their own. Editing it by hand while TraceView runs still needs a restart. Reloading every customization file live is a later step of this milestone.
+
+**Not covered by automation:** using the editor with a mouse and with Narrator on a real screen.
 
 ## Milestones
 
