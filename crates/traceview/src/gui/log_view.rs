@@ -108,6 +108,7 @@ struct Placed {
 pub struct Metrics {
     pub row_height: f32,
     pub char_width: f32,
+    pub header_height: f32,
 }
 
 /// Where each part of the grid goes, in device-independent pixels.
@@ -178,19 +179,11 @@ impl LogView {
     /// Recomputes where everything goes. Call before drawing or hit-testing.
     /// While a column is being resized or moved, the view keeps its own copy
     /// of the columns until the drag ends.
-    pub fn arrange(
-        &mut self,
-        area: Rect,
-        rows: usize,
-        metrics: Metrics,
-        theme: &Theme,
-        scale: f32,
-        columns: &[ColumnSpec],
-    ) {
+    pub fn arrange(&mut self, area: Rect, rows: usize, metrics: Metrics, columns: &[ColumnSpec]) {
         self.rows = rows;
         self.metrics = metrics;
         let mut body = area;
-        let header = body.take_top(snap(theme.header_height, scale));
+        let header = body.take_top(metrics.header_height);
         let track = body.take_right(scrollbar::WIDTH);
         let number_chars = digits(rows).max(MIN_ROW_NUMBER_CHARS);
         let row_number_right = body.left + CELL_PADDING + number_chars * metrics.char_width;
@@ -823,6 +816,7 @@ mod tests {
     const METRICS: Metrics = Metrics {
         row_height: 18.0,
         char_width: 7.0,
+        header_height: 22.0,
     };
 
     struct FakeRows {
@@ -902,14 +896,7 @@ mod tests {
 
     fn view(rows: usize) -> LogView {
         let mut view = LogView::default();
-        view.arrange(
-            AREA,
-            rows,
-            METRICS,
-            &Theme::CLASSIC,
-            1.0,
-            &defaults(Format::Plain),
-        );
+        view.arrange(AREA, rows, METRICS, &defaults(Format::Plain));
         view
     }
 
@@ -1291,14 +1278,7 @@ mod tests {
     #[test]
     fn shown_columns_draw_in_order_and_the_last_fills_the_grid() {
         let mut view = view(100);
-        view.arrange(
-            AREA,
-            100,
-            METRICS,
-            &Theme::CLASSIC,
-            1.0,
-            &defaults(Format::Sccm),
-        );
+        view.arrange(AREA, 100, METRICS, &defaults(Format::Sccm));
         let mut canvas = RecordingCanvas::new();
         let rows = FakeRows {
             count: 100,
@@ -1331,14 +1311,7 @@ mod tests {
         assert_eq!(press(&mut view, edge), Response::default());
         move_to(&mut view, time.left + 140.0);
         // The owner's columns don't replace the view's during the drag.
-        view.arrange(
-            AREA,
-            100,
-            METRICS,
-            &Theme::CLASSIC,
-            1.0,
-            &defaults(Format::Plain),
-        );
+        view.arrange(AREA, 100, METRICS, &defaults(Format::Plain));
         assert_eq!(view.columns()[0].width, 20.0);
         assert!(release(&mut view, time.left + 140.0).columns_changed);
         assert_eq!(

@@ -11,6 +11,8 @@ mod columns_panel;
 mod command_palette;
 mod details;
 mod export;
+mod fonts;
+mod fonts_panel;
 mod log_view;
 mod lookup;
 mod overview;

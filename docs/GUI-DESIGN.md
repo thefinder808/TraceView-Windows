@@ -319,6 +319,20 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** dragging headers by hand, where the feel of the grab zones matters.
 
+**Fonts and row spacing:**
+
+- **View > Fonts** lists the log font, the row spacing and the window font. Smaller and Larger, or minus and plus, change whichever is selected, and Reset goes back to Consolas 13 and Segoe UI 12.
+- **Choose font** opens the command palette's list of installed fonts. Typing narrows it, fixed-width fonts say so, and the one in use comes first. Choosing one, or pressing Esc, goes back to the editor.
+- **Ctrl+Plus, Ctrl+Minus and Ctrl+0** make log text larger, smaller or the default size, anywhere, and so does Ctrl with the mouse wheel. The status bar says the new size.
+- **Row spacing** is compact, normal or roomy, added to the font's measured line height. Normal with Consolas 13 is the 18-pixel row from before.
+- **A font this PC doesn't have** draws in the default, and the editor says so, which matters for a portable copy carried between PCs.
+
+**Differences from this design:**
+
+- **Window text tops out at 15 pixels.** The bars and lists have fixed heights, so a larger window font would be clipped. Windows' display scale already makes everything larger, and TraceView follows it.
+- **Row height is a choice of three spacings,** not a number, so a row can never be too short for its font.
+- **The number pad's keys** used to arrive as lowercase letters, which no shortcut used, and now map to nothing except plus and minus.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |

@@ -553,7 +553,12 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEWHEEL => {
             let rows = input::wheel_rows(high_word(wparam.0 as isize));
-            state.with_handler(|handler, commands| handler.event(Event::Wheel(rows), commands));
+            let event = if input::modifiers().ctrl {
+                Event::ZoomWheel(rows)
+            } else {
+                Event::Wheel(rows)
+            };
+            state.with_handler(|handler, commands| handler.event(event, commands));
             return LRESULT(0);
         }
         WM_DROPFILES => {

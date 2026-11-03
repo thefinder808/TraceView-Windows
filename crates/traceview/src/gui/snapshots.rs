@@ -1,7 +1,6 @@
 //! Draws the whole window with the real renderer, offscreen, and checks the
 //! pixels. Set `TV_SNAPSHOT_DIR` to also save each frame as a PNG to look at.
 
-use super::app::fonts_for;
 use super::columns::Column;
 use super::log_view::RowSource;
 use super::settings::{Rule, Settings, Store};
@@ -122,7 +121,6 @@ fn render(
     let scale = dpi / 96.0;
     let (width, height) = ((1200.0 * scale) as u32, (640.0 * scale) as u32);
     let mut renderer = Renderer::offscreen(width, height, dpi).unwrap();
-    renderer.set_fonts(fonts_for(workspace.theme()));
     let size = renderer.logical_size();
     let started = Instant::now();
     loop {
@@ -140,6 +138,7 @@ fn render(
             rows_ready && details_ready
         });
         let finished = loaded && done(workspace);
+        renderer.set_fonts(workspace.fonts());
         renderer.begin();
         workspace.draw(&mut renderer, size, scale, &mut commands);
         renderer.end().unwrap();
@@ -440,6 +439,34 @@ fn sccm_logs_show_the_thread_and_the_columns_editor_draws() {
     assert!(
         frame.has_ink(first, theme.selected_row),
         "the column list didn't draw"
+    );
+}
+
+#[test]
+fn rows_fit_their_font_at_every_size() {
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    render(&mut workspace, "fonts-default", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    // The defaults keep CMTrace's density.
+    assert_eq!(workspace.tabs[0].view.row_rect(1).height(), 18.0);
+    for _ in 0..7 {
+        workspace.run_command(command::LARGER_TEXT, &mut Commands::default());
+    }
+    workspace.run_command(command::FONTS, &mut Commands::default());
+    let frame = render(&mut workspace, "fonts-large", 96.0, |_| true);
+    let theme = workspace.theme();
+    let view = &workspace.tabs[0].view;
+    let row = view.row_rect(2);
+    assert!(row.height() >= 26.0, "a 20-pixel font needs a taller row");
+    assert_eq!(frame.row_color(&workspace, 2), theme.error_row);
+    let message = view.header_rect(Column::Message).unwrap();
+    assert!(message.height() > 22.0, "the header grows too");
+    let panel = workspace.fonts_panel.as_ref().unwrap();
+    let rect = panel.rect();
+    assert_eq!(
+        frame.at(rect.right - 4.0, rect.top + 4.0),
+        theme.panel_background
     );
 }
 

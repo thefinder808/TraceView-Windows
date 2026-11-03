@@ -102,9 +102,8 @@ pub struct Theme {
     /// Highlight rule colors, in [`RULE_COLOR_NAMES`] order.
     pub rule_colors: [RuleColor; 6],
 
-    pub ui_font_size: f32,
-    pub grid_font_size: f32,
-    pub row_height: f32,
+    /// The least height of the grid's header and the status bar. Both grow to
+    /// fit a larger font. Font sizes and row spacing are settings of their own.
     pub header_height: f32,
     pub status_height: f32,
 }
@@ -155,9 +154,6 @@ impl Theme {
         histogram_window: Color::rgb(0xDCE8F5),
         bookmark: Color::rgb(0x0A64C8),
         rule_colors: LIGHT_RULES,
-        ui_font_size: 12.0,
-        grid_font_size: 13.0,
-        row_height: 18.0,
         header_height: 22.0,
         status_height: 22.0,
     };
@@ -208,9 +204,6 @@ impl Theme {
         histogram_window: Color::rgb(0xC1D3E5),
         bookmark: Color::rgb(0x0066CC),
         rule_colors: LIGHT_RULES,
-        ui_font_size: 12.0,
-        grid_font_size: 13.0,
-        row_height: 18.0,
         header_height: 22.0,
         status_height: 22.0,
     };
@@ -261,9 +254,6 @@ impl Theme {
         histogram_window: Color::rgb(0x334258),
         bookmark: Color::rgb(0x4A9EFF),
         rule_colors: DARK_RULES,
-        ui_font_size: 12.0,
-        grid_font_size: 13.0,
-        row_height: 18.0,
         header_height: 22.0,
         status_height: 22.0,
     };
@@ -314,9 +304,6 @@ impl Theme {
         histogram_window: Color::rgb(0xBCD2EE),
         bookmark: Color::rgb(0x007AFF),
         rule_colors: LIGHT_RULES,
-        ui_font_size: 12.0,
-        grid_font_size: 13.0,
-        row_height: 18.0,
         header_height: 22.0,
         status_height: 22.0,
     };
@@ -367,9 +354,6 @@ impl Theme {
         histogram_window: Color::rgb(0x193F55),
         bookmark: Color::rgb(0x00D4FF),
         rule_colors: DARK_RULES,
-        ui_font_size: 12.0,
-        grid_font_size: 13.0,
-        row_height: 18.0,
         header_height: 22.0,
         status_height: 22.0,
     };

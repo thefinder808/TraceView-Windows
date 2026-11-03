@@ -32,7 +32,9 @@ pub enum Key {
     Backspace,
     Delete,
     F(u8),
-    /// A letter or digit key, uppercase, regardless of keyboard state.
+    /// A letter or digit key, uppercase, regardless of keyboard state. The
+    /// plus and minus keys, on the main keyboard or the number pad, are `=`
+    /// and `-`.
     Char(char),
 }
 
@@ -44,6 +46,9 @@ pub enum Event {
     MouseMove(Point),
     /// Wheel movement in rows, positive when scrolling toward the file's start.
     Wheel(f32),
+    /// The wheel turned with Ctrl held, which zooms. Positive is away from the
+    /// user, which makes text larger.
+    ZoomWheel(f32),
     /// A typed character, after keyboard layout and IME processing.
     Char(char),
 }

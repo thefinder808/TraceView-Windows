@@ -11,8 +11,8 @@ use accesskit::{ActionRequest, TreeUpdate};
 use std::path::PathBuf;
 use tv_engine::{Encoding, Format};
 use tv_platform::{Command, Commands, Handler, WindowContext};
-use tv_render::{Fonts, FrameResult, Presentation, Renderer, DEFAULT_ORDER};
-use tv_ui::{Event, Theme};
+use tv_render::{FrameResult, Presentation, Renderer, DEFAULT_ORDER};
+use tv_ui::Event;
 
 pub fn encoding_name(encoding: Encoding) -> &'static str {
     match encoding {
@@ -40,14 +40,6 @@ pub fn readable_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{size:.1} {}", UNITS[unit])
-    }
-}
-
-pub(super) fn fonts_for(theme: &Theme) -> Fonts {
-    Fonts {
-        ui_size: theme.ui_font_size,
-        grid_size: theme.grid_font_size,
-        ..Fonts::default()
     }
 }
 
@@ -106,7 +98,7 @@ impl App {
             let (store, settings, problem) = Store::open(settings::location());
             workspace.use_settings(settings, store, problem);
         }
-        renderer.set_fonts(fonts_for(workspace.theme()));
+        renderer.set_fonts(workspace.fonts());
         if let Some(path) = path {
             workspace.open_paths(vec![path]);
         }
@@ -122,6 +114,8 @@ impl App {
 
     /// Keeps the title bar, fonts and IME in step with the workspace.
     fn sync_window(&mut self, commands: &mut Commands) {
+        // Setting the same fonts again costs nothing.
+        self.renderer.set_fonts(self.workspace.fonts());
         let theme = self.workspace.theme();
         if self.applied_theme != Some(theme.name) {
             if self.applied_theme.is_none() {
@@ -129,7 +123,6 @@ impl App {
                 commands.push(Command::SetImeEnabled(false));
             }
             self.applied_theme = Some(theme.name);
-            self.renderer.set_fonts(fonts_for(theme));
             commands.push(Command::SetCaptionColors {
                 background: theme.status_background,
                 text: theme.primary_text,

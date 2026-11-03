@@ -46,6 +46,32 @@ pub struct Settings {
     pub rules: Vec<Rule>,
     /// The grid's columns for each log format, by format name, such as `sccm`.
     pub columns: BTreeMap<String, Vec<ColumnSetting>>,
+    pub fonts: FontSettings,
+}
+
+/// Fonts by the names Windows lists them under, with sizes in pixels at 100%
+/// display scale.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontSettings {
+    pub log_font: String,
+    pub log_size: f32,
+    /// `compact`, `normal` or `roomy`.
+    pub row_spacing: String,
+    pub window_font: String,
+    pub window_size: f32,
+}
+
+impl Default for FontSettings {
+    fn default() -> Self {
+        Self {
+            log_font: "Consolas".to_string(),
+            log_size: 13.0,
+            row_spacing: "normal".to_string(),
+            window_font: "Segoe UI".to_string(),
+            window_size: 12.0,
+        }
+    }
 }
 
 /// One grid column, as saved.
@@ -74,6 +100,7 @@ impl Default for Settings {
             highlighting: true,
             rules: Vec::new(),
             columns: BTreeMap::new(),
+            fonts: FontSettings::default(),
         }
     }
 }

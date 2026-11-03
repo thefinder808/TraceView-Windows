@@ -2,9 +2,9 @@
 
 use tv_ui::{Key, Modifiers};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F24,
-    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_5, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB,
-    VK_UP,
+    GetKeyState, VK_ADD, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F24,
+    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_5, VK_OEM_MINUS, VK_OEM_PLUS, VK_PRIOR, VK_RETURN,
+    VK_RIGHT, VK_SHIFT, VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -42,9 +42,15 @@ pub(crate) fn key_from_virtual(code: u16) -> Option<Key> {
         VK_DELETE => Key::Delete,
         // The backslash key on US keyboards, for Ctrl+\.
         VK_OEM_5 => Key::Char('\\'),
+        // Plus and minus, for Ctrl+Plus and Ctrl+Minus, from either keyboard.
+        VK_OEM_PLUS | VK_ADD => Key::Char('='),
+        VK_OEM_MINUS | VK_SUBTRACT => Key::Char('-'),
         _ if (VK_F1.0..=VK_F24.0).contains(&code) => Key::F((code - VK_F1.0 + 1) as u8),
         // Virtual codes for letters and digits equal their uppercase ASCII values.
-        _ if code.to_le_bytes()[1] == 0 && (code as u8).is_ascii_alphanumeric() => {
+        // Codes in the lowercase range are other keys, such as the number pad's.
+        _ if code.to_le_bytes()[1] == 0
+            && ((code as u8).is_ascii_uppercase() || (code as u8).is_ascii_digit()) =>
+        {
             Key::Char(code as u8 as char)
         }
         _ => return None,
@@ -97,6 +103,16 @@ mod tests {
     fn ignores_keys_it_does_not_use() {
         assert_eq!(key_from_virtual(VK_SHIFT.0), None);
         assert_eq!(key_from_virtual(0x1234), None);
+        // Number pad 1, whose code is a lowercase letter's.
+        assert_eq!(key_from_virtual(0x61), None);
+    }
+
+    #[test]
+    fn plus_and_minus_come_from_either_keyboard() {
+        assert_eq!(key_from_virtual(VK_OEM_PLUS.0), Some(Key::Char('=')));
+        assert_eq!(key_from_virtual(VK_ADD.0), Some(Key::Char('=')));
+        assert_eq!(key_from_virtual(VK_OEM_MINUS.0), Some(Key::Char('-')));
+        assert_eq!(key_from_virtual(VK_SUBTRACT.0), Some(Key::Char('-')));
     }
 
     #[test]
