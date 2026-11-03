@@ -43,6 +43,7 @@ target/release/traceview.exe path/to/some.log
 | Ctrl+E, Ctrl+Shift+E | Next and previous error |
 | Ctrl+L | Error Lookup |
 | Ctrl+H | Highlight rules: color or mark rows that match, as in `download failed level:error` |
+| Drag a header, or its edge | Move or resize a column. Right-click the header, or use View > Columns, to show and hide them |
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |

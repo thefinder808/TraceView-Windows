@@ -301,6 +301,24 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** using the editor with a mouse and with Narrator on a real screen.
 
+**Columns:**
+
+- **Each format has its own columns:** Time, Level, Component, Thread, Source and Message, in any order and width, shown or hidden. SCCM logs now show Thread by default, as CMTrace does, and other logs look as before. Source is the source file an SCCM row names, and it starts hidden.
+- **With the mouse,** dragging a header's edge resizes its column and dragging the header moves it, with a line showing where it will land. The pointer changes over an edge.
+- **With the keyboard,** View > Columns, or right-clicking the header, opens an editor for the current tab's format. Space shows or hides a column, Ctrl+Up and Ctrl+Down move it, and minus and plus make it narrower or wider. Reset brings back the defaults. Screen readers get a modal dialog with a list and buttons.
+- **The row number always comes first and the message always shows.** The last column fills the rest of the grid.
+- **Copy (Ctrl+C) follows the shown columns,** in their order, and so does each row's text for screen readers. CSV export still writes every field, and gained a Source column.
+
+**Budgets** with the 5 GiB SCCM log after these two steps: worst frame 2.6 ms at 1920x1050, launch 49 ms, 38–41 MB beyond the row index, a 3.2 MB EXE. All within limits. Memory rose about 4 MB, mostly from keeping each loaded row's source file name.
+
+**Differences from this design:**
+
+- **The Row column can't be hidden or moved,** because bookmark and rule markers sit beside it.
+- **No horizontal scrolling.** Columns past the window's right edge are cut off, so the last column should be the one that can lose text.
+- **A merged tab uses its first file's columns.** Merging SCCM and other logs together gives one layout either way.
+
+**Not covered by automation:** dragging headers by hand, where the feel of the grab zones matters.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |

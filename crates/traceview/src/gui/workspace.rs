@@ -2,6 +2,8 @@
 //! focus, layout, drawing and routing input. It draws on any `Canvas`, so tests
 //! drive it without a display.
 
+use super::columns::{self, Column, ColumnSpec};
+use super::columns_panel::ColumnsPanel;
 use super::command_palette::{Action, CommandPalette, Mode};
 use super::details::PANE_HEIGHT;
 use super::log_view::{snap, Metrics, RowSource};
@@ -18,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
-use tv_engine::Level;
+use tv_engine::{Format, Level};
 use tv_platform::{Command, Commands, Cursor, Waker};
 use tv_ui::chip_bar::{self, Chip, ChipBar};
 use tv_ui::menu::{self, Menu, MenuBar, MenuItem};
@@ -62,6 +64,7 @@ pub mod command {
     pub const DETAILS: u32 = 22;
     pub const THEME_SYSTEM: u32 = 23;
     pub const HIGHLIGHTING: u32 = 24;
+    pub const COLUMNS: u32 = 25;
     pub const SIDEBAR: u32 = 26;
     pub const CHIPS: u32 = 27;
     pub const HISTOGRAM: u32 = 28;
@@ -309,6 +312,8 @@ pub struct Workspace {
     pub palette: Option<CommandPalette>,
     /// The highlight rules editor, while it's open.
     pub rules_panel: Option<RulesPanel>,
+    /// The columns editor, while it's open.
+    pub columns_panel: Option<ColumnsPanel>,
     /// The highlight rules every tab's rows are marked with.
     rules: Arc<RuleSet>,
     settings: Settings,
@@ -331,9 +336,14 @@ fn checked(mut item: MenuItem, is_checked: bool) -> MenuItem {
     item
 }
 
-/// Builds tab-separated text, so pasted rows line up in a spreadsheet or editor.
-/// Each row is (its number in the tab, its file, its row in that file).
-fn copy_rows(logs: &[SharedLog], rows: &[(usize, usize, usize)]) -> io::Result<String> {
+/// Builds tab-separated text of the columns on screen, so pasted rows line up
+/// in a spreadsheet or editor. Each row is (its number in the tab, its file,
+/// its row in that file).
+fn copy_rows(
+    logs: &[SharedLog],
+    rows: &[(usize, usize, usize)],
+    columns: &[Column],
+) -> io::Result<String> {
     let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
     let mut text = String::new();
     for (number, source, row) in rows {
@@ -342,14 +352,15 @@ fn copy_rows(logs: &[SharedLog], rows: &[(usize, usize, usize)]) -> io::Result<S
             .map_err(|_| io::Error::other("the log is unavailable"))?;
         log.read_rows(*row..row + 1, &mut buffer, |row, raw, _| {
             let cells = cells_from_row(&log, raw, &mut scratch);
-            text.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\r\n",
-                number + 1,
-                cells.time,
-                super::log_view::level_name(log.level(row)),
-                cells.component,
-                cells.message
-            ));
+            text.push_str(&(number + 1).to_string());
+            for column in columns {
+                text.push('\t');
+                text.push_str(match column {
+                    Column::Level => super::log_view::level_name(log.level(row)),
+                    column => column.text(&cells),
+                });
+            }
+            text.push_str("\r\n");
         })?;
     }
     Ok(text)
@@ -381,6 +392,7 @@ impl Workspace {
             lookup: None,
             palette: None,
             rules_panel: None,
+            columns_panel: None,
             rules: Arc::default(),
             settings: Settings::default(),
             store: Store::disabled(),
@@ -422,6 +434,23 @@ impl Workspace {
         for tab in &mut self.tabs {
             tab.set_rules(&self.rules);
         }
+    }
+
+    /// A format's columns, from settings. A tab that isn't open yet has none,
+    /// and is drawn as a text log would be.
+    fn columns_for(&self, format: Option<Format>) -> Vec<ColumnSpec> {
+        let format = format.unwrap_or(Format::Plain);
+        let saved = self.settings.columns.get(columns::format_key(format));
+        columns::from_settings(saved.map(Vec::as_slice), format)
+    }
+
+    /// Saves a format's columns. Every tab of that format follows them.
+    fn set_columns(&mut self, format: Format, specs: &[ColumnSpec]) {
+        self.settings.columns.insert(
+            columns::format_key(format).to_string(),
+            columns::to_settings(specs),
+        );
+        self.save_settings();
     }
 
     /// Applies and saves what the rules editor holds, after it changed them.
@@ -558,6 +587,7 @@ impl Workspace {
                         MenuItem::command("Use highlight rules", "", command::HIGHLIGHTING),
                         self.settings.highlighting,
                     ),
+                    MenuItem::command("Columns...", "", command::COLUMNS),
                     MenuItem::Separator,
                     checked(
                         MenuItem::command("Theme: follow Windows", "", command::THEME_SYSTEM),
@@ -748,10 +778,11 @@ impl Workspace {
             .iter()
             .map(|source| source.log.clone())
             .collect();
+        let columns: Vec<Column> = tab.view.shown_columns().collect();
         let waker = self.waker.clone();
         let (sender, result) = channel();
         std::thread::spawn(move || {
-            let copied = copy_rows(&logs, &rows).map(|text| CopyResult {
+            let copied = copy_rows(&logs, &rows, &columns).map(|text| CopyResult {
                 text,
                 rows: count,
                 cut_short: total > count,
@@ -896,6 +927,7 @@ impl Workspace {
                 panel.arrange(self.layout.grid);
                 self.lookup = Some(panel);
                 self.rules_panel = None;
+                self.columns_panel = None;
                 commands.push(Command::SetImeEnabled(true));
             }
             command::RULES => {
@@ -905,6 +937,7 @@ impl Workspace {
                     self.apply_rules();
                 }
                 self.rules_panel = Some(RulesPanel::new(self.settings.rules.clone()));
+                self.columns_panel = None;
                 self.lookup = None;
                 self.palette = None;
                 commands.push(Command::SetImeEnabled(true));
@@ -912,6 +945,18 @@ impl Workspace {
             command::HIGHLIGHTING => {
                 self.settings.highlighting = !self.settings.highlighting;
                 self.apply_rules();
+            }
+            command::COLUMNS => {
+                let format = self
+                    .active_tab()
+                    .and_then(Tab::format)
+                    .unwrap_or(Format::Plain);
+                let specs = self.columns_for(Some(format));
+                self.columns_panel = Some(ColumnsPanel::new(format, specs));
+                self.rules_panel = None;
+                self.lookup = None;
+                self.palette = None;
+                commands.push(Command::SetImeEnabled(false));
             }
             _ => {}
         }
@@ -1030,6 +1075,35 @@ impl Workspace {
         {
             commands.redraw();
             commands.accessibility_changed();
+        }
+    }
+
+    /// The columns editor takes all input while it's open, and every change
+    /// applies at once.
+    fn columns_event(&mut self, event: Event, commands: &mut Commands) {
+        let Some(panel) = &mut self.columns_panel else {
+            return;
+        };
+        let response = panel.handle(event);
+        if response.changed {
+            let (format, specs) = (panel.format, panel.columns.clone());
+            self.set_columns(format, &specs);
+        }
+        if response.closed {
+            self.columns_panel = None;
+            commands.push(Command::SetImeEnabled(self.focus != Focus::Grid));
+        }
+        if response.redraw || response.changed || response.closed {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    /// Applies a change a screen reader made in the columns editor.
+    pub fn columns_edited(&mut self) {
+        if let Some(panel) = &self.columns_panel {
+            let (format, specs) = (panel.format, panel.columns.clone());
+            self.set_columns(format, &specs);
         }
     }
 
@@ -1165,13 +1239,16 @@ impl Workspace {
         consumed
     }
 
-    /// Shows the resize cursor over either divider.
+    /// Shows the resize cursor over either divider, and over a column's edge.
     fn update_cursor(&mut self, commands: &mut Commands) {
         let resize = (self.show_sidebar && self.sidebar.shows_resize_cursor())
             || self
                 .split
                 .as_ref()
-                .is_some_and(|split| split.splitter.shows_resize_cursor());
+                .is_some_and(|split| split.splitter.shows_resize_cursor())
+            || self
+                .active_tab()
+                .is_some_and(|tab| tab.view.shows_resize_cursor(self.pointer));
         let cursor = if resize {
             Cursor::ResizeColumns
         } else {
@@ -1319,6 +1396,7 @@ impl Workspace {
         self.palette = Some(palette);
         self.lookup = None;
         self.rules_panel = None;
+        self.columns_panel = None;
         commands.push(Command::SetImeEnabled(true));
     }
 
@@ -1448,6 +1526,10 @@ impl Workspace {
             self.rules_event(event, canvas, commands);
             return;
         }
+        if self.columns_panel.is_some() {
+            self.columns_event(event, commands);
+            return;
+        }
         if self.lookup.is_some() {
             self.lookup_event(event, canvas, commands);
             return;
@@ -1568,6 +1650,8 @@ impl Workspace {
             if self.tab_bar.handle(event).redraw {
                 commands.redraw();
             }
+            // Whatever has focus, a column's edge shows the resize pointer.
+            self.update_cursor(commands);
         }
 
         let focus = self.focus;
@@ -1590,10 +1674,22 @@ impl Workspace {
         }
         let response = tab.view.handle(event);
         tab.following = tab.view.at_bottom();
+        let changed_columns = response
+            .columns_changed
+            .then(|| (tab.format(), tab.view.columns().to_vec()));
+        if let Some((Some(format), specs)) = changed_columns {
+            self.set_columns(format, &specs);
+        }
+        if response.columns_menu {
+            self.run_command(command::COLUMNS, commands);
+        }
+        if matches!(event, Event::MouseMove(_) | Event::MouseUp(..)) {
+            self.update_cursor(commands);
+        }
         if response.copy_selection {
             self.start_copy();
         }
-        if response.redraw {
+        if response.redraw || response.columns_changed {
             commands.redraw();
             commands.accessibility_changed();
         }
@@ -1758,21 +1854,23 @@ impl Workspace {
         if let Some(palette) = &mut self.palette {
             palette.arrange(Rect::new(0.0, self.layout.menu.bottom, size.0, size.1));
         }
+        let below_menu = Rect::new(0.0, self.layout.menu.bottom, size.0, size.1);
         if let Some(panel) = &mut self.rules_panel {
-            panel.arrange(
-                Rect::new(0.0, self.layout.menu.bottom, size.0, size.1),
-                canvas,
-                theme,
-            );
+            panel.arrange(below_menu, canvas, theme);
+        }
+        if let Some(panel) = &mut self.columns_panel {
+            panel.arrange(below_menu, canvas, theme);
         }
         let other_index = self.split.as_ref().map(|split| split.other);
         for (index, pane) in [(Some(self.active), Some(focused)), (other_index, other)] {
             let (Some(index), Some(pane)) = (index, pane) else {
                 continue;
             };
+            let columns = self.columns_for(self.tabs.get(index).and_then(Tab::format));
             if let Some(tab) = self.tabs.get_mut(index) {
                 let count = tab.rows().map_or(0, |rows| rows.row_count());
-                tab.view.arrange(pane.grid, count, metrics, theme, scale);
+                tab.view
+                    .arrange(pane.grid, count, metrics, theme, scale, &columns);
                 if tab.following {
                     tab.view.scroll_to_end();
                 }
@@ -1949,6 +2047,9 @@ impl Workspace {
             if panel.focus == Part::Field {
                 caret = Some(field_caret);
             }
+        }
+        if let Some(panel) = &self.columns_panel {
+            panel.draw(canvas, theme);
         }
 
         self.menu.draw_bar(canvas, layout.menu, theme);
@@ -2232,9 +2333,16 @@ mod tests {
             tv_engine::LogFile::open_with_cache(&path, None, &std::sync::atomic::AtomicU64::new(0))
                 .unwrap();
         let logs = [std::sync::Arc::new(std::sync::RwLock::new(log))];
+        let plain: Vec<Column> = columns::shown(&columns::defaults(Format::Plain)).collect();
         assert_eq!(
-            copy_rows(&logs, &[(0, 0, 0), (1, 0, 1)]).unwrap(),
+            copy_rows(&logs, &[(0, 0, 0), (1, 0, 1)], &plain).unwrap(),
             "1\t2026-01-01 10:00:00.000\tError\tapp\tdisk full\r\n2\t\tInformation\t\tnext\r\n"
+        );
+        // Copies follow the columns on screen, in their order.
+        let moved = [Column::Message, Column::Level];
+        assert_eq!(
+            copy_rows(&logs, &[(0, 0, 0)], &moved).unwrap(),
+            "1\tdisk full\tError\r\n"
         );
     }
 
@@ -2498,7 +2606,8 @@ mod tests {
                 )
             })
             .collect();
-        let copied = copy_rows(&logs, &rows).unwrap();
+        let plain: Vec<Column> = columns::shown(&columns::defaults(Format::Plain)).collect();
+        let copied = copy_rows(&logs, &rows, &plain).unwrap();
         assert!(
             copied.starts_with("3\t2026-01-01 10:00:02.000\tInformation\tapp\ta1\r\n4\t"),
             "{copied}"
@@ -2602,6 +2711,73 @@ mod tests {
                 .is_some_and(|tab| tab.document().is_some())
                 && is_marked(workspace, 99)
         });
+    }
+
+    fn shown(workspace: &Workspace) -> Vec<Column> {
+        workspace.tabs[0].view.shown_columns().collect()
+    }
+
+    #[test]
+    fn dragging_a_header_saves_the_columns_for_that_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::super::settings::FILE_NAME);
+        let log = log_file(&dir, "app.log", 100);
+        let mut first = workspace();
+        let (store, settings, problem) = Store::open(Some(file.clone()));
+        first.use_settings(settings, store, problem);
+        first.open_paths(vec![log.clone()]);
+        settle(&mut first, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        let component = first.tabs[0].view.header_rect(Column::Component).unwrap();
+        let grab = Point::new(component.left + 10.0, component.top + 5.0);
+        let target = Point::new(component.left - 300.0, component.top + 5.0);
+        send(&mut first, Event::MouseDown(grab, MouseButton::Left, NONE));
+        send(&mut first, Event::MouseMove(target));
+        send(&mut first, Event::MouseUp(target, MouseButton::Left));
+        settle(&mut first, |_| true);
+        let moved = [
+            Column::Component,
+            Column::Time,
+            Column::Level,
+            Column::Message,
+        ];
+        assert_eq!(shown(&first), moved);
+        assert_eq!(first.settings().columns["plain"][0].name, "component");
+        drop(first);
+
+        let mut second = workspace();
+        let (store, settings, problem) = Store::open(Some(file));
+        second.use_settings(settings, store, problem);
+        second.open_paths(vec![log]);
+        settle(&mut second, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        assert_eq!(shown(&second), moved);
+    }
+
+    #[test]
+    fn right_clicking_the_header_opens_the_columns_editor() {
+        let (_dir, mut workspace) = opened(10);
+        let time = workspace.tabs[0].view.header_rect(Column::Time).unwrap();
+        let point = Point::new(time.left + 5.0, time.top + 5.0);
+        send(
+            &mut workspace,
+            Event::MouseDown(point, MouseButton::Right, NONE),
+        );
+        let panel = workspace.columns_panel.as_ref().unwrap();
+        assert_eq!(panel.title(), "Columns for other logs");
+        // Hide the component, the third column.
+        send(&mut workspace, Event::KeyDown(Key::Down, NONE));
+        send(&mut workspace, Event::KeyDown(Key::Down, NONE));
+        send(&mut workspace, Event::Char(' '));
+        settle(&mut workspace, |_| true);
+        assert_eq!(
+            shown(&workspace),
+            [Column::Time, Column::Level, Column::Message]
+        );
+        send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        assert!(workspace.columns_panel.is_none());
     }
 
     #[test]

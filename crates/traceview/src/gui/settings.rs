@@ -21,6 +21,8 @@ const MOST_PRESETS: usize = 100;
 const MOST_BOOKMARKED_LOGS: usize = 200;
 const MOST_BOOKMARKS_PER_LOG: usize = 10_000;
 pub const MOST_RULES: usize = 100;
+const MOST_COLUMN_LAYOUTS: usize = 20;
+const MOST_COLUMNS: usize = 20;
 const HEADER: &str = "# TraceView settings. Edit them while TraceView is closed, or your changes may be overwritten.\n\n";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,6 +44,19 @@ pub struct Settings {
     pub highlighting: bool,
     /// Highlight rules, first match first.
     pub rules: Vec<Rule>,
+    /// The grid's columns for each log format, by format name, such as `sccm`.
+    pub columns: BTreeMap<String, Vec<ColumnSetting>>,
+}
+
+/// One grid column, as saved.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColumnSetting {
+    /// Such as `time`, `thread` or `message`.
+    pub name: String,
+    /// In characters of the grid font.
+    pub width: f32,
+    pub shown: bool,
 }
 
 impl Default for Settings {
@@ -58,6 +73,7 @@ impl Default for Settings {
             bookmarks: BTreeMap::new(),
             highlighting: true,
             rules: Vec::new(),
+            columns: BTreeMap::new(),
         }
     }
 }
@@ -141,6 +157,12 @@ impl Settings {
         self.recent.truncate(MOST_RECENT);
         self.presets.truncate(MOST_PRESETS);
         self.rules.truncate(MOST_RULES);
+        while self.columns.len() > MOST_COLUMN_LAYOUTS {
+            self.columns.pop_last();
+        }
+        for columns in self.columns.values_mut() {
+            columns.truncate(MOST_COLUMNS);
+        }
         while self.bookmarks.len() > MOST_BOOKMARKED_LOGS {
             self.bookmarks.pop_last();
         }

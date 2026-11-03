@@ -1,6 +1,7 @@
 //! The log grid: scrolling, selection, keyboard and drawing. It works through
 //! the `Canvas` and `RowSource` interfaces, so it's tested without a window.
 
+use super::columns::{Column, ColumnSpec, MAX_WIDTH, MIN_WIDTH};
 use super::row_cache::RowCells;
 use super::rules::Style;
 use std::sync::Arc;
@@ -13,10 +14,11 @@ use tv_ui::{
 const GRID_LEFT: TextStyle = TextStyle::new(FontRole::Grid, Align::Left);
 const GRID_RIGHT: TextStyle = TextStyle::new(FontRole::Grid, Align::Right);
 const CELL_PADDING: f32 = 8.0;
-const TIME_CHARS: f32 = 23.0;
-const LEVEL_CHARS: f32 = 4.0;
-const COMPONENT_CHARS: f32 = 22.0;
 const MIN_ROW_NUMBER_CHARS: f32 = 6.0;
+/// How near a header's edge a press has to be to resize the column.
+const EDGE_GRAB: f32 = 4.0;
+/// How far a header has to be dragged before it moves.
+const DRAG_START: f32 = 4.0;
 /// The bookmark marker, a bar at the left edge of the row number.
 const BOOKMARK_WIDTH: f32 = 3.0;
 /// A highlight rule's marker, a bar between the row number and the time.
@@ -48,6 +50,10 @@ pub struct Response {
     pub redraw: bool,
     pub copy_selection: bool,
     pub selection_changed: bool,
+    /// A column was resized or moved, so the owner should save [`LogView::columns`].
+    pub columns_changed: bool,
+    /// The header was right-clicked, which opens the columns editor.
+    pub columns_menu: bool,
 }
 
 impl Response {
@@ -55,18 +61,47 @@ impl Response {
         redraw: true,
         copy_selection: false,
         selection_changed: false,
+        columns_changed: false,
+        columns_menu: false,
     };
     const SELECTED: Response = Response {
         redraw: true,
         copy_selection: false,
         selection_changed: true,
+        columns_changed: false,
+        columns_menu: false,
     };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag {
-    Thumb { grab: f32 },
+    Thumb {
+        grab: f32,
+    },
     Rows,
+    /// A column's right edge, with `column` indexing `LogView::columns`.
+    Resize {
+        column: usize,
+        left: f32,
+    },
+    /// A header being dragged to a new place. `target` is where it would land,
+    /// as a position among the shown columns, once it has moved far enough.
+    Move {
+        column: usize,
+        start: f32,
+        target: Option<usize>,
+    },
+}
+
+/// A shown column and where it sits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placed {
+    column: Column,
+    left: f32,
+    /// Where its text stops. The last column runs to the grid's edge.
+    right: f32,
+    /// Where it would stop at its own width.
+    natural_right: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -82,10 +117,8 @@ struct Layout {
     body: Rect,
     track: Rect,
     row_number_right: f32,
-    time_left: f32,
-    level_left: f32,
-    component_left: f32,
-    message_left: f32,
+    /// Where the first column starts, after the gap that holds rule markers.
+    first_left: f32,
 }
 
 #[derive(Default)]
@@ -99,6 +132,9 @@ pub struct LogView {
     layout: Layout,
     metrics: Metrics,
     rows: usize,
+    /// Every column in order, shown or not.
+    columns: Vec<ColumnSpec>,
+    placed: Vec<Placed>,
 }
 
 /// Rounds to a whole number of physical pixels, which keeps rows crisp.
@@ -140,6 +176,8 @@ pub fn level_name(level: Level) -> &'static str {
 
 impl LogView {
     /// Recomputes where everything goes. Call before drawing or hit-testing.
+    /// While a column is being resized or moved, the view keeps its own copy
+    /// of the columns until the drag ends.
     pub fn arrange(
         &mut self,
         area: Rect,
@@ -147,30 +185,80 @@ impl LogView {
         metrics: Metrics,
         theme: &Theme,
         scale: f32,
+        columns: &[ColumnSpec],
     ) {
         self.rows = rows;
         self.metrics = metrics;
         let mut body = area;
         let header = body.take_top(snap(theme.header_height, scale));
         let track = body.take_right(scrollbar::WIDTH);
-        let char_width = metrics.char_width;
         let number_chars = digits(rows).max(MIN_ROW_NUMBER_CHARS);
-        let row_number_right = body.left + CELL_PADDING + number_chars * char_width;
-        let time_left = row_number_right + CELL_PADDING * 1.5;
-        let level_left = time_left + TIME_CHARS * char_width + CELL_PADDING;
-        let component_left = level_left + LEVEL_CHARS * char_width + CELL_PADDING;
-        let message_left = component_left + COMPONENT_CHARS * char_width + CELL_PADDING;
+        let row_number_right = body.left + CELL_PADDING + number_chars * metrics.char_width;
         self.layout = Layout {
             header,
             body,
             track,
             row_number_right,
-            time_left,
-            level_left,
-            component_left,
-            message_left,
+            first_left: row_number_right + CELL_PADDING * 1.5,
         };
+        if !matches!(self.drag, Some(Drag::Resize { .. } | Drag::Move { .. })) {
+            self.columns = columns.to_vec();
+        }
+        self.place();
         self.clamp_top();
+    }
+
+    fn place(&mut self) {
+        let char_width = self.metrics.char_width;
+        let mut left = self.layout.first_left;
+        self.placed.clear();
+        for spec in self.columns.iter().filter(|spec| spec.shown) {
+            let right = left + spec.width * char_width;
+            self.placed.push(Placed {
+                column: spec.column,
+                left,
+                right,
+                natural_right: right,
+            });
+            left = right + CELL_PADDING;
+        }
+        // The last column takes whatever room is left, and stops at the edge.
+        if let Some(last) = self.placed.last_mut() {
+            last.right = self.layout.body.right.max(last.left);
+        }
+    }
+
+    /// Every column in order, as the view has it, including while a drag
+    /// changes them.
+    pub fn columns(&self) -> &[ColumnSpec] {
+        &self.columns
+    }
+
+    /// The columns on screen, in order.
+    pub fn shown_columns(&self) -> impl Iterator<Item = Column> + '_ {
+        self.placed.iter().map(|placed| placed.column)
+    }
+
+    /// The shown column whose right edge is under `point` in the header. The
+    /// last column fills the grid, so its edge can't be dragged.
+    fn edge_at(&self, point: Point) -> Option<usize> {
+        if !self.layout.header.contains(point) {
+            return None;
+        }
+        let last = self.placed.len().checked_sub(1)?;
+        self.placed[..last]
+            .iter()
+            .position(|placed| (point.x - (placed.right + CELL_PADDING / 2.0)).abs() <= EDGE_GRAB)
+    }
+
+    /// True where a press would resize a column, or while one is resizing,
+    /// for the pointer's shape.
+    pub fn shows_resize_cursor(&self, point: Point) -> bool {
+        matches!(self.drag, Some(Drag::Resize { .. })) || self.edge_at(point).is_some()
+    }
+
+    fn spec_index(&self, column: Column) -> Option<usize> {
+        self.columns.iter().position(|spec| spec.column == column)
     }
 
     /// True when the last row is on screen, which is when live tail follows.
@@ -286,6 +374,8 @@ impl LogView {
             layout: self.layout,
             metrics: self.metrics,
             rows,
+            columns: std::mem::take(&mut self.columns),
+            placed: std::mem::take(&mut self.placed),
             ..Self::default()
         };
     }
@@ -351,12 +441,87 @@ impl LogView {
             }
             return Response::REDRAW;
         }
+        if let Some(index) = self.edge_at(point) {
+            let placed = self.placed[index];
+            if let Some(column) = self.spec_index(placed.column) {
+                self.drag = Some(Drag::Resize {
+                    column,
+                    left: placed.left,
+                });
+            }
+            return Response::default();
+        }
+        if self.layout.header.contains(point) {
+            let pressed = self
+                .placed
+                .iter()
+                .find(|placed| point.x < placed.right + CELL_PADDING)
+                .and_then(|placed| self.spec_index(placed.column));
+            if let Some(column) = pressed {
+                self.drag = Some(Drag::Move {
+                    column,
+                    start: point.x,
+                    target: None,
+                });
+            }
+            return Response::default();
+        }
         if let Some(row) = self.row_at(point) {
             self.select(row, shift);
             self.drag = Some(Drag::Rows);
             return Response::SELECTED;
         }
         Response::default()
+    }
+
+    /// Where a dragged header would land: before the first shown column whose
+    /// middle is right of the pointer, or after them all.
+    fn drop_target(&self, x: f32) -> usize {
+        self.placed
+            .iter()
+            .position(|placed| x < (placed.left + placed.natural_right) / 2.0)
+            .unwrap_or(self.placed.len())
+    }
+
+    /// Ends a header drag, moving the column if it was dropped somewhere new.
+    fn finish_drag(&mut self) -> Response {
+        let changed = match self.drag.take() {
+            Some(Drag::Resize { .. }) => true,
+            Some(Drag::Move {
+                column,
+                target: Some(target),
+                ..
+            }) => self.move_column(column, target),
+            _ => false,
+        };
+        Response {
+            redraw: changed,
+            columns_changed: changed,
+            ..Response::default()
+        }
+    }
+
+    /// Moves a column to just before the shown column at `target`, or after
+    /// the last one. Returns false if that's where it already is.
+    fn move_column(&mut self, column: usize, target: usize) -> bool {
+        let Some(moving) = self.columns.get(column).map(|spec| spec.column) else {
+            return false;
+        };
+        let before = self.placed.get(target).map(|placed| placed.column);
+        let after = target
+            .checked_sub(1)
+            .and_then(|index| self.placed.get(index))
+            .map(|placed| placed.column);
+        if before == Some(moving) || after == Some(moving) {
+            return false;
+        }
+        let spec = self.columns.remove(column);
+        let at = before
+            .and_then(|before| self.spec_index(before))
+            .unwrap_or(self.columns.len());
+        self.columns.insert(at, spec);
+        self.place();
+        true
     }
 
     fn handle_drag(&mut self, point: Point) -> Response {
@@ -384,6 +549,27 @@ impl LogView {
                     _ => Response::default(),
                 }
             }
+            Some(Drag::Resize { column, left }) => {
+                if self.metrics.char_width > 0.0 {
+                    let width =
+                        ((point.x - left) / self.metrics.char_width).clamp(MIN_WIDTH, MAX_WIDTH);
+                    if let Some(spec) = self.columns.get_mut(column) {
+                        spec.width = width;
+                    }
+                    self.place();
+                }
+                Response::REDRAW
+            }
+            Some(Drag::Move { column, start, .. }) => {
+                let target =
+                    ((point.x - start).abs() > DRAG_START).then(|| self.drop_target(point.x));
+                self.drag = Some(Drag::Move {
+                    column,
+                    start,
+                    target,
+                });
+                Response::REDRAW
+            }
             None => Response::default(),
         }
     }
@@ -399,10 +585,15 @@ impl LogView {
             Event::MouseDown(point, MouseButton::Left, modifiers) => {
                 self.handle_press(point, modifiers.shift)
             }
-            Event::MouseUp(_, MouseButton::Left) => {
-                self.drag = None;
-                Response::default()
+            Event::MouseDown(point, MouseButton::Right, _)
+                if self.layout.header.contains(point) =>
+            {
+                Response {
+                    columns_menu: true,
+                    ..Response::default()
+                }
             }
+            Event::MouseUp(_, MouseButton::Left) => self.finish_drag(),
             Event::MouseMove(point) => self.handle_drag(point),
             Event::Wheel(rows) => {
                 self.scroll_to(self.top - f64::from(rows));
@@ -428,12 +619,22 @@ impl LogView {
     }
 
     /// Where a highlight rule's marker goes: in the gap between the row number
-    /// and the time.
+    /// and the first column.
     pub fn marker_rect(&self, row: usize) -> Rect {
         let rect = self.row_rect(row);
-        let gap = self.layout.time_left - self.layout.row_number_right;
+        let gap = self.layout.first_left - self.layout.row_number_right;
         let left = self.layout.row_number_right + (gap - MARKER_WIDTH) / 2.0;
         Rect::new(left, rect.top + 1.0, left + MARKER_WIDTH, rect.bottom - 1.0)
+    }
+
+    /// Where a shown column's header is.
+    #[cfg(test)]
+    pub fn header_rect(&self, column: Column) -> Option<Rect> {
+        let header = self.layout.header;
+        self.placed
+            .iter()
+            .find(|placed| placed.column == column)
+            .map(|placed| Rect::new(placed.left, header.top, placed.right, header.bottom))
     }
 
     fn draw_header(&self, canvas: &mut dyn Canvas, theme: &Theme) {
@@ -447,14 +648,33 @@ impl LogView {
             GRID_RIGHT,
             theme.primary_text,
         );
-        for (title, left, right) in [
-            ("Time", layout.time_left, layout.level_left),
-            ("Lvl", layout.level_left, layout.component_left),
-            ("Component", layout.component_left, layout.message_left),
-            ("Message", layout.message_left, header.right),
-        ] {
-            canvas.text(title, cell(left, right), GRID_LEFT, theme.primary_text);
+        canvas.push_clip(header);
+        for placed in &self.placed {
+            canvas.text(
+                placed.column.title(),
+                cell(placed.left, placed.right),
+                GRID_LEFT,
+                theme.primary_text,
+            );
         }
+        // Where a dragged header would land.
+        if let Some(Drag::Move {
+            target: Some(target),
+            ..
+        }) = self.drag
+        {
+            let x = match self.placed.get(target) {
+                Some(placed) => placed.left - CELL_PADDING / 2.0,
+                None => self.placed.last().map_or(layout.first_left, |placed| {
+                    placed.natural_right + CELL_PADDING / 2.0
+                }),
+            };
+            canvas.fill_rect(
+                Rect::new(x - 1.0, header.top, x + 1.0, header.bottom),
+                theme.accent,
+            );
+        }
+        canvas.pop_clip();
         canvas.fill_rect(
             Rect::new(
                 header.left,
@@ -543,39 +763,17 @@ impl LogView {
             GRID_RIGHT,
             themed(theme.tertiary_text),
         );
-        canvas.text(
-            short_level(level),
-            cell(layout.level_left, layout.component_left - CELL_PADDING),
-            GRID_LEFT,
-            message_color,
-        );
-        match cells {
-            Some(cells) => {
-                canvas.text(
-                    &cells.time,
-                    cell(layout.time_left, layout.level_left - CELL_PADDING),
-                    GRID_LEFT,
-                    themed(theme.timestamp_text),
-                );
-                canvas.text(
-                    &cells.component,
-                    cell(layout.component_left, layout.message_left - CELL_PADDING),
-                    GRID_LEFT,
-                    themed(theme.component_text),
-                );
-                canvas.text(
-                    &cells.message,
-                    cell(layout.message_left, layout.body.right),
-                    GRID_LEFT,
-                    message_color,
-                );
-            }
-            None => canvas.text(
-                "...",
-                cell(layout.message_left, layout.body.right),
-                GRID_LEFT,
-                themed(theme.placeholder_text),
-            ),
+        // The level comes from the index, so it draws before the row has loaded.
+        for placed in &self.placed {
+            let (text, color) = match (placed.column, &cells) {
+                (Column::Level, _) => (short_level(level), message_color),
+                (Column::Message, Some(cells)) => (cells.message.as_str(), message_color),
+                (Column::Message, None) => ("...", themed(theme.placeholder_text)),
+                (_, None) => continue,
+                (Column::Time, Some(cells)) => (cells.time.as_str(), themed(theme.timestamp_text)),
+                (column, Some(cells)) => (column.text(cells), themed(theme.component_text)),
+            };
+            canvas.text(text, cell(placed.left, placed.right), GRID_LEFT, color);
         }
     }
 
@@ -600,7 +798,9 @@ impl LogView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::columns::defaults;
     use crate::gui::rules::Mark;
+    use tv_engine::Format;
     use tv_ui::recording::{DrawOp, RecordingCanvas};
     use tv_ui::Modifiers;
 
@@ -649,6 +849,7 @@ mod tests {
                     time: "2026-01-01 10:00:00.000".to_string(),
                     component: "App".to_string(),
                     thread: "1".to_string(),
+                    source: String::new(),
                     message: format!("message {row}"),
                     mark: None,
                 })
@@ -701,7 +902,14 @@ mod tests {
 
     fn view(rows: usize) -> LogView {
         let mut view = LogView::default();
-        view.arrange(AREA, rows, METRICS, &Theme::CLASSIC, 1.0);
+        view.arrange(
+            AREA,
+            rows,
+            METRICS,
+            &Theme::CLASSIC,
+            1.0,
+            &defaults(Format::Plain),
+        );
         view
     }
 
@@ -1047,7 +1255,7 @@ mod tests {
         assert_eq!(markers.len(), view.visible_rows().len());
         let (first, color) = markers[0];
         assert!(first.left > view.layout.row_number_right);
-        assert!(first.right < view.layout.time_left);
+        assert!(first.right < view.layout.first_left);
         assert_eq!(color, red.marker);
         // On the selected row it takes the selection's text color, as bookmarks do.
         assert_eq!(markers[2].1, theme.selected_text);
@@ -1057,7 +1265,142 @@ mod tests {
     fn row_number_column_grows_for_huge_files() {
         let small = view(100);
         let large = view(47_815_464);
-        assert!(large.layout.message_left > small.layout.message_left);
+        assert!(large.layout.first_left > small.layout.first_left);
+    }
+
+    fn order(view: &LogView) -> Vec<Column> {
+        view.shown_columns().collect()
+    }
+
+    fn press(view: &mut LogView, x: f32) -> Response {
+        view.handle(Event::MouseDown(
+            Point::new(x, 10.0),
+            MouseButton::Left,
+            NONE,
+        ))
+    }
+
+    fn move_to(view: &mut LogView, x: f32) {
+        view.handle(Event::MouseMove(Point::new(x, 10.0)));
+    }
+
+    fn release(view: &mut LogView, x: f32) -> Response {
+        view.handle(Event::MouseUp(Point::new(x, 10.0), MouseButton::Left))
+    }
+
+    #[test]
+    fn shown_columns_draw_in_order_and_the_last_fills_the_grid() {
+        let mut view = view(100);
+        view.arrange(
+            AREA,
+            100,
+            METRICS,
+            &Theme::CLASSIC,
+            1.0,
+            &defaults(Format::Sccm),
+        );
+        let mut canvas = RecordingCanvas::new();
+        let rows = FakeRows {
+            count: 100,
+            loaded: true,
+        };
+        view.draw(&mut canvas, &rows, &Theme::CLASSIC);
+        let texts = canvas.texts();
+        assert!(texts.contains(&"Thread") && !texts.contains(&"Source"));
+        assert_eq!(
+            order(&view),
+            [
+                Column::Time,
+                Column::Level,
+                Column::Component,
+                Column::Thread,
+                Column::Message
+            ]
+        );
+        let message = view.header_rect(Column::Message).unwrap();
+        assert_eq!(message.right, view.body_rect().right);
+    }
+
+    #[test]
+    fn dragging_a_header_edge_resizes_the_column() {
+        let mut view = view(100);
+        let time = view.header_rect(Column::Time).unwrap();
+        let edge = time.right + CELL_PADDING / 2.0;
+        assert!(view.shows_resize_cursor(Point::new(edge, 10.0)));
+        assert!(!view.shows_resize_cursor(Point::new(time.left + 20.0, 10.0)));
+        assert_eq!(press(&mut view, edge), Response::default());
+        move_to(&mut view, time.left + 140.0);
+        // The owner's columns don't replace the view's during the drag.
+        view.arrange(
+            AREA,
+            100,
+            METRICS,
+            &Theme::CLASSIC,
+            1.0,
+            &defaults(Format::Plain),
+        );
+        assert_eq!(view.columns()[0].width, 20.0);
+        assert!(release(&mut view, time.left + 140.0).columns_changed);
+        assert_eq!(
+            view.header_rect(Column::Level).unwrap().left,
+            time.left + 148.0
+        );
+        // It never shrinks past its minimum.
+        let edge = view.header_rect(Column::Time).unwrap().right + CELL_PADDING / 2.0;
+        press(&mut view, edge);
+        move_to(&mut view, 0.0);
+        release(&mut view, 0.0);
+        assert_eq!(view.columns()[0].width, MIN_WIDTH);
+    }
+
+    #[test]
+    fn dragging_a_header_moves_the_column_and_a_click_doesnt() {
+        let mut view = view(100);
+        let component = view.header_rect(Column::Component).unwrap();
+        press(&mut view, component.left + 10.0);
+        move_to(&mut view, 70.0);
+        let response = release(&mut view, 70.0);
+        assert!(response.columns_changed);
+        assert_eq!(
+            order(&view),
+            [
+                Column::Component,
+                Column::Time,
+                Column::Level,
+                Column::Message
+            ]
+        );
+        // Dropped after everything, it goes last.
+        let time = view.header_rect(Column::Time).unwrap();
+        press(&mut view, time.left + 10.0);
+        move_to(&mut view, 990.0);
+        assert!(release(&mut view, 990.0).columns_changed);
+        assert_eq!(
+            order(&view),
+            [
+                Column::Component,
+                Column::Level,
+                Column::Message,
+                Column::Time
+            ]
+        );
+        // A click, or a drop back where it was, changes nothing.
+        let level = view.header_rect(Column::Level).unwrap();
+        press(&mut view, level.left + 5.0);
+        assert!(!release(&mut view, level.left + 5.0).columns_changed);
+        press(&mut view, level.left + 5.0);
+        move_to(&mut view, level.left + 12.0);
+        assert!(!release(&mut view, level.left + 12.0).columns_changed);
+        assert_eq!(view.columns().len(), 6, "hidden columns are kept");
+    }
+
+    #[test]
+    fn right_clicking_the_header_asks_for_the_columns_editor() {
+        let mut view = view(100);
+        let header = Event::MouseDown(Point::new(300.0, 10.0), MouseButton::Right, NONE);
+        assert!(view.handle(header).columns_menu);
+        let row = Event::MouseDown(Point::new(300.0, 100.0), MouseButton::Right, NONE);
+        assert!(!view.handle(row).columns_menu);
     }
 
     #[test]

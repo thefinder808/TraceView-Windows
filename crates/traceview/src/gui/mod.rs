@@ -6,6 +6,8 @@ mod accessibility;
 mod app;
 #[cfg(feature = "bench")]
 mod bench;
+mod columns;
+mod columns_panel;
 mod command_palette;
 mod details;
 mod export;

@@ -22,7 +22,7 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use tv_engine::merge::{self, MergedRow};
 use tv_engine::overview as counting;
-use tv_engine::{CacheUse, Change, Control, Level, LogFile, OpenStats};
+use tv_engine::{CacheUse, Change, Control, Format, Level, LogFile, OpenStats};
 use tv_platform::Waker;
 use tv_ui::text_field::TextField;
 
@@ -458,6 +458,12 @@ impl Tab {
                 source.watcher.set_paused(paused);
             }
         }
+    }
+
+    /// The format of the tab's first file, which decides its columns.
+    pub fn format(&self) -> Option<Format> {
+        let source = self.document()?.sources.first()?;
+        source.log.read().ok().map(|log| log.format())
     }
 
     /// Marks rows with new highlight rules.
