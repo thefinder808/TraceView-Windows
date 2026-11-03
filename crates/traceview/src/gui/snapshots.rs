@@ -354,6 +354,52 @@ fn a_right_clicked_row_shows_its_menu() {
 }
 
 #[test]
+fn a_windows_contrast_theme_draws_in_its_own_colors() {
+    let colors = tv_ui::theme::ContrastColors {
+        background: Color::rgb(0x000000),
+        text: Color::rgb(0xFFFFFF),
+        link: Color::rgb(0x8080FF),
+        disabled: Color::rgb(0xA6A6A6),
+        selected: Color::rgb(0xD6B4FD),
+        selected_text: Color::rgb(0x2B2B2B),
+    };
+    let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
+    workspace.set_contrast(Some(colors));
+    render(&mut workspace, "contrast", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    workspace.tabs[0].select_file_row(9);
+    let frame = render(&mut workspace, "contrast", 96.0, |_| true);
+    assert_eq!(
+        frame.row_color(&workspace, 2),
+        colors.background,
+        "an error row isn't filled"
+    );
+    assert_eq!(
+        frame.row_color(&workspace, 3),
+        colors.background,
+        "nor a warning"
+    );
+    assert_eq!(frame.row_color(&workspace, 9), colors.selected);
+    let error = workspace.tabs[0].view.row_rect(2);
+    let message = Rect::new(
+        error.left + 340.0,
+        error.top,
+        error.left + 640.0,
+        error.bottom,
+    );
+    assert!(
+        frame.has_ink(message, colors.background),
+        "the error's text drew"
+    );
+    let filter = workspace.filter_rect();
+    assert_eq!(
+        frame.at(filter.right - 4.0, filter.top + filter.height() / 2.0),
+        colors.background
+    );
+}
+
+#[test]
 fn welcome_screen_shows_with_no_log() {
     let mut workspace = Workspace::new(Waker::detached(), 0, false);
     workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);

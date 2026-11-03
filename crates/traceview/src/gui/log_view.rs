@@ -719,11 +719,14 @@ impl LogView {
         let cells = source.cells(row);
         let mark = cells.as_ref().and_then(|cells| cells.mark);
         let selected = self.is_selected(row);
-        let highlighted = !selected && source.highlighted(row);
+        let found = !selected && source.highlighted(row);
+        // A contrast theme has no fills to spare, so find matches are framed
+        // instead, and rules are drawn as markers.
+        let highlighted = found && !theme.contrast;
         // A rule's row color gives way to the selection and to find matches,
         // which are what someone is looking at right now.
         let rule_row = mark
-            .filter(|mark| mark.style == Style::Row)
+            .filter(|mark| mark.style == Style::Row && !theme.contrast)
             .and_then(|mark| theme.rule_colors.get(mark.color));
         let (background, message_color) = match (level, rule_row) {
             _ if selected => (Some(theme.selected_row), theme.selected_text),
@@ -742,8 +745,16 @@ impl LogView {
         if let Some(color) = background {
             canvas.fill_rect(rect, color);
         }
+        if found && theme.contrast {
+            for edge in [rect.top, rect.bottom - 1.0] {
+                canvas.fill_rect(
+                    Rect::new(rect.left, edge, rect.right, edge + 1.0),
+                    theme.primary_text,
+                );
+            }
+        }
         let marker = mark
-            .filter(|mark| mark.style == Style::Marker)
+            .filter(|mark| mark.style == Style::Marker || theme.contrast)
             .and_then(|mark| theme.rule_colors.get(mark.color));
         if let Some(colors) = marker {
             canvas.fill_rect(
@@ -1249,6 +1260,44 @@ mod tests {
             fill_at(&canvas, view.row_rect(5)),
             Some(theme.highlight_row)
         );
+    }
+
+    #[test]
+    fn a_contrast_theme_marks_rule_rows_and_frames_find_matches() {
+        let view = view(100);
+        let colors = tv_ui::theme::ContrastColors {
+            background: Color::rgb(0x000000),
+            text: Color::rgb(0xFFFFFF),
+            link: Color::rgb(0x8080FF),
+            disabled: Color::rgb(0xA6A6A6),
+            selected: Color::rgb(0xD6B4FD),
+            selected_text: Color::rgb(0x2B2B2B),
+        };
+        let theme = Theme::contrast(&colors);
+        let mut canvas = RecordingCanvas::new();
+        let rows = MarkedRows(Mark {
+            color: 4,
+            style: Style::Row,
+        });
+        view.draw(&mut canvas, &rows, &theme);
+        // Row 1 is an error: in the link color on the background, with the
+        // rule as a marker rather than a fill.
+        assert_eq!(fill_at(&canvas, view.row_rect(1)), Some(colors.background));
+        assert_eq!(text_color(&canvas, "message 1"), Some(colors.link));
+        let markers = canvas
+            .ops
+            .iter()
+            .filter(|op| matches!(op, DrawOp::Fill(rect, color) if rect.width() == MARKER_WIDTH && *color == colors.link))
+            .count();
+        assert_eq!(markers, view.visible_rows().len());
+        // Row 5 is a find match, framed by lines in the text color.
+        let found = view.row_rect(5);
+        let frame = canvas
+            .ops
+            .iter()
+            .filter(|op| matches!(op, DrawOp::Fill(rect, color) if rect.height() == 1.0 && rect.width() == found.width() && (rect.top == found.top || rect.bottom == found.bottom) && *color == colors.text))
+            .count();
+        assert_eq!(frame, 2);
     }
 
     #[test]

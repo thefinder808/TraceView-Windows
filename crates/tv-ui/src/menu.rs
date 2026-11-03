@@ -123,13 +123,22 @@ pub(crate) fn draw_items(
                 checked,
                 ..
             } => {
-                if highlighted == Some(index) {
+                let lit = highlighted == Some(index);
+                if lit {
                     canvas.fill_rect(*rect, theme.hover_background);
                 }
                 let color = if *enabled {
                     theme.primary_text
                 } else {
                     theme.placeholder_text
+                };
+                let (color, shortcut_color) = if lit {
+                    (
+                        theme.on_highlight(color),
+                        theme.on_highlight(theme.secondary_text),
+                    )
+                } else {
+                    (color, theme.secondary_text)
                 };
                 if *checked {
                     canvas.text(
@@ -151,7 +160,7 @@ pub(crate) fn draw_items(
                     rect.bottom,
                 );
                 canvas.text(label, inner, UI_LEFT, color);
-                canvas.text(shortcut, inner, UI_RIGHT, theme.secondary_text);
+                canvas.text(shortcut, inner, UI_RIGHT, shortcut_color);
             }
         }
     }
@@ -437,11 +446,14 @@ impl MenuBar {
         canvas.fill_rect(bar, theme.panel_background);
         for (index, (menu, rect)) in self.menus.iter().zip(&self.title_rects).enumerate() {
             let active = self.open == Some(index) || (self.focused && self.title_focus == index);
-            if active {
+            let color = if active {
                 canvas.fill_rect(*rect, theme.hover_background);
-            }
+                theme.on_highlight(theme.primary_text)
+            } else {
+                theme.primary_text
+            };
             let label = Rect::new(rect.left + TITLE_PADDING, rect.top, rect.right, rect.bottom);
-            canvas.text(&menu.title, label, UI_LEFT, theme.primary_text);
+            canvas.text(&menu.title, label, UI_LEFT, color);
         }
     }
 

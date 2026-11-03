@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use tv_engine::Encoding;
 use tv_platform::{Command, Commands, Handler, WindowContext};
 use tv_render::{FrameResult, Presentation, Renderer, DEFAULT_ORDER};
+use tv_ui::theme::ContrastColors;
 use tv_ui::{Event, Theme};
 
 pub fn encoding_name(encoding: Encoding) -> &'static str {
@@ -81,6 +82,7 @@ impl App {
             renderer.set_vsync(false);
         }
         let mut workspace = Workspace::new(context.waker, context.hwnd, context.system_is_dark);
+        workspace.set_contrast(context.contrast);
         // A benchmark runs with defaults, so saved settings can't change its
         // results and it never writes to them.
         #[cfg(feature = "bench")]
@@ -90,6 +92,7 @@ impl App {
         if use_saved {
             let (store, settings, problem) = Store::open(settings::location());
             workspace.use_settings(settings, store, problem);
+            workspace.file_types = tv_platform::registered_file_types();
         }
         renderer.set_fonts(workspace.fonts());
         if let Some(path) = path {
@@ -117,10 +120,15 @@ impl App {
                 commands.push(Command::SetImeEnabled(false));
             }
             self.applied_theme = Some(*theme);
-            commands.push(Command::SetCaptionColors {
-                background: theme.status_background,
-                text: theme.primary_text,
-                dark: theme.is_dark,
+            // Windows draws a contrast theme's title bar in its own colors.
+            commands.push(if theme.contrast {
+                Command::DefaultCaptionColors
+            } else {
+                Command::SetCaptionColors {
+                    background: theme.status_background,
+                    text: theme.primary_text,
+                    dark: theme.is_dark,
+                }
             });
         }
         let title = self.workspace.title();
@@ -206,10 +214,27 @@ impl Handler for App {
         commands.redraw();
     }
 
-    fn system_theme_changed(&mut self, dark: bool, commands: &mut Commands) {
+    fn file_types_changed(
+        &mut self,
+        outcome: Result<Option<PathBuf>, String>,
+        commands: &mut Commands,
+    ) {
+        self.workspace.file_types_changed(outcome);
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    fn system_theme_changed(
+        &mut self,
+        dark: bool,
+        contrast: Option<ContrastColors>,
+        commands: &mut Commands,
+    ) {
         self.workspace.system_is_dark = dark;
+        self.workspace.set_contrast(contrast);
         self.sync_window(commands);
         commands.redraw();
+        commands.accessibility_changed();
     }
 
     fn accessibility_tree(&mut self) -> TreeUpdate {

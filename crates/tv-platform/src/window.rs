@@ -3,7 +3,7 @@
 //! nothing that pumps messages, like a modal dialog, happens while the app's state
 //! is borrowed, so re-entrant window messages can't conflict with it.
 
-use crate::{input, shell, Waker};
+use crate::{file_types, input, shell, Waker};
 use accesskit::{ActionHandler, ActionRequest, ActivationHandler, TreeUpdate};
 use accesskit_windows::Adapter;
 use std::cell::{Cell, RefCell};
@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use tv_ui::theme::ContrastColors;
 use tv_ui::{Color, Event, MouseButton, Point};
 use windows::core::{w, Error, Result, HSTRING};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -35,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
-    WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
+    WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
 };
 
 const WM_WAKE: u32 = WM_APP + 1;
@@ -55,6 +56,8 @@ pub struct WindowContext {
     pub height: u32,
     pub dpi: f32,
     pub system_is_dark: bool,
+    /// The Windows contrast theme's colors, while one is on.
+    pub contrast: Option<ContrastColors>,
     pub waker: Waker,
 }
 
@@ -103,6 +106,11 @@ pub enum Command {
     /// keys meant for the grid.
     SetImeEnabled(bool),
     SetCursor(Cursor),
+    /// Leaves the title bar's colors to Windows, as a contrast theme needs.
+    DefaultCaptionColors,
+    /// Registers this EXE for `.log` files, for this user, or takes that back.
+    /// The handler hears how it went.
+    SetFileTypes(bool),
     Close,
 }
 
@@ -148,7 +156,21 @@ pub trait Handler {
     fn files_chosen(&mut self, paths: Vec<PathBuf>, commands: &mut Commands);
     /// A path was chosen in the save dialog.
     fn save_path_chosen(&mut self, path: PathBuf, commands: &mut Commands);
-    fn system_theme_changed(&mut self, dark: bool, commands: &mut Commands);
+    /// Windows' light or dark setting changed, or a contrast theme was
+    /// turned on, off, or recolored.
+    fn system_theme_changed(
+        &mut self,
+        dark: bool,
+        contrast: Option<ContrastColors>,
+        commands: &mut Commands,
+    );
+    /// A [`Command::SetFileTypes`] finished: the EXE now registered, if any,
+    /// or what went wrong.
+    fn file_types_changed(
+        &mut self,
+        outcome: std::result::Result<Option<PathBuf>, String>,
+        commands: &mut Commands,
+    );
     fn accessibility_tree(&mut self) -> TreeUpdate;
     fn accessibility_action(&mut self, request: ActionRequest, commands: &mut Commands);
 }
@@ -295,11 +317,25 @@ impl State {
                     let _ = unsafe { SetWindowTextW(self.hwnd.get(), &HSTRING::from(title)) };
                 }
                 Command::SetClipboard(text) => shell::set_clipboard_text(self.hwnd.get(), &text),
+                Command::SetFileTypes(register) => {
+                    let done = if register {
+                        file_types::register_file_types()
+                    } else {
+                        file_types::unregister_file_types()
+                    };
+                    let outcome = done
+                        .map(|()| file_types::registered_file_types())
+                        .map_err(|error| error.to_string());
+                    self.with_handler(|handler, commands| {
+                        handler.file_types_changed(outcome, commands);
+                    });
+                }
                 Command::SetCaptionColors {
                     background,
                     text,
                     dark,
                 } => shell::set_caption_colors(self.hwnd.get(), background, text, dark),
+                Command::DefaultCaptionColors => shell::default_caption_colors(self.hwnd.get()),
                 Command::SetImePosition(point) => self.ime_position.set(point),
                 Command::SetCursor(cursor) => {
                     self.cursor.set(cursor);
@@ -571,9 +607,11 @@ unsafe extern "system" fn window_proc(
             state.with_handler(|handler, commands| handler.files_chosen(paths, commands));
             return LRESULT(0);
         }
-        WM_SETTINGCHANGE => {
-            let dark = shell::system_is_dark();
-            state.with_handler(|handler, commands| handler.system_theme_changed(dark, commands));
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+            let (dark, contrast) = (shell::system_is_dark(), shell::contrast_colors());
+            state.with_handler(|handler, commands| {
+                handler.system_theme_changed(dark, contrast, commands);
+            });
         }
         WM_SETFOCUS => state.set_window_focus(true),
         WM_KILLFOCUS => state.set_window_focus(false),
@@ -718,6 +756,7 @@ pub fn run(
         height,
         dpi,
         system_is_dark: shell::system_is_dark(),
+        contrast: shell::contrast_colors(),
         waker: waker.clone(),
     })
     .map_err(|message| {

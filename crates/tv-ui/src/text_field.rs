@@ -343,30 +343,33 @@ impl TextField {
             }
         } else {
             let range = self.selection();
-            if focused && !range.is_empty() {
+            let selected = (focused && !range.is_empty()).then(|| {
                 let start = canvas.text_width(&self.text[..range.start], FontRole::Ui);
                 let end = canvas.text_width(&self.text[..range.end], FontRole::Ui);
-                canvas.fill_rect(
-                    Rect::new(
-                        origin + start,
-                        inner.top + 3.0,
-                        origin + end,
-                        inner.bottom - 3.0,
-                    ),
-                    theme.text_selection,
-                );
-            }
-            canvas.text(
-                &self.text,
                 Rect::new(
-                    origin,
-                    content.top,
-                    content.right.max(origin + caret_offset + 1000.0),
-                    content.bottom,
-                ),
-                STYLE,
-                theme.primary_text,
+                    origin + start,
+                    inner.top + 3.0,
+                    origin + end,
+                    inner.bottom - 3.0,
+                )
+            });
+            if let Some(selected) = selected {
+                canvas.fill_rect(selected, theme.text_selection);
+            }
+            let line = Rect::new(
+                origin,
+                content.top,
+                content.right.max(origin + caret_offset + 1000.0),
+                content.bottom,
             );
+            canvas.text(&self.text, line, STYLE, theme.primary_text);
+            // Text on the selection takes its own color where the theme has one.
+            let highlighted = theme.on_highlight(theme.primary_text);
+            if let Some(selected) = selected.filter(|_| highlighted != theme.primary_text) {
+                canvas.push_clip(selected);
+                canvas.text(&self.text, line, STYLE, highlighted);
+                canvas.pop_clip();
+            }
         }
         let caret_x = (origin + caret_offset).round();
         if focused {
@@ -592,5 +595,51 @@ mod tests {
         let mut canvas = RecordingCanvas::new();
         field.draw(&mut canvas, RECT, &Theme::CLASSIC, true, "Filter rows");
         assert!(!canvas.texts().contains(&"Filter rows"));
+    }
+
+    #[test]
+    fn selected_text_takes_a_contrast_themes_highlight_color() {
+        use crate::geometry::Color;
+        use crate::recording::DrawOp;
+        use crate::theme::ContrastColors;
+        let colors = ContrastColors {
+            background: Color::rgb(0x000000),
+            text: Color::rgb(0xFFFFFF),
+            link: Color::rgb(0x8080FF),
+            disabled: Color::rgb(0xA6A6A6),
+            selected: Color::rgb(0xD6B4FD),
+            selected_text: Color::rgb(0x2B2B2B),
+        };
+        let mut field = TextField::default();
+        field.set_text("abc");
+        field.select_all();
+        let mut count = |theme: &Theme, color: Color| {
+            let mut canvas = RecordingCanvas::new();
+            field.draw(
+                &mut canvas,
+                Rect::new(0.0, 0.0, 200.0, 26.0),
+                theme,
+                true,
+                "",
+            );
+            assert!(canvas.clips_balance());
+            canvas
+                .ops
+                .iter()
+                .filter(|op| matches!(op, DrawOp::Text(text, _, _, drawn) if text == "abc" && *drawn == color))
+                .count()
+        };
+        let contrast = Theme::contrast(&colors);
+        assert_eq!(
+            count(&contrast, colors.selected_text),
+            1,
+            "again, over the selection"
+        );
+        assert_eq!(count(&contrast, colors.text), 1);
+        assert_eq!(
+            count(&Theme::CLASSIC, Theme::CLASSIC.primary_text),
+            1,
+            "other themes draw it once"
+        );
     }
 }

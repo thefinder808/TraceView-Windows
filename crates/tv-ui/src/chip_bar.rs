@@ -216,13 +216,18 @@ impl ChipBar {
                 theme.chip_active_text
             } else {
                 canvas.fill_rect(*rect, theme.border);
-                let background = if self.hovered == Some(index) {
+                let hovered = self.hovered == Some(index);
+                let background = if hovered {
                     theme.hover_background
                 } else {
                     theme.chip_background
                 };
                 canvas.fill_rect(grow(*rect, -1.0), background);
-                chip.color
+                if hovered {
+                    theme.on_highlight(chip.color)
+                } else {
+                    chip.color
+                }
             };
             let text = Rect::new(
                 rect.left + PADDING,

@@ -39,6 +39,7 @@ use tv_ui::palette::PaletteItem;
 use tv_ui::splitter::{Orientation, Splitter};
 use tv_ui::tab_bar::{self, Tab as TabLabel, TabBar};
 use tv_ui::text_field::FieldResponse;
+use tv_ui::theme::ContrastColors;
 use tv_ui::{
     Align, Canvas, Event, FontRole, Key, Modifiers, MouseButton, Point, Rect, TextStyle, Theme,
 };
@@ -104,6 +105,11 @@ pub mod command {
     pub const FORMATS: u32 = 67;
     pub const EDIT_THEME: u32 = 68;
     pub const SAVE_LAYOUT: u32 = 69;
+    pub const USE_FOR_LOGS: u32 = 70;
+    pub const STOP_FOR_LOGS: u32 = 71;
+    /// Stands for the Windows contrast theme in the View menu. It does
+    /// nothing, since Windows turns that on and off.
+    pub const THEME_CONTRAST: u32 = 72;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -365,6 +371,10 @@ pub struct Workspace {
     /// The command palette, while it's open.
     pub palette: Option<CommandPalette>,
     pub row_menu: Option<RowMenu>,
+    /// The EXE this Windows user has registered to open `.log` files, if any.
+    pub file_types: Option<PathBuf>,
+    /// The Windows contrast theme, as a theme, while one is on.
+    pub contrast: Option<&'static Theme>,
     /// The highlight rules editor, while it's open.
     pub rules_panel: Option<RulesPanel>,
     /// The columns editor, while it's open.
@@ -411,6 +421,13 @@ pub struct Workspace {
 fn checked(mut item: MenuItem, is_checked: bool) -> MenuItem {
     if let MenuItem::Command { checked, .. } = &mut item {
         *checked = is_checked;
+    }
+    item
+}
+
+fn enabled(mut item: MenuItem, is_enabled: bool) -> MenuItem {
+    if let MenuItem::Command { enabled, .. } = &mut item {
+        *enabled = is_enabled;
     }
     item
 }
@@ -485,6 +502,8 @@ impl Workspace {
             shortcut_panel: None,
             keys_query: String::new(),
             row_menu: None,
+            file_types: None,
+            contrast: None,
             settings: Settings::default(),
             store: Store::disabled(),
             menu: MenuBar::default(),
@@ -799,6 +818,10 @@ impl Workspace {
     }
 
     pub fn theme(&self) -> &'static Theme {
+        // A Windows contrast theme wins over any choice, while it's on.
+        if let Some(contrast) = self.contrast {
+            return contrast;
+        }
         match self.theme_choice {
             ThemeChoice::System => Theme::for_system(self.system_is_dark),
             ThemeChoice::Fixed(theme) => theme,
@@ -923,15 +946,20 @@ impl Workspace {
                     ),
                     item("Columns...", command::COLUMNS),
                     item("Fonts...", command::FONTS),
-                    item("Edit theme...", command::EDIT_THEME),
+                    // Edits wouldn't show while a contrast theme is drawn instead.
+                    enabled(item("Edit theme...", command::EDIT_THEME), self.contrast.is_none()),
                     item("Larger log text", command::LARGER_TEXT),
                     item("Smaller log text", command::SMALLER_TEXT),
                     MenuItem::Separator,
-                    checked(
-                        item("Theme: follow Windows", command::THEME_SYSTEM),
-                        theme == ThemeChoice::System,
-                    ),
                 ])
+                .chain(self.contrast.map(|_| {
+                    let note = item("Theme: Windows contrast, while it's on", command::THEME_CONTRAST);
+                    checked(enabled(note, false), true)
+                }))
+                .chain([checked(
+                    item("Theme: follow Windows", command::THEME_SYSTEM),
+                    theme == ThemeChoice::System,
+                )])
                 .chain(
                     Theme::ALL
                         .iter()
@@ -952,6 +980,19 @@ impl Workspace {
                     item("Highlight rules...", command::RULES),
                     item("Log formats...", command::FORMATS),
                     item("Keyboard shortcuts...", command::KEYS),
+                    MenuItem::Separator,
+                    item(
+                        if self.registered_elsewhere() {
+                            "Use this copy for .log files..."
+                        } else {
+                            "Use TraceView for .log files..."
+                        },
+                        command::USE_FOR_LOGS,
+                    ),
+                    enabled(
+                        item("Stop using TraceView for .log files", command::STOP_FOR_LOGS),
+                        self.file_types.is_some(),
+                    ),
                 ],
             },
         ]
@@ -1175,6 +1216,8 @@ impl Workspace {
             },
             command::GO_TO_ROW => self.open_palette(Mode::Everything, ":", commands),
             command::SAVE_LAYOUT => self.open_palette(Mode::SaveLayout, "", commands),
+            command::USE_FOR_LOGS => commands.push(Command::SetFileTypes(true)),
+            command::STOP_FOR_LOGS => commands.push(Command::SetFileTypes(false)),
             command::SAVE_PRESET => {
                 let has_filter = self.active_tab().is_some_and(|tab| {
                     !tab.filter_field.text().trim().is_empty() || tab.chip.is_some()
@@ -1465,6 +1508,11 @@ impl Workspace {
     /// Opens the theme editor on the theme in use. A built-in theme is edited
     /// as a copy, made with the first change.
     fn open_theme_editor(&mut self, commands: &mut Commands) {
+        if self.contrast.is_some() {
+            self.notice =
+                Some("Themes can't be edited while a Windows contrast theme is on".to_string());
+            return;
+        }
         let theme = self.theme();
         let path = self
             .file_themes
@@ -2074,6 +2122,41 @@ impl Workspace {
     }
 
     /// Closes whichever floating panel is open, since only one can be.
+    /// Draws with a Windows contrast theme's colors while one is on. Each
+    /// distinct set of colors is kept once, as file themes are.
+    pub fn set_contrast(&mut self, colors: Option<ContrastColors>) {
+        self.contrast =
+            colors.map(|colors| themes::keep("Windows contrast", Theme::contrast(&colors)));
+    }
+
+    /// Whether `.log` files are registered to open with some other copy of
+    /// TraceView, as when a portable one was moved.
+    fn registered_elsewhere(&self) -> bool {
+        let here = std::env::current_exe().ok();
+        match (&self.file_types, here) {
+            (Some(registered), Some(here)) => !registered
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&here.to_string_lossy()),
+            _ => false,
+        }
+    }
+
+    /// Says how registering for `.log` files went.
+    pub fn file_types_changed(&mut self, outcome: Result<Option<PathBuf>, String>) {
+        let types = tv_platform::FILE_TYPES.join(" and ");
+        self.notice = Some(match outcome {
+            Ok(Some(path)) => {
+                self.file_types = Some(path);
+                format!("TraceView can open {types} files. To make it their default, pick it on the Default apps page that opened")
+            }
+            Ok(None) => {
+                self.file_types = None;
+                format!("TraceView no longer opens {types} files")
+            }
+            Err(error) => format!("Couldn't change what opens {types} files: {error}"),
+        });
+    }
+
     /// Bookmarks a row of the active tab, or removes its bookmark: the row
     /// given, in the file or merged timeline, or else the selected one. Every
     /// tab showing that file sees it.
@@ -3753,6 +3836,93 @@ mod tests {
             settle(workspace, |_| true);
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn tools_item(workspace: &Workspace, id: u32) -> (String, bool) {
+        workspace
+            .build_menus()
+            .iter()
+            .flat_map(|menu| &menu.items)
+            .find_map(|item| match item {
+                MenuItem::Command {
+                    label,
+                    command,
+                    enabled,
+                    ..
+                } if *command == id => Some((label.clone(), *enabled)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn registering_for_log_files_is_asked_of_the_window_and_reported() {
+        let mut workspace = workspace();
+        let mut commands = Commands::default();
+        workspace.run_command(command::USE_FOR_LOGS, &mut commands);
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, Command::SetFileTypes(true))));
+        assert!(
+            !tools_item(&workspace, command::STOP_FOR_LOGS).1,
+            "nothing to stop yet"
+        );
+
+        let here = std::env::current_exe().unwrap();
+        workspace.file_types_changed(Ok(Some(here)));
+        assert!(workspace
+            .status()
+            .contains("TraceView can open .log and .lo_ files"));
+        assert_eq!(
+            tools_item(&workspace, command::USE_FOR_LOGS).0,
+            "Use TraceView for .log files..."
+        );
+        assert!(tools_item(&workspace, command::STOP_FOR_LOGS).1);
+
+        // A portable copy that moved says it's this copy that would take over.
+        workspace.file_types = Some(PathBuf::from(r"D:\Old\traceview.exe"));
+        assert_eq!(
+            tools_item(&workspace, command::USE_FOR_LOGS).0,
+            "Use this copy for .log files..."
+        );
+        workspace.file_types_changed(Err("Access is denied".to_string()));
+        assert!(workspace.status().contains("Couldn't change what opens"));
+        workspace.file_types_changed(Ok(None));
+        assert!(workspace.status().contains("no longer opens"));
+        assert!(!tools_item(&workspace, command::STOP_FOR_LOGS).1);
+    }
+
+    #[test]
+    fn a_windows_contrast_theme_wins_while_it_is_on() {
+        let night_sky = ContrastColors {
+            background: Color::rgb(0x000000),
+            text: Color::rgb(0xFFFFFF),
+            link: Color::rgb(0x8080FF),
+            disabled: Color::rgb(0xA6A6A6),
+            selected: Color::rgb(0xD6B4FD),
+            selected_text: Color::rgb(0x2B2B2B),
+        };
+        let mut workspace = workspace();
+        workspace.theme_choice = ThemeChoice::Fixed(&Theme::NEON);
+        workspace.set_contrast(Some(night_sky));
+        assert!(workspace.theme().contrast);
+        assert_eq!(workspace.theme().grid_background, Color::rgb(0x000000));
+        assert!(
+            !tools_item(&workspace, command::EDIT_THEME).1,
+            "edits wouldn't show"
+        );
+        assert!(!tools_item(&workspace, command::THEME_CONTRAST).1);
+        workspace.run_command(command::EDIT_THEME, &mut Commands::default());
+        assert!(workspace.themes_panel.is_none());
+        assert!(workspace.status().contains("can't be edited"));
+        // The same colors again are the same theme, kept once.
+        let first = workspace.theme();
+        workspace.set_contrast(Some(night_sky));
+        assert!(std::ptr::eq(first, workspace.theme()));
+
+        workspace.set_contrast(None);
+        assert_eq!(workspace.theme().name, "Neon", "the choice comes back");
+        assert!(tools_item(&workspace, command::EDIT_THEME).1);
     }
 
     #[test]
