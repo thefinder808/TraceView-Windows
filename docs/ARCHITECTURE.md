@@ -237,7 +237,7 @@ The upside is that no framework limits theming or layout on anything we draw our
 - **Fuzzing:** coverage-guided on Linux in CI, because `libFuzzer` doesn't link with the MSVC toolchain here. The logic it covers isn't platform-specific, except for file access.
 - **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits. The GUI benchmark sizes its window in physical pixels, not scaled by the display, so its budgets mean the same at any display scale.
 - **End to end:** `scripts/check-gui.ps1`, run locally, drives the real window through UI Automation.
-- **Releases:** a `v*` tag tests and builds with no access to signing, then a separate job in the `release` environment signs with Azure Artifact Signing through OpenID Connect, checks the signatures, and makes a draft release. Every workflow pins its actions to exact commits. See [RELEASING.md](RELEASING.md).
+- **Releases:** a `v*` tag tests and builds with no access to signing, then a separate job in the `release` environment signs with Azure Artifact Signing through OpenID Connect, checks the signatures, and makes a draft release whose notes are the version's section of `CHANGELOG.md`. Every workflow pins its actions to exact commits. See [RELEASING.md](RELEASING.md).
 
 ## AI-agent access
 

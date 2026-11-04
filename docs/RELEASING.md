@@ -2,18 +2,18 @@
 
 Pushing a tag like `v0.9.0` runs [`release.yml`](../.github/workflows/release.yml):
 
-1. **Build**, with no access to signing: test everything, then build `traceview.exe` for x64 and ARM64 with [`scripts/build-release.ps1`](../scripts/build-release.ps1). The tag has to match the version in `Cargo.toml`.
+1. **Build**, with no access to signing: test everything, then build `traceview.exe` for x64 and ARM64 with [`scripts/build-release.ps1`](../scripts/build-release.ps1). The tag has to match the version in `Cargo.toml`, and `CHANGELOG.md` needs a section for that version.
 2. **Release**, in the `release` environment:
    - sign both EXEs with Azure Artifact Signing, the account WinSign uses;
    - check each signature and its timestamp;
    - zip each EXE with `LICENSE` and `THIRD-PARTY-NOTICES.txt`, and write `SHA256SUMS.txt`;
-   - create a **draft** GitHub release with those files.
+   - create a **draft** GitHub release with those files, and the `CHANGELOG.md` section as its notes.
 
 Nothing is published until the draft is checked and published by hand. A release is never made unsigned: if signing isn't set up, the run stops.
 
 ## Cutting a release
 
-1. Set `version` in the root `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and add the release to `CHANGELOG.md`. Merge that to `main`.
+1. Set `version` in the root `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and add the release to `CHANGELOG.md` under a heading like `## 0.9.0`. Everything up to the next `## ` heading becomes the release's notes, so write it for the people downloading it. A date after the version is fine. Merge that to `main`.
 2. Tag `main` and push the tag:
 
    ```bash
