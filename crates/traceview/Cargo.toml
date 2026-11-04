@@ -24,4 +24,4 @@ png = "0.18"
 tempfile = "3"
 
 [build-dependencies]
-embed-manifest = "1.5.1"
+winresource = "0.1.34"

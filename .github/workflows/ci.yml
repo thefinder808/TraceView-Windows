@@ -18,6 +18,16 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Third-party notices are up to date
+        run: pwsh -File scripts/third-party-notices.ps1 -Check
+
+  deny:
+    # Fails on a crate with a known vulnerability, a license that isn't
+    # allowed, or a crate from anywhere but crates.io. The rules are in deny.toml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
   arm64:
     # Cross-compiles for ARM64 Windows. The build machine can't run the EXE,

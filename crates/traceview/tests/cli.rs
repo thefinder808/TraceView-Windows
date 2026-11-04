@@ -195,4 +195,10 @@ fn help_and_version_succeed() {
     let version = traceview(&["--version"]);
     assert!(version.status.success());
     assert!(String::from_utf8_lossy(&version.stdout).starts_with("traceview "));
+    let licenses = traceview(&["--licenses"]);
+    assert!(licenses.status.success());
+    let text = String::from_utf8_lossy(&licenses.stdout);
+    assert!(text.contains("Copyright (c) 2026 Nathaniel Graham"));
+    assert!(text.contains("Third-party notices for TraceView"));
+    assert!(text.contains("accesskit_windows"));
 }

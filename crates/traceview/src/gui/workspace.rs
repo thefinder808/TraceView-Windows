@@ -110,6 +110,7 @@ pub mod command {
     /// Stands for the Windows contrast theme in the View menu. It does
     /// nothing, since Windows turns that on and off.
     pub const THEME_CONTRAST: u32 = 72;
+    pub const ABOUT: u32 = 73;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -430,6 +431,18 @@ fn enabled(mut item: MenuItem, is_enabled: bool) -> MenuItem {
         *enabled = is_enabled;
     }
     item
+}
+
+/// What Help > About TraceView says.
+fn about_text() -> String {
+    format!(
+        "TraceView {}\n\
+         A fast log viewer for Windows, in the spirit of CMTrace.\n\n\
+         Copyright © 2026 Nathaniel Graham\n\
+         Released under the MIT License. To see the licenses of the open-source \
+         parts it includes, run: traceview --licenses",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Builds tab-separated text of the columns on screen, so pasted rows line up
@@ -995,6 +1008,10 @@ impl Workspace {
                     ),
                 ],
             },
+            Menu {
+                title: "Help".to_string(),
+                items: vec![item("About TraceView", command::ABOUT)],
+            },
         ]
     }
 
@@ -1218,6 +1235,10 @@ impl Workspace {
             command::SAVE_LAYOUT => self.open_palette(Mode::SaveLayout, "", commands),
             command::USE_FOR_LOGS => commands.push(Command::SetFileTypes(true)),
             command::STOP_FOR_LOGS => commands.push(Command::SetFileTypes(false)),
+            command::ABOUT => commands.push(Command::ShowMessage {
+                title: "About TraceView".to_string(),
+                text: about_text(),
+            }),
             command::SAVE_PRESET => {
                 let has_filter = self.active_tab().is_some_and(|tab| {
                     !tab.filter_field.text().trim().is_empty() || tab.chip.is_some()
@@ -3890,6 +3911,27 @@ mod tests {
         workspace.file_types_changed(Ok(None));
         assert!(workspace.status().contains("no longer opens"));
         assert!(!tools_item(&workspace, command::STOP_FOR_LOGS).1);
+    }
+
+    #[test]
+    fn about_shows_the_version_and_licenses() {
+        let mut workspace = workspace();
+        assert_eq!(
+            tools_item(&workspace, command::ABOUT),
+            ("About TraceView".to_string(), true)
+        );
+        let mut commands = Commands::default();
+        workspace.run_command(command::ABOUT, &mut commands);
+        let text = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::ShowMessage { title, text } if title == "About TraceView" => Some(text),
+                _ => None,
+            })
+            .expect("About shows a message");
+        assert!(text.starts_with(&format!("TraceView {}\n", env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains("MIT License"));
+        assert!(text.contains("traceview --licenses"));
     }
 
     #[test]

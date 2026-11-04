@@ -62,6 +62,11 @@ fn values(root: &str, exe: &Path) -> Vec<Value> {
     let mut list = vec![
         value(format!(r"{classes}\{PROG_ID}"), "", "Log file"),
         value(
+            format!(r"{classes}\{PROG_ID}\DefaultIcon"),
+            "",
+            &format!("\"{}\",0", exe.display()),
+        ),
+        value(
             command_key(root),
             "",
             &format!("\"{}\" \"%1\"", exe.display()),
@@ -275,6 +280,11 @@ mod tests {
             .find(|value| value.key.ends_with(r"shell\open\command"))
             .unwrap();
         assert_eq!(command.data, r#""C:\Tools\TraceView\traceview.exe" "%1""#);
+        let icon = values
+            .iter()
+            .find(|value| value.key.ends_with("DefaultIcon"))
+            .unwrap();
+        assert_eq!(icon.data, r#""C:\Tools\TraceView\traceview.exe",0"#);
         assert_eq!(
             command.key,
             r"Software\Classes\TraceView.Log\shell\open\command"
