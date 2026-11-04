@@ -14,6 +14,8 @@ pub struct Options {
     pub log: Option<PathBuf>,
     pub frames: usize,
     pub launch_only: bool,
+    /// In physical pixels, so a run measures the same window at any display
+    /// scale and the budgets mean the same everywhere.
     pub window: (f32, f32),
     pub presentation: Presentation,
 }

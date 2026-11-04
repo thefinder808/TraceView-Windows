@@ -47,6 +47,9 @@ pub struct WindowOptions {
     pub title: String,
     pub width: f32,
     pub height: f32,
+    /// The size is in physical pixels, not scaled by the display, so a
+    /// benchmark measures the same window at any display scale.
+    pub pixels: bool,
 }
 
 /// What an app gets when its window is created.
@@ -717,11 +720,12 @@ pub fn run(
 
     let dpi = dpi_of(hwnd);
     let scale = dpi / 96.0;
+    let size_scale = if options.pixels { 1.0 } else { scale };
     let mut frame = RECT {
         left: 0,
         top: 0,
-        right: (options.width * scale) as i32,
-        bottom: (options.height * scale) as i32,
+        right: (options.width * size_scale) as i32,
+        bottom: (options.height * size_scale) as i32,
     };
     // SAFETY: the handle is live, and the rectangle is a local.
     unsafe {

@@ -57,6 +57,7 @@ fn window_options() -> WindowOptions {
         title: "TraceView".to_string(),
         width: 1200.0,
         height: 760.0,
+        pixels: false,
     }
 }
 
@@ -90,6 +91,7 @@ pub fn run_bench(args: &[String]) -> ExitCode {
     let window = WindowOptions {
         width: options.window.0,
         height: options.window.1,
+        pixels: true,
         ..window_options()
     };
     let path = options.log.clone();

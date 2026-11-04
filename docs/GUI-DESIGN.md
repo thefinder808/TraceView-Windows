@@ -446,6 +446,8 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** a real contrast theme switched on in Windows Settings, and the Default apps page. Tests use a contrast theme's colors directly, and register in a scratch registry key.
 
+**The GUI benchmark measures fixed pixel sizes.** Its window sizes used to be scaled by the display, so at 200% the 1920x1050 run drew about 3460x2100 pixels, with frame buffers about four times larger. That put memory at 47-51 MB against the 50 MB budget, on `main` as well. The sizes are now physical pixels, so the budgets mean the same at any scale. At 200%, with the RDP window minimized: launch 48 ms, worst frame 2.95 ms at 1920x1050, 38-41 MB beyond the row index.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |
