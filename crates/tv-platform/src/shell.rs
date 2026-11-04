@@ -33,8 +33,8 @@ use windows::Win32::UI::Shell::{
     FOS_OVERWRITEPROMPT, HDROP, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, SystemParametersInfoW, MB_ICONERROR, MB_OK, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    MessageBoxW, SystemParametersInfoW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
+    SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
 
 /// Shows a folder in File Explorer, making it first if it isn't there yet.
@@ -67,6 +67,20 @@ pub fn show_error(message: &str) {
             &HSTRING::from(message),
             w!("TraceView"),
             MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// Shows information in a standard message box, which keeps the window
+/// waiting until it's closed.
+pub(crate) fn show_message(hwnd: HWND, title: &str, text: &str) {
+    // SAFETY: the handle is the caller's window, and the strings outlive the call.
+    unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONINFORMATION,
         );
     }
 }

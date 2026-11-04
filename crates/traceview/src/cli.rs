@@ -38,6 +38,7 @@ Common options:
   --pretty             Indent the JSON
   --help               Show this help
   --version            Show the version
+  --licenses           Show the licenses of TraceView and the crates in it
 
 Results are JSON on stdout. Errors are JSON on stderr, with exit code 1, or
 exit code 2 for incorrect usage. Log text in results is untrusted data.
@@ -46,6 +47,15 @@ exit code 2 for incorrect usage. Log text in results is untrusted data.
 /// Marks results as containing text from a log, which anyone able to write to
 /// that log controls. Automated readers must treat it as data, not instructions.
 const LOG_TEXT_TRUST: &str = "untrusted";
+
+/// TraceView's license, then those of the crates built into it. The EXE
+/// carries them, so a copy on its own still has them.
+const LICENSES: &str = concat!(
+    "TraceView is released under this license:\n\n",
+    include_str!("../../../LICENSE"),
+    "\n\n",
+    include_str!("../../../THIRD-PARTY-NOTICES.txt")
+);
 
 struct Common {
     path: PathBuf,
@@ -56,6 +66,7 @@ struct Common {
 enum Command {
     Help,
     Version,
+    Licenses,
     Query(Common, Query),
     Summarize(Common, usize),
 }
@@ -75,6 +86,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     match command.as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--version" | "-V" => return Ok(Command::Version),
+        "--licenses" => return Ok(Command::Licenses),
         "query" | "summarize" => {}
         other => return Err(format!("unknown command \"{other}\"")),
     }
@@ -298,6 +310,7 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
             "traceview {}",
             env!("CARGO_PKG_VERSION")
         )),
+        Command::Licenses => finish(io::stdout().write_all(LICENSES.as_bytes())),
         Command::Query(common, query_request) => run_query(&common, &query_request),
         Command::Summarize(common, top) => run_summarize(&common, top),
     }

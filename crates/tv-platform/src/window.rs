@@ -13,7 +13,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use tv_ui::theme::ContrastColors;
 use tv_ui::{Color, Event, MouseButton, Point};
-use windows::core::{w, Error, Result, HSTRING};
+use windows::core::{w, Error, Result, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -28,11 +28,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragAcceptFiles, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetClientRect, GetMessageW, GetWindowLongPtrW, LoadCursorW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, IDC_SIZENS,
-    IDC_SIZEWE, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_APP,
-    WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
+    GetClientRect, GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, PostMessageW,
+    PostQuitMessage, RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW,
+    IDC_SIZENS, IDC_SIZEWE, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW,
+    WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
     WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
@@ -114,6 +114,11 @@ pub enum Command {
     /// Registers this EXE for `.log` files, for this user, or takes that back.
     /// The handler hears how it went.
     SetFileTypes(bool),
+    /// Shows a message in a standard Windows box, in front of the window.
+    ShowMessage {
+        title: String,
+        text: String,
+    },
     Close,
 }
 
@@ -339,6 +344,9 @@ impl State {
                     dark,
                 } => shell::set_caption_colors(self.hwnd.get(), background, text, dark),
                 Command::DefaultCaptionColors => shell::default_caption_colors(self.hwnd.get()),
+                Command::ShowMessage { title, text } => {
+                    shell::show_message(self.hwnd.get(), &title, &text);
+                }
                 Command::SetImePosition(point) => self.ime_position.set(point),
                 Command::SetCursor(cursor) => {
                     self.cursor.set(cursor);
@@ -675,6 +683,9 @@ pub fn run(
             hInstance: instance.into(),
             lpszClassName: class_name,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
+            // The EXE's own icon, resource 1, if it has one. Windows picks the
+            // title bar's smaller size from the same resource.
+            hIcon: LoadIconW(Some(instance.into()), PCWSTR(1 as _)).unwrap_or_default(),
             ..Default::default()
         };
         if RegisterClassW(&class) == 0 {

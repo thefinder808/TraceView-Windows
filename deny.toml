@@ -1,0 +1,19 @@
+# What `cargo deny check` enforces in CI: no crate with a known vulnerability,
+# no license outside the list below, and crates only from crates.io.
+
+[graph]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+
+[advisories]
+# Any RustSec advisory fails the check, and so does a yanked crate.
+yanked = "deny"
+
+[licenses]
+# Licenses that only ask for their notice to travel with the EXE, which
+# THIRD-PARTY-NOTICES.txt and `traceview --licenses` take care of.
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Zlib", "Unicode-3.0", "Unlicense"]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

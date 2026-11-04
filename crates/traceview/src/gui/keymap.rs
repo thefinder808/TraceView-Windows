@@ -184,6 +184,7 @@ pub fn commands() -> Vec<(u32, String, &'static str)> {
         (command::SAVE_LAYOUT, "save_layout", ""),
         (command::USE_FOR_LOGS, "use_for_logs", ""),
         (command::STOP_FOR_LOGS, "stop_for_logs", ""),
+        (command::ABOUT, "about", ""),
     ]
     .into_iter()
     .map(|(id, name, default)| (id, name.to_string(), default))

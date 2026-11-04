@@ -432,7 +432,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **It's in the Tools menu,** as there's no settings window to hold a button.
 - **Each file opens its own window,** as CMTrace does. Opening several into one window's tabs needs a single running copy to hand files to, which is a larger change.
-- **No file icon yet.** The EXE has none, so files show Windows' generic icon until release packaging adds one.
+- **The file icon came later,** with milestone 6. Registering now gives `.log` files TraceView's icon.
 
 **Windows contrast themes:**
 
@@ -447,6 +447,23 @@ The RDP window was minimized for these frame times, so they leave out presenting
 **Not covered by automation:** a real contrast theme switched on in Windows Settings, and the Default apps page. Tests use a contrast theme's colors directly, and register in a scratch registry key.
 
 **The GUI benchmark measures fixed pixel sizes.** Its window sizes used to be scaled by the display, so at 200% the 1920x1050 run drew about 3460x2100 pixels, with frame buffers about four times larger. That put memory at 47-51 MB against the 50 MB budget, on `main` as well. The sizes are now physical pixels, so the budgets mean the same at any scale. At 200%, with the RDP window minimized: launch 48 ms, worst frame 2.95 ms at 1920x1050, 38-41 MB beyond the row index.
+
+## Milestone 6
+
+**Decided at the start:**
+
+- **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It's left until the repository is public, because a private repository's releases can't be read without signing in.
+- **The repository stays private for now,** so releases are private too.
+- **Signing uses Microsoft's own GitHub action** with the Azure account WinSign signs with.
+- **The first release is 0.9.0, a beta,** tested on Windows 11 only.
+
+**The EXE's identity:**
+
+- **The icon is the Mac app's,** in the sizes Windows uses. It shows in Explorer, the taskbar, the title bar and on registered `.log` files.
+- **Version info** gives Explorer's Properties and Task Manager the name TraceView, its version and its publisher.
+- **Help > About TraceView** shows the version, the copyright and the license, in a standard Windows box that screen readers read.
+
+**Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
 ## Milestones
 

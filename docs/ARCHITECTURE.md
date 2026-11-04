@@ -60,7 +60,10 @@ crates/
   d2d-probe/    an earlier grid, kept only for run-presentation-test.ps1
 fuzz/           coverage-guided fuzz targets, run on Linux in CI
 scripts/        check-perf.ps1 (engine budgets), check-gui-perf.ps1 (GUI budgets),
-                check-gui.ps1 (end to end), run-presentation-test.ps1 (RDP delivery)
+                check-gui.ps1 (end to end), run-presentation-test.ps1 (RDP delivery),
+                make-icon.ps1 (the icon, from the Mac app's), third-party-notices.ps1
+licenses/       license files for crates published without them
+LICENSE, THIRD-PARTY-NOTICES.txt, deny.toml (license and advisory rules)
 ```
 
 The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIGN.md).
@@ -123,6 +126,10 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 **File types.** Registering for `.log` and `.lo_` writes only under `HKEY_CURRENT_USER`: a `TraceView.Log` file type whose open command is this EXE's path, quoted, with `"%1"`; an entry in each extension's `OpenWithProgids`, so other programs listed there stay; and capabilities under `Software\TraceView` named in `RegisteredApplications`, which is what puts TraceView on Windows' Default apps page. Windows keeps the default choice itself, behind a hash a program can't forge, so TraceView registers and then opens that page. Taking it back removes exactly those keys and values. The window runs both as commands and reports back, so the workspace and its tests never touch the registry, and the registry code's own tests write under a scratch key they remove.
 
 **Contrast themes.** The window reads whether a Windows contrast theme is on, and its six colors, at launch and whenever Windows says settings or system colors changed. While one is on, the workspace draws with a theme made from those colors in place of the chosen one, kept once per set of colors as file themes are. Its backgrounds are all the background color and only highlights are filled, so every pair a view draws is one the contrast theme defines, and a test holds the mapping to the same contrast limits as the built-in themes for palettes like Windows' own four. A `contrast` flag on the theme does the rest: text on a highlight takes the selected-text color through `Theme::on_highlight`, rules draw as markers, find matches are framed, and the title bar is left to Windows.
+
+**The EXE's resources.** `build.rs` compiles one resource file into the `traceview` binary with the Windows SDK's `rc.exe`, through the `winresource` crate: the manifest (per-monitor DPI, long paths and the console policy), the icon, and version info whose numbers come from `Cargo.toml`. The icon is the Mac app's, rebuilt by `scripts/make-icon.ps1`: sizes the Mac set has are used as they're drawn, and the in-between sizes Windows wants are scaled from the next larger one. The window class and a registered `.log` file both point at it, as resource 1.
+
+**Licenses.** TraceView is MIT. `THIRD-PARTY-NOTICES.txt` holds the license files of every crate built into the EXE for x64 and ARM64, made by `scripts/third-party-notices.ps1` from `cargo metadata`, with each distinct text once. The script fails if a crate has no license file. Crates published without theirs, as AccessKit's are, use copies from the repository at the released tag, kept in `licenses/`. The EXE carries both files, so `traceview --licenses` shows them wherever it's copied. CI checks the notices are current, and `cargo deny` fails on a license not in `deny.toml`, a crate with a RustSec advisory, or a crate from anywhere but crates.io.
 
 **Menus.** A menu taller than the window wraps into more columns, as Windows' own can, so long lists of themes and layouts stay reachable. Items are found by their rectangles, so clicks, hovering and screen reader bounds needed no change.
 

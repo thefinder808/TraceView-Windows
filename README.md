@@ -6,7 +6,7 @@ A fast, customizable Windows log viewer inspired by CMTrace, and the counterpart
 
 ## Build
 
-Needs Rust and the Visual Studio C++ build tools.
+Needs Rust and the Visual Studio C++ build tools, with the Windows SDK they include for its resource compiler.
 
 ```bash
 cargo build --release -p traceview
@@ -99,4 +99,4 @@ pwsh -File scripts/check-gui.ps1
 
 ## License
 
-MIT
+MIT, in [LICENSE](LICENSE). The licenses of the crates TraceView is built with are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), and `traceview --licenses` prints both.
