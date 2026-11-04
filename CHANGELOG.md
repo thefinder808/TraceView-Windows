@@ -2,7 +2,7 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## 0.9.0, unreleased
+## 0.9.0
 
 The first release, a beta. It's been tested on Windows 11, but not yet on Windows 10, Server 2019 or with Narrator.
 
