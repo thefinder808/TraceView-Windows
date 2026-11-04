@@ -37,13 +37,14 @@ The workflow signs in to Azure with OpenID Connect. GitHub proves to Azure that 
 
 These use the app registration and Artifact Signing account WinSign already signs with.
 
-1. **Trust this repository.** In Microsoft Entra ID > App registrations, open WinSign's app, then Certificates & secrets > Federated credentials > Add credential:
+1. **Trust this repository.** In Microsoft Entra ID > App registrations, open the app WinSign's release signs with. Here it's named `github-actions-codesign`. The signing account's Access control (IAM) > Role assignments shows which app holds the signer role, if in doubt. Then go to Manage > Certificates & secrets > Federated credentials > Add credential:
    - Scenario: GitHub Actions deploying Azure resources
-   - Organization: `thefinder808`, Repository: `TraceView-Windows`
+   - Organization: `thefinder808`, with Organization ID `46229529`. For a personal account it's the account's ID, also in its noreply email address.
+   - Repository: `TraceView-Windows`, with Repository ID `1440198878`
    - Entity type: Environment, named `release`
    - Name: `traceview-windows-release`
 
-   That trusts exactly `repo:thefinder808/TraceView-Windows:environment:release`, so no other repository, branch or environment can sign with it.
+   The subject identifier should then read `repo:thefinder808@46229529/TraceView-Windows@1440198878:environment:release`. The IDs never change, so renaming the account or repository, or someone later taking an old name, can't reuse the trust. It matches only this repository's `release` environment. GitHub's tokens for this repository already use that form, which `gh api repos/thefinder808/TraceView-Windows/actions/oidc/customization/sub` shows as `use_immutable_subject: true`. Both IDs come from `gh api repos/thefinder808/TraceView-Windows`.
 2. **Signing rights.** The app's service principal needs the Artifact Signing Certificate Profile Signer role on the signing account. WinSign's already has it, if that's the account in use.
 
 ### In GitHub
