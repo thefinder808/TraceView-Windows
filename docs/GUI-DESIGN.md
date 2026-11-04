@@ -465,6 +465,14 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Releases:** a `v*` tag builds and tests on a machine with no access to signing, then a second job signs both EXEs, checks the signatures and creates a draft release of two zips and their checksums. [RELEASING.md](RELEASING.md) has the steps and the one-time setup.
 
+**Docs for the people using it:** the README now starts with what TraceView is, how to download it and check its signature, and how to use it. It also covers portable copies, the command line, what it writes and where, and how to remove it all. Building from source comes after. The screenshots are frames the snapshot tests draw, of their sample log, so they show no one's paths. `CHANGELOG.md`, `SECURITY.md` and a Buy Me a Coffee link (in the README and `.github/FUNDING.yml`) match the Mac app's.
+
+**Before the repository goes public:**
+
+- The privacy sweep over the full history, every ref and the object database.
+- Turn on private vulnerability reporting, which `SECURITY.md` points to.
+- The update check, which needs public releases to read.
+
 **Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
 ## Milestones

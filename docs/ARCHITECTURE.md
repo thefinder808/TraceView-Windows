@@ -64,7 +64,9 @@ scripts/        check-perf.ps1 (engine budgets), check-gui-perf.ps1 (GUI budgets
                 make-icon.ps1 (the icon, from the Mac app's), third-party-notices.ps1,
                 build-release.ps1 (release zips, which release.yml signs)
 licenses/       license files for crates published without them
+docs/images/    README screenshots, drawn by the snapshot tests
 LICENSE, THIRD-PARTY-NOTICES.txt, deny.toml (license and advisory rules)
+CHANGELOG.md, SECURITY.md (how to report a vulnerability)
 ```
 
 The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIGN.md).
