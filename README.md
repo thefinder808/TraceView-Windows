@@ -97,6 +97,10 @@ pwsh -File scripts/check-gui-perf.ps1
 pwsh -File scripts/check-gui.ps1
 ```
 
+## Releases
+
+A `v*` tag builds, signs and drafts a release, as [docs/RELEASING.md](docs/RELEASING.md) describes. `pwsh -File scripts/build-release.ps1` makes the same zips locally, unsigned.
+
 ## License
 
 MIT, in [LICENSE](LICENSE). The licenses of the crates TraceView is built with are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), and `traceview --licenses` prints both.
