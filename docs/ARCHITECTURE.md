@@ -61,7 +61,8 @@ crates/
 fuzz/           coverage-guided fuzz targets, run on Linux in CI
 scripts/        check-perf.ps1 (engine budgets), check-gui-perf.ps1 (GUI budgets),
                 check-gui.ps1 (end to end), run-presentation-test.ps1 (RDP delivery),
-                make-icon.ps1 (the icon, from the Mac app's), third-party-notices.ps1
+                make-icon.ps1 (the icon, from the Mac app's), third-party-notices.ps1,
+                build-release.ps1 (release zips, which release.yml signs)
 licenses/       license files for crates published without them
 LICENSE, THIRD-PARTY-NOTICES.txt, deny.toml (license and advisory rules)
 ```
@@ -234,6 +235,7 @@ The upside is that no framework limits theming or layout on anything we draw our
 - **Fuzzing:** coverage-guided on Linux in CI, because `libFuzzer` doesn't link with the MSVC toolchain here. The logic it covers isn't platform-specific, except for file access.
 - **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits. The GUI benchmark sizes its window in physical pixels, not scaled by the display, so its budgets mean the same at any display scale.
 - **End to end:** `scripts/check-gui.ps1`, run locally, drives the real window through UI Automation.
+- **Releases:** a `v*` tag tests and builds with no access to signing, then a separate job in the `release` environment signs with Azure Artifact Signing through OpenID Connect, checks the signatures, and makes a draft release. Every workflow pins its actions to exact commits. See [RELEASING.md](RELEASING.md).
 
 ## AI-agent access
 

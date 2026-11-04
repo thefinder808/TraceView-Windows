@@ -454,7 +454,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It's left until the repository is public, because a private repository's releases can't be read without signing in.
 - **The repository stays private for now,** so releases are private too.
-- **Signing uses Microsoft's own GitHub action** with the Azure account WinSign signs with.
+- **Signing uses Microsoft's own GitHub action** with the Azure account WinSign signs with. It signs in to Azure with OpenID Connect, so unlike WinSign's, no Azure secret is stored in GitHub.
 - **The first release is 0.9.0, a beta,** tested on Windows 11 only.
 
 **The EXE's identity:**
@@ -462,6 +462,8 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **The icon is the Mac app's,** in the sizes Windows uses. It shows in Explorer, the taskbar, the title bar and on registered `.log` files.
 - **Version info** gives Explorer's Properties and Task Manager the name TraceView, its version and its publisher.
 - **Help > About TraceView** shows the version, the copyright and the license, in a standard Windows box that screen readers read.
+
+**Releases:** a `v*` tag builds and tests on a machine with no access to signing, then a second job signs both EXEs, checks the signatures and creates a draft release of two zips and their checksums. [RELEASING.md](RELEASING.md) has the steps and the one-time setup.
 
 **Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
