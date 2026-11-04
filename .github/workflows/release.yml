@@ -108,8 +108,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           $version = $env:TAG.TrimStart('v')
-          $files = @(Get-ChildItem dist -File | ForEach-Object FullName)
-          $options = @('--draft', '--verify-tag', '--generate-notes', '--title', "TraceView $version")
+          # Only these are downloads. The notes come from CHANGELOG.md.
+          $files = @(Get-ChildItem dist -File | Where-Object { $_.Extension -eq '.zip' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object FullName)
+          $options = @('--draft', '--verify-tag', '--notes-file', 'dist/release-notes.md', '--title', "TraceView $version")
           # Before 1.0, every release is marked as a pre-release.
           if ($version.StartsWith('0.')) { $options += '--prerelease' }
           gh release create $env:TAG @files @options --repo $env:REPO

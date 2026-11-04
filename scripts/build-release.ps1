@@ -7,7 +7,9 @@
 # The release workflow builds with -BuildOnly in a job that has no access to
 # signing, signs the EXEs in another job, then packages them there with
 # -PackageOnly -RequireSigned. -Tag makes sure a tag like v0.9.0 matches the
-# version in Cargo.toml.
+# version in Cargo.toml, and that CHANGELOG.md has a "## 0.9.0" section.
+# Packaging then writes that section to dist\release-notes.md, as the
+# release's notes.
 param(
     [switch]$BuildOnly,
     [switch]$PackageOnly,
@@ -24,6 +26,24 @@ $version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^versio
 if ($Tag) {
     if ($Tag -notmatch '^v\d+\.\d+\.\d+$') { throw "A release tag looks like v1.2.3, not '$Tag'" }
     if ($Tag -ne "v$version") { throw "The tag is $Tag, but Cargo.toml says $version" }
+
+    # The release's notes: everything from "## <version>" to the next "## ".
+    # Checked before building, so a release can't get as far as signing
+    # without them.
+    $notes = $null
+    $inSection = $false
+    foreach ($line in Get-Content (Join-Path $root 'CHANGELOG.md') -Encoding utf8) {
+        if ($line -match '^## ') {
+            if ($inSection) { break }
+            $inSection = $line -match "^## $([regex]::Escape($version))(\s|$)"
+            if ($inSection) { $notes = [Collections.Generic.List[string]]::new() }
+        } elseif ($inSection) {
+            $notes.Add($line)
+        }
+    }
+    if (-not $notes -or -not ($notes -join '').Trim()) {
+        throw "CHANGELOG.md needs a '## $version' section, which becomes the release's notes"
+    }
 }
 
 if (-not $PackageOnly) {
@@ -74,3 +94,7 @@ foreach ($arch in $targets.Keys) {
 # The format sha256sum -c reads.
 [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), ($sums -join "`n") + "`n")
 "Wrote $((Get-ChildItem $dist -Filter *.zip).Name -join ', ') and SHA256SUMS.txt in $dist"
+if ($notes) {
+    [IO.File]::WriteAllText((Join-Path $dist 'release-notes.md'), ($notes -join "`n").Trim() + "`n")
+    "Wrote release-notes.md from CHANGELOG.md's $version section"
+}
