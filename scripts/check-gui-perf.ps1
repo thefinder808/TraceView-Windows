@@ -58,7 +58,7 @@ $launches = foreach ($run in 1..9) {
 $sorted = @($launches | Select-Object -Skip 1 | Sort-Object)
 Check 'launch' $sorted[[int]($sorted.Count / 2)] 100 'ms'
 
-# Sizes are device-independent, so these are larger in pixels on a scaled display.
+# Sizes are physical pixels, so the budgets mean the same at any display scale.
 foreach ($size in @(@('1200x760', 8), @('1920x1050', 8))) {
     "--- scrolling at $($size[0])"
     $result = Invoke-Bench "scroll-$($size[0])" @("`"$log`"", '--frames', '300', '--window', $size[0])

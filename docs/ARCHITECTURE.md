@@ -225,7 +225,7 @@ The upside is that no framework limits theming or layout on anything we draw our
 - **Every push:** formatting, lint with warnings as errors, and all tests, in GitHub Actions on Windows. That includes real frames drawn into memory and checked pixel by pixel. An ARM64 EXE is also built, and kept for 14 days for testing on ARM64 PCs.
 - **Robustness:** random and log-shaped bytes go through the whole pipeline on every test run. Set `PROPTEST_CASES` for longer runs.
 - **Fuzzing:** coverage-guided on Linux in CI, because `libFuzzer` doesn't link with the MSVC toolchain here. The logic it covers isn't platform-specific, except for file access.
-- **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits.
+- **Performance:** `scripts/check-perf.ps1` and `scripts/check-gui-perf.ps1`, run locally, because shared CI machines are too variable for timing limits. The GUI benchmark sizes its window in physical pixels, not scaled by the display, so its budgets mean the same at any display scale.
 - **End to end:** `scripts/check-gui.ps1`, run locally, drives the real window through UI Automation.
 
 ## AI-agent access
