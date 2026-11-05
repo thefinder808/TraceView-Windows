@@ -400,13 +400,87 @@ fn a_windows_contrast_theme_draws_in_its_own_colors() {
 }
 
 #[test]
-fn welcome_screen_shows_with_no_log() {
+fn the_start_page_shows_with_no_log() {
+    for (theme, name) in [
+        (&Theme::CLASSIC, "start-page-classic"),
+        (&Theme::DARK, "start-page-dark"),
+    ] {
+        let mut workspace = Workspace::new(Waker::detached(), 0, false);
+        workspace.theme_choice = ThemeChoice::Fixed(theme);
+        let frame = render(&mut workspace, name, 96.0, |workspace| {
+            !workspace.sidebar.places().is_empty()
+        });
+        let theme = workspace.theme();
+        let grid = workspace.grid_rect();
+        assert_eq!(
+            frame.at(grid.left + 2.0, grid.bottom - 2.0),
+            theme.sidebar_background
+        );
+        let buttons = workspace.home.buttons();
+        let main = buttons[0].rect;
+        assert_eq!(
+            frame.at(main.left + 3.0, main.top + 3.0),
+            theme.chip_active_background,
+            "{name}: the main button is filled"
+        );
+        assert!(frame.has_ink(main, theme.chip_active_background));
+        assert!(frame.has_ink(buttons[1].rect, theme.sidebar_background));
+        let first = workspace.home.list.item_rect(1).unwrap();
+        assert!(frame.has_ink(first, theme.sidebar_background));
+    }
+
+    // A Windows contrast theme fills only with its selection pair.
+    let colors = tv_ui::theme::ContrastColors {
+        background: Color::rgb(0x000000),
+        text: Color::rgb(0xFFFFFF),
+        link: Color::rgb(0x8080FF),
+        disabled: Color::rgb(0xA6A6A6),
+        selected: Color::rgb(0xD6B4FD),
+        selected_text: Color::rgb(0x2B2B2B),
+    };
     let mut workspace = Workspace::new(Waker::detached(), 0, false);
-    workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);
-    let frame = render(&mut workspace, "welcome", 96.0, |_| true);
+    workspace.set_contrast(Some(colors));
+    let frame = render(&mut workspace, "start-page-contrast", 96.0, |_| true);
+    let main = workspace.home.buttons()[0].rect;
+    assert_eq!(frame.at(main.left + 3.0, main.top + 3.0), colors.selected);
+    assert!(frame.has_ink(main, colors.selected));
     let grid = workspace.grid_rect();
-    let welcome = Rect::new(grid.left, grid.top, grid.left + 400.0, grid.top + 60.0);
-    assert!(frame.has_ink(welcome, workspace.theme().window_background));
+    assert_eq!(
+        frame.at(grid.left + 2.0, grid.bottom - 2.0),
+        colors.background
+    );
+}
+
+#[test]
+fn a_folder_shows_its_logs_marked_by_their_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    sample_log(&dir);
+    std::fs::write(
+        dir.path().join("Clean.log"),
+        "2026-04-06 10:00:00 host a[1]: all good\n",
+    )
+    .unwrap();
+    let mut workspace = Workspace::new(Waker::detached(), 0, false);
+    workspace.theme_choice = ThemeChoice::Fixed(&Theme::DARK);
+    workspace.open_folder(dir.path().to_path_buf());
+    let frame = render(&mut workspace, "folder-view", 96.0, |workspace| {
+        workspace.home.subtitle().contains("with errors")
+    });
+    let theme = workspace.theme();
+    let swatch = |label: &str| {
+        let list = &workspace.home.list;
+        let index = list
+            .items
+            .iter()
+            .position(|item| {
+                matches!(item, tv_ui::list_view::ListItem::Entry { label: shown, .. } if shown == label)
+            })
+            .unwrap();
+        let rect = list.item_rect(index).unwrap();
+        frame.at(rect.left + 24.0, (rect.top + rect.bottom) / 2.0)
+    };
+    assert_eq!(swatch("PolicyAgent.log"), theme.histogram_error);
+    assert_eq!(swatch("Clean.log"), theme.histogram_info);
 }
 
 #[test]

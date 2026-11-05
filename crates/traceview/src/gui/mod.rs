@@ -14,6 +14,7 @@ mod export;
 mod fonts;
 mod fonts_panel;
 mod formats_panel;
+mod home;
 mod keymap;
 mod layouts;
 mod log_view;

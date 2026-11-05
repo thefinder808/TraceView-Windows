@@ -475,6 +475,25 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
+## After 0.9.0
+
+**The start page,** which replaces a line of text in the empty window:
+
+- **Two buttons,** Open log... and Open folder..., with their shortcuts, then a list: recent folders, recent logs, and this PC's usual log folders with their key logs under each, such as `AppEnforce.log` and `CAS.log` under ConfigMgr client. Every entry opens with one click or Enter.
+- **The key logs are a fixed list per folder,** in `places.rs`, and only those that exist are listed. They're found by the same background job that finds the sidebar's Windows folders, so the page adds nothing to launch time.
+- **It's built from toolkit parts:** the sidebar's list widget, which brings keyboard, wheel and Narrator support, and two drawn buttons. The main button uses the chips' selected colors, so it follows every theme, including Windows contrast themes.
+
+**Folders,** for logs copied from another PC:
+
+- **File > Open folder... (Ctrl+Shift+O), dropping a folder,** a recent folder, or a folder on the start page lists that folder's logs on the start page, newest first.
+- **Each log is marked as the histogram is:** red for errors, yellow for warnings only, and gray for neither, with the counts beside it. A background thread opens each log in turn and counts levels from its index, so the list is usable at once and fills in. Logs over 256 MB aren't counted.
+- **The folder stays listed** while its logs are open, so closing the last tab goes back to it. Back, or Escape, leaves it.
+- **Opened while logs are open,** the folder shows over them, with the tabs still above it. Choosing a log, clicking a tab or Escape goes back to the logs.
+
+**The histogram is on by default.** It's the quickest way to see when a log's errors happened. The CMTrace layout still hides it, and a settings file that already turned it off keeps it off.
+
+**Not covered by automation:** the folder dialog, dropping a folder, and Narrator reading the start page.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |
@@ -496,7 +515,7 @@ The main choices made for the GUI, and why. Any of them can be revisited.
 |---|---|---|
 | Minimum Windows | Windows 10 1809 and Server 2019 | Admins live on these. Going lower adds risk for little reach. Needs the VM tests above |
 | Default theme | Classic in light mode, Dark in dark mode, following the system setting | CMTrace users get what they expect, and Mac users get familiarity |
-| Default on first launch | Grid, tabs, chips and filter bar, with the sidebar and histogram collapsed | Starts close to CMTrace, and reveals more as needed |
+| Default on first launch | The start page, then the grid, tabs, chips, histogram and filter bar, with the sidebar collapsed | Opening a log takes one click, and the histogram shows when errors happened. The CMTrace layout is one menu item away |
 | Menu bar | Our own, themed, and on by default | Admins expect one. Native Win32 menus can't follow dark themes |
 | Title bar | Native frame, colored by DWM | Free Snap Layouts and correct behavior |
 | Updates | Decide at milestone 6 | A portable EXE changes the options, and it's not urgent |

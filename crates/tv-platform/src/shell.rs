@@ -30,7 +30,7 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     DragFinish, DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
     ShellExecuteW, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
-    FOS_OVERWRITEPROMPT, HDROP, SIGDN_FILESYSPATH,
+    FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, HDROP, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, SystemParametersInfoW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
@@ -234,6 +234,34 @@ fn choose(hwnd: HWND) -> Option<Vec<PathBuf>> {
             chosen.push(wide_to_path(path.as_wide()));
             CoTaskMemFree(Some(path.0.cast()));
         }
+        Some(chosen)
+    }
+}
+
+/// Shows the open dialog for choosing a folder, such as one of logs copied
+/// from another PC, and returns it. Must run on the window's thread, with no
+/// state borrowed.
+pub(crate) fn choose_folder(hwnd: HWND) -> Option<PathBuf> {
+    // SAFETY: COM was initialized on this thread by `run`. All pointers are live
+    // for their call, and the returned path is freed after being copied.
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog
+            .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
+            .ok()?;
+        dialog
+            .SetTitle(&HSTRING::from("Open a folder of logs"))
+            .ok()?;
+        dialog.Show(Some(hwnd)).ok()?;
+        let path: PWSTR = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
+        let chosen = wide_to_path(path.as_wide());
+        CoTaskMemFree(Some(path.0.cast()));
         Some(chosen)
     }
 }

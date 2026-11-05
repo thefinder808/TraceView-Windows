@@ -1,5 +1,5 @@
 //! Describes the window to screen readers: the menu bar, tabs, filter and find
-//! boxes, the grid, the details pane and the status bar.
+//! boxes, the grid, the details pane, the start page and the status bar.
 //!
 //! The grid is exposed as a list, because AccessKit's Windows adapter gives table
 //! rows no selection support, and a list also announces "item 2 of 26,904,325".
@@ -10,6 +10,7 @@ use super::columns::Column;
 use super::columns_panel::{self, ColumnsPanel, Part as ColumnsPart};
 use super::fonts_panel::{self, FontsPanel, Part as FontsPart};
 use super::formats_panel::{self, FormatsPanel, FormatsResponse, Part as FormatsPart};
+use super::home::Home;
 use super::log_view::{level_name, LogView, RowSource};
 use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
@@ -80,6 +81,11 @@ const FIRST_THEME_ITEM_ID: u64 = 7_500;
 const ROW_MENU_ID: NodeId = NodeId(35);
 const FIRST_ROW_MENU_ITEM_ID: u64 = 760;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
+const HOME_ID: NodeId = NodeId(36);
+const HOME_LIST_ID: NodeId = NodeId(37);
+const FIRST_HOME_BUTTON_ID: u64 = 780;
+/// The start page lists a folder's logs, up to 500, and a few more besides.
+const FIRST_HOME_ID: u64 = 50_000;
 /// Rows come last, so any row number fits after this.
 const FIRST_ROW_ID: u64 = 1_000_000;
 /// Screen readers read the details pane's text, so it's capped to stay usable.
@@ -465,6 +471,85 @@ fn act_on_formats(workspace: &mut Workspace, request: &ActionRequest, commands: 
 
 /// A row's menu, as a menu whose highlighted item has focus. Returns the
 /// node with focus.
+/// A list's visible entries, with their section headings, as the sidebar
+/// and start page show them. Returns the selected entry's node, if one is.
+fn list_nodes(
+    list: &tv_ui::list_view::ListView,
+    first_id: u64,
+    scale: f32,
+    nodes: &mut Vec<(NodeId, Node)>,
+) -> (Vec<NodeId>, Option<NodeId>) {
+    let mut ids = Vec::new();
+    let mut selected = None;
+    for index in list.visible_items() {
+        let Some(rect) = list.item_rect(index) else {
+            continue;
+        };
+        let id = NodeId(first_id + index as u64);
+        let mut node = match &list.items[index] {
+            ListItem::Heading(text) => {
+                let mut node = Node::new(Role::Heading);
+                node.set_label(text.as_str());
+                node
+            }
+            ListItem::Entry { label, detail, .. } => {
+                let mut node = Node::new(Role::ListItem);
+                let label = label.trim();
+                node.set_label(if detail.is_empty() {
+                    label.to_string()
+                } else {
+                    format!("{label}, {detail}")
+                });
+                node.set_selected(list.selected() == Some(index));
+                node.add_action(Action::Click);
+                node.add_action(Action::Focus);
+                if list.selected() == Some(index) {
+                    selected = Some(id);
+                }
+                node
+            }
+        };
+        node.set_bounds(physical(rect, scale));
+        ids.push(id);
+        nodes.push((id, node));
+    }
+    (ids, selected)
+}
+
+/// The start page: its buttons, then its list. Returns the node to focus.
+fn home_nodes(home: &Home, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let mut children = Vec::new();
+    for (index, button) in home.buttons().iter().enumerate() {
+        let id = NodeId(FIRST_HOME_BUTTON_ID + index as u64);
+        let mut node = Node::new(Role::Button);
+        node.set_label(button.label);
+        if !button.shortcut.is_empty() {
+            node.set_keyboard_shortcut(button.shortcut.as_str());
+        }
+        node.set_bounds(physical(button.rect, scale));
+        node.add_action(Action::Click);
+        nodes.push((id, node));
+        children.push(id);
+    }
+    let (ids, selected) = list_nodes(&home.list, FIRST_HOME_ID, scale, nodes);
+    let mut list = Node::new(Role::List);
+    list.set_label(if home.folder().is_some() {
+        "Logs"
+    } else {
+        "Recent and usual logs"
+    });
+    list.set_children(ids);
+    list.set_bounds(physical(home.list.body_rect(), scale));
+    nodes.push((HOME_LIST_ID, list));
+    children.push(HOME_LIST_ID);
+    let mut page = Node::new(Role::Group);
+    page.set_label(home.title());
+    page.set_description(home.subtitle());
+    page.set_children(children);
+    nodes.push((HOME_ID, page));
+    selected.unwrap_or(HOME_LIST_ID)
+}
+
 fn row_menu_nodes(open: &RowMenu, scale: f32, nodes: &mut Vec<(NodeId, Node)>) -> NodeId {
     let menu = &open.menu;
     let mut focus = ROW_MENU_ID;
@@ -840,7 +925,10 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
 
     // The active tab: its boxes, grid and details.
     let mut grid_focus = GRID_ID;
-    if let Some(tab) = workspace.active_tab() {
+    if workspace.home_shown() {
+        grid_focus = home_nodes(&workspace.home, scale, &mut nodes);
+        window_children.push(HOME_ID);
+    } else if let Some(tab) = workspace.active_tab() {
         if tab.document().is_some() {
             for (id, label, text, rect) in [
                 (
@@ -945,40 +1033,9 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     // The sidebar's visible entries, with their section headings.
     let mut sidebar_focus = SIDEBAR_ID;
     if workspace.show_sidebar {
-        let list = &workspace.sidebar.list;
-        let mut ids = Vec::new();
-        for index in list.visible_items() {
-            let Some(rect) = list.item_rect(index) else {
-                continue;
-            };
-            let id = NodeId(FIRST_SIDEBAR_ID + index as u64);
-            let mut node = match &list.items[index] {
-                ListItem::Heading(text) => {
-                    let mut node = Node::new(Role::Heading);
-                    node.set_label(text.as_str());
-                    node
-                }
-                ListItem::Entry { label, detail, .. } => {
-                    let mut node = Node::new(Role::ListItem);
-                    let label = label.trim();
-                    node.set_label(if detail.is_empty() {
-                        label.to_string()
-                    } else {
-                        format!("{label}, {detail}")
-                    });
-                    node.set_selected(list.selected() == Some(index));
-                    node.add_action(Action::Click);
-                    node.add_action(Action::Focus);
-                    if list.selected() == Some(index) {
-                        sidebar_focus = id;
-                    }
-                    node
-                }
-            };
-            node.set_bounds(physical(rect, scale));
-            ids.push(id);
-            nodes.push((id, node));
-        }
+        let (ids, selected) =
+            list_nodes(&workspace.sidebar.list, FIRST_SIDEBAR_ID, scale, &mut nodes);
+        sidebar_focus = selected.unwrap_or(SIDEBAR_ID);
         let mut sidebar = Node::new(Role::List);
         sidebar.set_label("Sidebar");
         sidebar.set_children(ids);
@@ -1116,6 +1173,18 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     }
 }
 
+/// What a start page node does when clicked, if it's one of its buttons or entries.
+fn home_choice(workspace: &Workspace, target: NodeId) -> Option<super::home::Choice> {
+    if !workspace.home_shown() {
+        return None;
+    }
+    let home = &workspace.home;
+    if let Some(index) = in_range(target, FIRST_HOME_BUTTON_ID, home.buttons().len()) {
+        return Some(home.buttons()[index].choice.clone());
+    }
+    in_range(target, FIRST_HOME_ID, home.list.items.len()).and_then(|index| home.target_of(index))
+}
+
 /// Carries out a request from a screen reader or other assistive technology.
 pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Commands) {
     let target = request.target_node;
@@ -1148,6 +1217,10 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 act_on_columns(workspace, request);
             } else if workspace.fonts_panel.is_some() {
                 act_on_fonts(workspace, request, commands);
+            } else if let Some(choice) = home_choice(workspace, target) {
+                if request.action == Action::Click {
+                    workspace.home_chose(choice, commands);
+                }
             } else if let Some(row) = row_from_id(target) {
                 if let Some(tab) = workspace.active_tab_mut() {
                     tab.view.select(row, false);
@@ -1541,11 +1614,35 @@ mod tests {
     }
 
     #[test]
-    fn with_no_log_the_tree_is_still_valid() {
-        let workspace = Workspace::new(Waker::detached(), 0, false);
+    fn with_no_log_the_start_page_is_exposed() {
+        let mut workspace = Workspace::new(Waker::detached(), 0, false);
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            (1000.0, 700.0),
+            1.0,
+            &mut Commands::default(),
+        );
         let update = build(&workspace, 1.0);
-        assert_eq!(update.focus, GRID_ID);
+        assert_eq!(update.focus, HOME_LIST_ID);
         assert!(update.nodes.iter().any(|(id, _)| *id == STATUS_ID));
+        assert_eq!(node(&update, HOME_ID).label(), Some("TraceView"));
+        let button = node(&update, NodeId(FIRST_HOME_BUTTON_ID + 1));
+        assert_eq!(button.role(), Role::Button);
+        assert_eq!(button.label(), Some("Open folder..."));
+        assert_eq!(button.keyboard_shortcut(), Some("Ctrl+Shift+O"));
+
+        // Clicking it, as a screen reader would, asks for a folder.
+        let mut commands = Commands::default();
+        let request = ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: NodeId(FIRST_HOME_BUTTON_ID + 1),
+            data: None,
+        };
+        act(&mut workspace, &request, &mut commands);
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, tv_platform::Command::OpenFolderDialog)));
     }
 
     #[test]

@@ -43,6 +43,8 @@ pub struct Settings {
     pub histogram: bool,
     /// Logs opened lately, newest first.
     pub recent: Vec<String>,
+    /// Folders opened lately, newest first.
+    pub recent_folders: Vec<String>,
     pub presets: Vec<Preset>,
     /// Bookmarked rows, by log path in lower case. Rows count from 0.
     pub bookmarks: BTreeMap<String, Vec<u32>>,
@@ -150,8 +152,9 @@ impl Default for Settings {
             sidebar: false,
             sidebar_width: super::sidebar::DEFAULT_WIDTH,
             chips: true,
-            histogram: false,
+            histogram: true,
             recent: Vec::new(),
+            recent_folders: Vec::new(),
             presets: Vec::new(),
             bookmarks: BTreeMap::new(),
             highlighting: true,
@@ -219,6 +222,16 @@ impl Settings {
         self.recent.retain(|recent| !same_path(recent, path));
         self.recent.insert(0, path.to_string());
         self.recent.truncate(MOST_RECENT);
+    }
+
+    pub fn add_recent_folder(&mut self, folder: &Path) {
+        let Some(folder) = folder.to_str() else {
+            return;
+        };
+        self.recent_folders
+            .retain(|recent| !same_path(recent, folder));
+        self.recent_folders.insert(0, folder.to_string());
+        self.recent_folders.truncate(MOST_RECENT);
     }
 
     pub fn bookmarks_for(&self, log: &Path) -> BTreeSet<u32> {

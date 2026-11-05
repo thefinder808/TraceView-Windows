@@ -121,6 +121,11 @@ impl Sidebar {
         }
     }
 
+    /// The usual Windows log folders that exist here, once found.
+    pub fn places(&self) -> &[Place] {
+        &self.places
+    }
+
     /// What choosing a list item does, for screen readers that choose it.
     pub fn target_of(&self, item: usize) -> Option<Target> {
         let id = self.list.items.get(item)?.id()?;
