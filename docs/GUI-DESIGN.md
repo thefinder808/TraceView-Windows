@@ -253,7 +253,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
   - Typing `:` and a number goes to that row, which is what Ctrl+G opens it for.
 - **Bookmarks:** Ctrl+D toggles one, and F2 and Shift+F2 step through them. They're saved per file and listed in the sidebar. Right-clicking a row offers it too (see below).
 - **Filter presets:** View > Save filter as preset stores the filter text and the active chip under a name. They're applied or deleted from the palette.
-- **Split view** (Ctrl+\\): two logs side by side, each with its own filter, find, chips and histogram.
+- **Split view** (Ctrl+\\): two logs side by side, each with its own filter, find, chips and histogram. With only one log open, it shows the Open dialog, and the log chosen opens in the right pane. Cancelling changes nothing, and with no log open it's turned off.
   - The focused pane is marked and gets the keyboard.
   - Ctrl+Shift+S syncs the panes, so scrolling one lines the other up at the same time.
 - **CSV export** (File > Export rows as CSV): the selection, or every row shown.
