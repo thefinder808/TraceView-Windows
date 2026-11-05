@@ -4,6 +4,12 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Viewer**
+
+- A start page: buttons to open a log or a folder, recent folders and logs, and this PC's usual log folders with their key logs, such as `AppEnforce.log`, each one click away.
+- File > Open folder... (Ctrl+Shift+O), or dropping a folder, lists its logs with how many errors and warnings each has, so the ones worth reading stand out.
+- The event histogram is on by default.
+
 **Command line**
 
 - `query` and `summarize` take several logs, or folders of them. A query merges them into one timeline by time. A summary lists the logs with problems, worst first, and the worst problems across all of them.

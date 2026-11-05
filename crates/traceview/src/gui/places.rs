@@ -1,6 +1,7 @@
-//! What the sidebar lists besides open tabs: the usual Windows log folders that
-//! exist on this machine, and the logs in a folder. A folder can be a slow
-//! network share, so everything here runs on background threads.
+//! What the sidebar and start page list besides open tabs: the usual Windows
+//! log folders that exist on this machine, their key logs, and the logs in a
+//! folder. A folder can be a slow network share, so everything here runs on
+//! background threads.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,60 @@ pub const MOST_LOGS_PER_FOLDER: usize = 500;
 pub struct Place {
     pub name: &'static str,
     pub folder: PathBuf,
+    /// The logs here most worth opening that exist, filled in by [`PlacesJob`].
+    pub key_logs: Vec<PathBuf>,
+}
+
+/// Each place's logs most worth opening, for the start page to offer.
+const KEY_LOGS: [(&str, &[&str]); 8] = [
+    (
+        "ConfigMgr client",
+        &[
+            "AppEnforce.log",
+            "AppDiscovery.log",
+            "CAS.log",
+            "ContentTransferManager.log",
+            "DataTransferService.log",
+            "LocationServices.log",
+            "PolicyAgent.log",
+            "execmgr.log",
+            "UpdatesDeployment.log",
+            "WUAHandler.log",
+        ],
+    ),
+    ("ConfigMgr setup", &["ccmsetup.log"]),
+    (
+        "Intune",
+        &[
+            "IntuneManagementExtension.log",
+            "AgentExecutor.log",
+            "AppWorkload.log",
+        ],
+    ),
+    ("CBS", &["CBS.log"]),
+    ("DISM", &["dism.log"]),
+    ("Windows setup", &["setupact.log", "setuperr.log"]),
+    ("Device setup", &["setupapi.dev.log"]),
+    ("Windows Update", &["ReportingEvents.log"]),
+];
+
+fn place(name: &'static str, folder: PathBuf) -> Place {
+    Place {
+        name,
+        folder,
+        key_logs: Vec::new(),
+    }
+}
+
+/// The key logs of a place that exist. This reads the disk.
+fn key_logs_of(place: &Place) -> Vec<PathBuf> {
+    KEY_LOGS
+        .iter()
+        .filter(|(name, _)| *name == place.name)
+        .flat_map(|(_, logs)| logs.iter())
+        .map(|log| place.folder.join(log))
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// A log in a folder listing.
@@ -34,41 +89,19 @@ fn known_places() -> Vec<Place> {
     let windows = folder_from("WINDIR", "C:\\Windows");
     let data = folder_from("ProgramData", "C:\\ProgramData");
     vec![
-        Place {
-            name: "ConfigMgr client",
-            folder: windows.join("CCM").join("Logs"),
-        },
-        Place {
-            name: "ConfigMgr setup",
-            folder: windows.join("ccmsetup").join("Logs"),
-        },
-        Place {
-            name: "Intune",
-            folder: data
-                .join("Microsoft")
+        place("ConfigMgr client", windows.join("CCM").join("Logs")),
+        place("ConfigMgr setup", windows.join("ccmsetup").join("Logs")),
+        place(
+            "Intune",
+            data.join("Microsoft")
                 .join("IntuneManagementExtension")
                 .join("Logs"),
-        },
-        Place {
-            name: "CBS",
-            folder: windows.join("Logs").join("CBS"),
-        },
-        Place {
-            name: "DISM",
-            folder: windows.join("Logs").join("DISM"),
-        },
-        Place {
-            name: "Windows setup",
-            folder: windows.join("Panther"),
-        },
-        Place {
-            name: "Device setup",
-            folder: windows.join("INF"),
-        },
-        Place {
-            name: "Windows Update",
-            folder: windows.join("SoftwareDistribution"),
-        },
+        ),
+        place("CBS", windows.join("Logs").join("CBS")),
+        place("DISM", windows.join("Logs").join("DISM")),
+        place("Windows setup", windows.join("Panther")),
+        place("Device setup", windows.join("INF")),
+        place("Windows Update", windows.join("SoftwareDistribution")),
     ]
 }
 
@@ -118,6 +151,10 @@ impl PlacesJob {
             let places = known_places()
                 .into_iter()
                 .filter(|place| place.folder.is_dir())
+                .map(|mut place| {
+                    place.key_logs = key_logs_of(&place);
+                    place
+                })
                 .collect();
             let _ = sender.send(places);
             waker.wake();
@@ -232,5 +269,20 @@ mod tests {
             "{places:?}"
         );
         assert!(places.iter().all(|place| place.folder.is_dir()));
+        assert!(places
+            .iter()
+            .flat_map(|place| &place.key_logs)
+            .all(|log| log.is_file()));
+    }
+
+    #[test]
+    fn every_place_has_key_logs_named() {
+        for place in known_places() {
+            assert!(
+                KEY_LOGS.iter().any(|(name, _)| *name == place.name),
+                "{}",
+                place.name
+            );
+        }
     }
 }

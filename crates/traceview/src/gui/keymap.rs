@@ -144,6 +144,7 @@ impl Shortcut {
 pub fn commands() -> Vec<(u32, String, &'static str)> {
     let mut list: Vec<(u32, String, &'static str)> = [
         (command::OPEN, "open", "Ctrl+O"),
+        (command::OPEN_FOLDER, "open_folder", "Ctrl+Shift+O"),
         (command::MERGE, "merge", "Ctrl+Shift+M"),
         (command::EXPORT, "export", ""),
         (command::CLOSE_TAB, "close_tab", "Ctrl+W"),

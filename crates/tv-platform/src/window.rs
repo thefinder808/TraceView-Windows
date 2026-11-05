@@ -92,6 +92,8 @@ fn show_cursor(cursor: Cursor) {
 pub enum Command {
     Redraw,
     OpenFileDialog,
+    /// Asks for a folder, which the handler hears as a chosen path.
+    OpenFolderDialog,
     /// Asks where to save a CSV file, suggesting a name.
     SaveFileDialog {
         suggested_name: String,
@@ -310,6 +312,13 @@ impl State {
                     if !paths.is_empty() {
                         self.with_handler(|handler, commands| {
                             handler.files_chosen(paths, commands);
+                        });
+                    }
+                }
+                Command::OpenFolderDialog => {
+                    if let Some(folder) = shell::choose_folder(self.hwnd.get()) {
+                        self.with_handler(|handler, commands| {
+                            handler.files_chosen(vec![folder], commands);
                         });
                     }
                 }

@@ -36,7 +36,7 @@ Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a
 
 ## Using it
 
-Open a log from File > Open or Ctrl+O, drop files on the window, or pass one on the command line, here from the EXE's folder in PowerShell:
+The start page opens recent logs and folders, and this PC's usual log folders, such as ConfigMgr's and Intune's, with one click. You can also open a log from File > Open or Ctrl+O, drop files on the window, or pass one on the command line, here from the EXE's folder in PowerShell:
 
 ```powershell
 .\traceview.exe C:\Windows\Logs\CBS\CBS.log
@@ -49,6 +49,7 @@ Open a log from File > Open or Ctrl+O, drop files on the window, or pass one on 
 | Ctrl+Up, Ctrl+Down, mouse wheel | Scroll without moving the selection |
 | Ctrl+A, Ctrl+C | Select all, copy as tab-separated text |
 | Ctrl+O | Open logs, each in its own tab |
+| Ctrl+Shift+O | Open a folder, such as one of logs copied from another PC. Its logs are listed with their errors and warnings, and a click opens one. Dropping a folder does the same |
 | Ctrl+Tab, Ctrl+1-9, Ctrl+W | Switch tabs, close a tab |
 | Ctrl+F, F3, Shift+F3 | Find, and move between matches |
 | Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/` |

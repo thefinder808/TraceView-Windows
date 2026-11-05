@@ -9,6 +9,7 @@ use super::details::PANE_HEIGHT;
 use super::fonts::{self, Spacing, Target as FontTarget, LOG_SIZES};
 use super::fonts_panel::{FontsPanel, FontsResponse, Item as FontItem};
 use super::formats_panel::{FormatsPanel, FormatsResponse, Part as FormatsPart, Sample};
+use super::home::{Choice as HomeChoice, Home};
 use super::keymap::{self, Keymap};
 use super::layouts;
 use super::log_view::{snap, Metrics, RowSource};
@@ -55,7 +56,6 @@ const UI_LEFT: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
 const MAX_COPY_ROWS: usize = 100_000;
 /// How many of a log's first rows the formats editor tries a pattern on.
 const SAMPLE_ROWS: usize = 20;
-const WELCOME: &str = "Open a log with Ctrl+O, or drop one here";
 const FILTER_HINT: &str = "Filter (Ctrl+Shift+F): words, /regex/, level:warning, component:Name";
 const FIND_HINT: &str = "Find (Ctrl+F, then F3)";
 
@@ -111,6 +111,7 @@ pub mod command {
     /// nothing, since Windows turns that on and off.
     pub const THEME_CONTRAST: u32 = 72;
     pub const ABOUT: u32 = 73;
+    pub const OPEN_FOLDER: u32 = 74;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -354,6 +355,10 @@ pub struct Workspace {
     cursor: Cursor,
     pub show_chips: bool,
     pub show_histogram: bool,
+    /// The start page, and the folder it lists, if one.
+    pub home: Home,
+    /// Shows the start page over open logs, for a folder opened while they are.
+    home_over_tabs: bool,
     chip_bar: ChipBar,
     chips: Vec<Chip>,
     /// The level each chip filters to.
@@ -487,7 +492,9 @@ impl Workspace {
             pointer: Point::default(),
             cursor: Cursor::Arrow,
             show_chips: true,
-            show_histogram: false,
+            show_histogram: true,
+            home: Home::default(),
+            home_over_tabs: false,
             chip_bar: ChipBar::default(),
             chips: Vec::new(),
             chip_filters: Vec::new(),
@@ -893,6 +900,7 @@ impl Workspace {
                 title: "File".to_string(),
                 items: vec![
                     item("Open...", command::OPEN),
+                    item("Open folder...", command::OPEN_FOLDER),
                     item("Merge open logs", command::MERGE),
                     item("Export rows as CSV...", command::EXPORT),
                     item("Close tab", command::CLOSE_TAB),
@@ -1015,9 +1023,61 @@ impl Workspace {
         ]
     }
 
-    /// Opens files in new tabs, or switches to one that's already open.
+    /// Whether the start page shows: with no log open, or for a folder.
+    pub fn home_shown(&self) -> bool {
+        self.tabs.is_empty() || self.home_over_tabs
+    }
+
+    /// Lists a folder's logs on the start page, over any open logs.
+    pub fn open_folder(&mut self, folder: PathBuf) {
+        let absolute = std::path::absolute(&folder).unwrap_or(folder);
+        self.settings.add_recent_folder(&absolute);
+        self.home
+            .show_folder(absolute, self.formats.clone(), &self.waker);
+        self.home_over_tabs = !self.tabs.is_empty();
+        self.focus = Focus::Grid;
+        self.save_settings();
+    }
+
+    /// Does what was chosen on the start page.
+    pub fn home_chose(&mut self, choice: HomeChoice, commands: &mut Commands) {
+        match choice {
+            HomeChoice::OpenLog => self.run_command(command::OPEN, commands),
+            HomeChoice::OpenFolder => self.run_command(command::OPEN_FOLDER, commands),
+            HomeChoice::Open(path) => self.open_paths(vec![path]),
+            HomeChoice::Folder(path) => self.open_folder(path),
+            HomeChoice::Back => {
+                // Open logs come back first, then the start page.
+                if self.home_over_tabs || self.tabs.is_empty() {
+                    self.home.close_folder();
+                }
+                self.home_over_tabs = false;
+            }
+        }
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
+    fn home_event(&mut self, event: Event, commands: &mut Commands) {
+        let response = self.home.handle(event);
+        if let Some(choice) = response.chosen {
+            self.home_chose(choice, commands);
+        }
+        if response.redraw {
+            commands.redraw();
+            commands.accessibility_changed();
+        }
+    }
+
+    /// Opens files in new tabs, or switches to one that's already open. A
+    /// folder lists its logs on the start page instead.
     pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
         for path in paths {
+            if path.is_dir() {
+                self.open_folder(path);
+                continue;
+            }
+            self.home_over_tabs = false;
             let absolute = std::path::absolute(&path).unwrap_or(path);
             self.settings.add_recent(&absolute);
             if let Some(index) = self
@@ -1204,6 +1264,7 @@ impl Workspace {
         let waker = self.waker.clone();
         match id {
             command::OPEN => commands.push(Command::OpenFileDialog),
+            command::OPEN_FOLDER => commands.push(Command::OpenFolderDialog),
             command::CLOSE_TAB => self.close_tab(self.active),
             command::EXIT => commands.push(Command::Close),
             command::MERGE => self.merge_open_logs(),
@@ -2533,6 +2594,13 @@ impl Workspace {
         }
 
         let layout = self.layout;
+        // The start page takes everything below the tabs.
+        if self.home_shown()
+            && !matches!(event, Event::MouseDown(point, ..) if layout.tabs.contains(point))
+        {
+            self.home_event(event, commands);
+            return;
+        }
         if let Event::MouseDown(point, button, _) = event {
             if layout.tabs.contains(point) {
                 let response = self.tab_bar.handle(event);
@@ -2540,6 +2608,7 @@ impl Workspace {
                     self.close_tab(index);
                 } else if let Some(index) = response.select {
                     self.active = index;
+                    self.home_over_tabs = false;
                 }
                 commands.redraw();
                 commands.accessibility_changed();
@@ -2682,6 +2751,7 @@ impl Workspace {
             panel.poll();
         }
         self.sidebar.poll();
+        self.home.poll(&waker);
         let exported =
             self.exporting
                 .as_ref()
@@ -2744,7 +2814,9 @@ impl Workspace {
             area.take_top(snap(tab_bar::BAR_HEIGHT, scale))
         };
         self.tab_bar.arrange(tabs, &labels, canvas);
-        let ready = |tab: Option<&Tab>| tab.is_some_and(|tab| tab.document().is_some());
+        // The start page takes the place of the panes, so none are laid out.
+        let home = self.home_shown();
+        let ready = |tab: Option<&Tab>| !home && tab.is_some_and(|tab| tab.document().is_some());
         let show_histogram = self.show_histogram;
         let with_histogram = |tab: Option<&Tab>| {
             show_histogram && tab.is_some_and(|tab| tab.overview.counts.histogram.is_some())
@@ -2766,7 +2838,7 @@ impl Workspace {
             .and_then(|split| self.tabs.get(split.other));
         let (other_ready, other_histogram) = (ready(other_tab), with_histogram(other_tab));
         let (focused_area, other_area) = match &mut self.split {
-            Some(split) => {
+            Some(split) if !home => {
                 if split.splitter.position() <= 0.0 {
                     split.splitter.set_position(area.width() / 2.0);
                 }
@@ -2778,7 +2850,7 @@ impl Workspace {
                     (left, Some(right))
                 }
             }
-            None => (area, None),
+            _ => (area, None),
         };
         let focused = pane_layout(
             focused_area,
@@ -2829,6 +2901,15 @@ impl Workspace {
             focused_area,
             other,
         };
+        if home {
+            let shortcuts = [
+                self.keymap.label_for(command::OPEN),
+                self.keymap.label_for(command::OPEN_FOLDER),
+            ];
+            self.home
+                .rebuild(&self.settings, self.sidebar.places(), theme, shortcuts);
+            self.home.arrange(self.layout.grid, canvas);
+        }
         let grid_line = canvas.line_height(FontRole::Grid);
         let spacing = Spacing::from_name(&self.settings.fonts.row_spacing);
         let metrics = Metrics {
@@ -2965,18 +3046,10 @@ impl Workspace {
         }
 
         let mut caret = None;
+        let home = self.home_shown();
         match self.tabs.get_mut(self.active) {
-            None => canvas.text(
-                WELCOME,
-                Rect::new(
-                    layout.grid.left + 24.0,
-                    layout.grid.top + 20.0,
-                    layout.grid.right,
-                    layout.grid.top + 60.0,
-                ),
-                UI_LEFT,
-                theme.secondary_text,
-            ),
+            _ if home => self.home.draw(canvas, theme, focus == Focus::Grid),
+            None => {}
             Some(tab) => {
                 tab.request_rows(&waker);
                 let pane = PaneLayout {
@@ -3003,7 +3076,7 @@ impl Workspace {
                 }
             }
         }
-        if let (Some(split), Some(other)) = (&self.split, layout.other) {
+        if let (Some(split), Some(other), false) = (&self.split, layout.other, home) {
             if let Some(tab) = self.tabs.get_mut(split.other) {
                 tab.request_rows(&waker);
                 let chips = (&self.other_chip_bar, self.other_chips.as_slice());
@@ -3386,12 +3459,91 @@ mod tests {
     }
 
     #[test]
-    fn with_no_tabs_the_welcome_text_shows() {
+    fn with_no_tabs_the_start_page_shows() {
         let mut workspace = workspace();
         let mut canvas = RecordingCanvas::new();
         workspace.draw(&mut canvas, SIZE, 1.0, &mut Commands::default());
-        assert!(canvas.texts().contains(&WELCOME));
+        let texts = canvas.texts();
+        for text in ["TraceView", "Open log...", "Open folder...", "Ctrl+Shift+O"] {
+            assert!(texts.contains(&text), "{text} in {texts:?}");
+        }
         assert!(canvas.clips_balance());
+
+        let mut commands = Commands::default();
+        workspace.home_chose(HomeChoice::OpenFolder, &mut commands);
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, Command::OpenFolderDialog)));
+    }
+
+    /// The start page's entry with this label, as a choice.
+    fn home_entry(workspace: &Workspace, label: &str) -> Option<HomeChoice> {
+        let index = workspace.home.list.items.iter().position(|item| {
+            matches!(item, tv_ui::list_view::ListItem::Entry { label: shown, .. } if shown == label)
+        })?;
+        workspace.home.target_of(index)
+    }
+
+    #[test]
+    fn a_folder_lists_its_logs_and_one_click_opens_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = log_file(&dir, "app.log", 20);
+        log_file(&dir, "other.log", 5);
+        let mut workspace = workspace();
+        // Dropping a folder, or choosing one, comes here as a path.
+        workspace.open_paths(vec![dir.path().to_path_buf()]);
+        assert!(workspace.home_shown());
+        settle(&mut workspace, |workspace| {
+            workspace.home.subtitle().ends_with("2 logs, 2 with errors")
+        });
+        assert_eq!(workspace.settings().recent_folders.len(), 1);
+
+        let mut commands = Commands::default();
+        let choice = home_entry(&workspace, "app.log").unwrap();
+        workspace.home_chose(choice, &mut commands);
+        assert_eq!(workspace.tab_titles(), ["app.log"]);
+        assert!(!workspace.home_shown());
+        assert_eq!(workspace.active_tab().unwrap().paths, [path]);
+
+        // With a log open, a folder shows over it, and Escape goes back to the log.
+        workspace.open_paths(vec![dir.path().to_path_buf()]);
+        assert!(workspace.home_shown());
+        send(
+            &mut workspace,
+            Event::KeyDown(Key::Escape, Modifiers::default()),
+        );
+        assert!(!workspace.home_shown());
+        assert_eq!(workspace.home.folder(), None);
+    }
+
+    #[test]
+    fn closing_the_last_log_returns_to_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        log_file(&dir, "app.log", 20);
+        let mut workspace = workspace();
+        workspace.open_folder(dir.path().to_path_buf());
+        settle(&mut workspace, |workspace| {
+            home_entry(workspace, "app.log").is_some()
+        });
+        let choice = home_entry(&workspace, "app.log").unwrap();
+        workspace.home_chose(choice, &mut Commands::default());
+        workspace.run_command(command::CLOSE_TAB, &mut Commands::default());
+        assert!(workspace.home_shown());
+        assert!(workspace.home.folder().is_some());
+        send(
+            &mut workspace,
+            Event::KeyDown(Key::Escape, Modifiers::default()),
+        );
+        assert_eq!(workspace.home.folder(), None);
+    }
+
+    #[test]
+    fn the_histogram_shows_by_default() {
+        let (_dir, mut workspace) = opened(100);
+        settle(&mut workspace, |workspace| {
+            workspace.histogram_rect().height() > 0.0
+        });
+        assert!(workspace.settings().histogram);
     }
 
     #[test]
@@ -3691,7 +3843,8 @@ mod tests {
         restored.use_settings(settings, store, problem);
         assert_eq!(restored.theme().name, "Console");
         assert!(!restored.show_details);
-        assert!(restored.show_sidebar && restored.show_histogram);
+        // The histogram starts on, so toggling it turned it off.
+        assert!(restored.show_sidebar && !restored.show_histogram);
         assert_eq!(restored.settings().recent, [log.to_str().unwrap()]);
     }
 
