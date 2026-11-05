@@ -4,7 +4,7 @@ Pushing a tag like `v0.9.0` runs [`release.yml`](../.github/workflows/release.ym
 
 1. **Build**, with no access to signing: test everything, then build `traceview.exe` for x64 and ARM64 with [`scripts/build-release.ps1`](../scripts/build-release.ps1). The tag has to match the version in `Cargo.toml`, and `CHANGELOG.md` needs a section for that version.
 2. **Release**, in the `release` environment:
-   - sign both EXEs with Azure Artifact Signing, the account WinSign uses;
+   - sign both EXEs with Azure Artifact Signing;
    - check each signature and its timestamp;
    - zip each EXE with `LICENSE` and `THIRD-PARTY-NOTICES.txt`, and write `SHA256SUMS.txt`;
    - create a **draft** GitHub release with those files, and the `CHANGELOG.md` section as its notes.
@@ -35,9 +35,9 @@ The workflow signs in to Azure with OpenID Connect. GitHub proves to Azure that 
 
 ### In Azure
 
-These use the app registration and Artifact Signing account WinSign already signs with.
+These assume an Artifact Signing account and certificate profile already exist, with an app registration that signs with them.
 
-1. **Trust this repository.** In Microsoft Entra ID > App registrations, open the app WinSign's release signs with. Here it's named `github-actions-codesign`. The signing account's Access control (IAM) > Role assignments shows which app holds the signer role, if in doubt. Then go to Manage > Certificates & secrets > Federated credentials > Add credential:
+1. **Trust this repository.** In Microsoft Entra ID > App registrations, open the app that signs releases. Here it's named `github-actions-codesign`. The signing account's Access control (IAM) > Role assignments shows which app holds the signer role, if in doubt. Then go to Manage > Certificates & secrets > Federated credentials > Add credential:
    - Scenario: GitHub Actions deploying Azure resources
    - Organization: `thefinder808`, with Organization ID `46229529`. For a personal account it's the account's ID, also in its noreply email address.
    - Repository: `TraceView-Windows`, with Repository ID `1440198878`
@@ -45,7 +45,7 @@ These use the app registration and Artifact Signing account WinSign already sign
    - Name: `traceview-windows-release`
 
    The subject identifier should then read `repo:thefinder808@46229529/TraceView-Windows@1440198878:environment:release`. The IDs never change, so renaming the account or repository, or someone later taking an old name, can't reuse the trust. It matches only this repository's `release` environment. GitHub's tokens for this repository already use that form, which `gh api repos/thefinder808/TraceView-Windows/actions/oidc/customization/sub` shows as `use_immutable_subject: true`. Both IDs come from `gh api repos/thefinder808/TraceView-Windows`.
-2. **Signing rights.** The app's service principal needs the Artifact Signing Certificate Profile Signer role on the signing account. WinSign's already has it, if that's the account in use.
+2. **Signing rights.** The app's service principal needs the Artifact Signing Certificate Profile Signer role on the signing account. An app that already signs with that account has it.
 
 ### In GitHub
 
