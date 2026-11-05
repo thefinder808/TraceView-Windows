@@ -2,6 +2,15 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Command line**
+
+- `query` and `summarize` take several logs, or folders of them. A query merges them into one timeline by time. A summary lists the logs with problems, worst first, and the worst problems across all of them.
+- `query --format lines` prints one short line per row, at under half the size of the JSON.
+- Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
+- `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
+
 ## 0.9.0
 
 The first release, a beta. It's been tested on Windows 11, but not yet on Windows 10, Server 2019 or with Narrator.

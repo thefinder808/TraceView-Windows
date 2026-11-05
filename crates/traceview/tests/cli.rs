@@ -122,6 +122,190 @@ fn summarize_reports_levels_and_patterns() {
         "Download failed - error <hex>"
     );
     assert_eq!(result["problem_patterns"][0]["level"], "error");
+    assert_eq!(
+        result["problem_patterns"][0]["example"],
+        "Download failed - error 0x80004005"
+    );
+    assert_eq!(json["codes"][0]["code"], "0x80004005");
+    let reading = &json["codes"][0]["readings"][0];
+    assert_eq!(reading["kind"], "HRESULT");
+    assert!(!reading["message"].as_str().unwrap().is_empty());
+}
+
+/// A second log, in its own folder, written later than the sample.
+const SECOND_LOG: &str = concat!(
+    "<![LOG[Content download failed - error 0x80070002]LOG]!><time=\"10:23:02.100+000\" date=\"04-06-2026\" component=\"ContentTransferManager\" context=\"\" type=\"3\" thread=\"77\" file=\"c.cpp\">
+",
+    "<![LOG[All done]LOG]!><time=\"10:23:03.000+000\" date=\"04-06-2026\" component=\"ContentTransferManager\" context=\"\" type=\"1\" thread=\"77\" file=\"c.cpp\">
+",
+);
+
+fn logs_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("sample.log"), SCCM_LOG).unwrap();
+    std::fs::write(dir.path().join("CTM.log"), SECOND_LOG).unwrap();
+    std::fs::write(
+        dir.path().join("Clean.log"),
+        "2026-04-06 10:00:00 host a[1]: all good
+",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.md"), "not a log").unwrap();
+    dir
+}
+
+#[test]
+fn a_folder_query_merges_logs_by_time() {
+    let dir = logs_folder();
+    let json = stdout_json(&traceview(&[
+        "query",
+        dir.path().to_str().unwrap(),
+        "--min-level",
+        "warning",
+    ]));
+    assert_eq!(json["log_text_trust"], "untrusted");
+    assert_eq!(json["logs_read"], 3);
+    let result = &json["result"];
+    assert_eq!(result["total_rows"], 6);
+    assert_eq!(result["total_matches"], 3);
+    let found: Vec<(&str, u64)> = result["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["file"].as_str().unwrap(), row["row"].as_u64().unwrap()))
+        .collect();
+    // 10:23:02.100 falls between the sample's rows at 02.334 and 02.500.
+    assert_eq!(
+        found,
+        [("CTM.log", 1), ("sample.log", 2), ("sample.log", 3)]
+    );
+}
+
+#[test]
+fn several_files_query_as_one_timeline() {
+    let dir = logs_folder();
+    let first = dir.path().join("sample.log");
+    let second = dir.path().join("CTM.log");
+    let json = stdout_json(&traceview(&[
+        "query",
+        first.to_str().unwrap(),
+        second.to_str().unwrap(),
+        "--limit",
+        "2",
+    ]));
+    assert_eq!(json["logs_read"], 2);
+    assert_eq!(json["result"]["total_matches"], 5);
+    assert_eq!(json["result"]["next_offset"], 2);
+    assert_eq!(json["result"]["rows"][0]["message"], "Connected to mp01");
+}
+
+#[test]
+fn a_missing_file_among_several_is_an_error() {
+    let (_dir, path) = sample_log();
+    let output = traceview(&["query", path.to_str().unwrap(), "missing.log"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr_code(&output), "file_not_found");
+}
+
+#[test]
+fn a_folder_with_no_logs_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.md"), "not a log").unwrap();
+    let output = traceview(&["summarize", dir.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr_code(&output), "no_logs");
+}
+
+#[test]
+fn a_folder_summary_lists_logs_with_problems_first() {
+    let dir = logs_folder();
+    let json = stdout_json(&traceview(&["summarize", dir.path().to_str().unwrap()]));
+    assert_eq!(json["logs_read"], 3);
+    let result = &json["result"];
+    assert_eq!(result["total_rows"], 6);
+    assert_eq!(result["levels"]["error"], 2);
+    let logs = result["logs_with_problems"].as_array().unwrap();
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0]["file"], "sample.log");
+    assert_eq!(logs[0]["errors"], 1);
+    assert_eq!(logs[0]["warnings"], 1);
+    assert_eq!(result["other_logs"], serde_json::json!(["Clean.log"]));
+    let patterns = result["problem_patterns"].as_array().unwrap();
+    assert_eq!(patterns.len(), 3);
+    assert!(patterns[..2]
+        .iter()
+        .all(|pattern| pattern["level"] == "error"));
+    assert_eq!(patterns[2]["file"], "sample.log");
+    let codes: Vec<&str> = result["codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|code| code["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"0x80070002") && codes.contains(&"0x80004005"));
+}
+
+#[test]
+fn lines_output_puts_one_row_on_each_line() {
+    let (_dir, path) = sample_log();
+    let output = traceview(&["query", path.to_str().unwrap(), "--format", "lines"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].starts_with("# "));
+    assert!(lines[0].contains("3 of 3 rows match"));
+    assert!(lines[0].contains("untrusted"));
+    assert_eq!(
+        lines[2],
+        "2 2026-04-06T10:23:02.334 ERR PolicyAgent 5240 | Download failed - error 0x80004005"
+    );
+    assert_eq!(
+        lines[3],
+        "3 2026-04-06T10:23:02.500 WARN PolicyAgent 5240 | Retrying in 15 minutes\\nsecond line"
+    );
+}
+
+#[test]
+fn lines_output_names_each_log_when_merged() {
+    let dir = logs_folder();
+    let output = traceview(&[
+        "query",
+        dir.path().to_str().unwrap(),
+        "--min-level",
+        "error",
+        "--format",
+        "lines",
+        "--limit",
+        "1",
+    ]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].contains("3 logs merged by time: 2 of 6 rows match"));
+    assert!(lines[0].contains("Next page: --offset 1."));
+    assert!(lines[1].starts_with("CTM.log:1 2026-04-06T10:23:02.100 ERR "));
+}
+
+#[test]
+fn lookup_explains_a_code_in_any_form() {
+    for code in ["0x80070005", "-2147024891", "80070005"] {
+        let json = stdout_json(&traceview(&["lookup", code]));
+        assert_eq!(json["input"], code);
+        let reading = &json["readings"][0];
+        assert_eq!(reading["hex"], "0x80070005", "{code}");
+        assert_eq!(reading["facility"], "WIN32 (7)");
+        assert!(!reading["message"].as_str().unwrap().is_empty());
+    }
+    let json = stdout_json(&traceview(&["lookup", "1603"]));
+    let readings = json["readings"].as_array().unwrap();
+    assert!(readings.iter().all(|reading| reading["message"] != ""));
+}
+
+#[test]
+fn lookup_without_a_code_is_an_error() {
+    let output = traceview(&["lookup", "hello"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr_code(&output), "no_code");
 }
 
 #[test]
@@ -173,13 +357,16 @@ fn incorrect_usage_exits_with_code_two() {
         &["frobnicate"][..],
         &["query"],
         &["query", path, "--nope"],
-        &["query", path, "extra"],
         &["query", path, "--limit", "many"],
         &["query", path, "--min-level", "loud"],
         &["query", path, "--text", "a", "--regex", "b"],
         &["query", path, "--text"],
         &["query", path, "--top", "5"],
         &["summarize", path, "--text", "a"],
+        &["query", path, "--format", "xml"],
+        &["summarize", path, "--format", "lines"],
+        &["lookup"],
+        &["lookup", "--nope"],
     ] {
         let output = traceview(args);
         assert_eq!(output.status.code(), Some(2), "args: {args:?}");

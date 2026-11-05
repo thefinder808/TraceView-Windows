@@ -243,7 +243,12 @@ The upside is that no framework limits theming or layout on anything we draw our
 
 The goal is one engine with several front ends in the same EXE:
 
-1. **Headless CLI with JSON output.** Built, as `traceview query` and `traceview summarize`.
+1. **Headless CLI with JSON output.** Built, as `traceview query`, `traceview summarize` and `traceview lookup`, in `crates/traceview/src/cli.rs`.
+   - Both `query` and `summarize` take files and folders. A folder means the logs directly in it, listed as the sidebar lists a folder, at most 500. A log named on the command line that can't be opened is an error, but one listed from a folder is skipped and reported, so one locked file doesn't stop the rest.
+   - With several logs, `query` finds each log's matches, then merges only the logs with matches through `merge::merge_order`, since merging reads every row. Each row names its log.
+   - With several logs, `summarize` summarizes each one, then lists the logs with warnings or worse and the worst patterns across all of them.
+   - Each summary pattern keeps its first row as an example, and the CLI looks up the error codes in the problem patterns' examples with `tv-errors`. Without this, an exit code of 1603 would read only as `<n>`.
+   - `--format lines` writes one line per row, `row time level component thread | message`, for agents that pay by the token.
 2. **Local stdio MCP server** (`traceview mcp`), a thin layer over the CLI's functions. Not built. Tools:
    - `open_log`
    - `summarize`: groups repeated messages into patterns with counts, first and last seen, and spikes
