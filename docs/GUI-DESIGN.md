@@ -454,7 +454,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It's left until the repository is public, because a private repository's releases can't be read without signing in.
 - **The repository stays private for now,** so releases are private too.
-- **Signing uses Microsoft's own GitHub action** with the Azure account WinSign signs with. It signs in to Azure with OpenID Connect, so unlike WinSign's, no Azure secret is stored in GitHub.
+- **Signing uses Microsoft's own GitHub action** with an existing Azure Artifact Signing account. It signs in to Azure with OpenID Connect, so no Azure secret is stored in GitHub.
 - **The first release is 0.9.0, a beta,** tested on Windows 11 only.
 
 **The EXE's identity:**
@@ -483,14 +483,14 @@ The RDP window was minimized for these frame times, so they leave out presenting
 | **3. CMTrace replacement** | Live tail, find, filter, highlighting, Error Lookup, merge, tabs, Classic theme | You can use it instead of CMTrace all day |
 | **4. TraceView** | Chips, histogram, row drawer, split view, sidebar, presets, bookmarks, command palette, all themes | Feature parity with the Mac app, where it applies |
 | **5. Customization** | Rules, custom formats, column layouts, keyboard remapping, portable mode, and the in-app editors for them | Everything in the table above works |
-| **6. Release** | Signing through the WinSign pipeline, an update mechanism, installer-free packaging, documentation | A signed public build |
+| **6. Release** | Signing with Azure Artifact Signing, an update mechanism, installer-free packaging, documentation | A signed public build |
 | **Later** | MCP server, `traceview://` links, "Copy for AI" | See [ARCHITECTURE.md](ARCHITECTURE.md) |
 
 Theme tokens and the rule engine go in from milestone 2, so colors are never hard-coded even before their editors exist. Milestone 5 is about exposing them.
 
 ## Decisions in this draft
 
-These are my picks. Each can change if you see it differently.
+The main choices made for the GUI, and why. Any of them can be revisited.
 
 | Decision | Pick | Why |
 |---|---|---|
