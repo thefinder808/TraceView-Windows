@@ -163,6 +163,8 @@ pub trait Handler {
     fn resized(&mut self, width: u32, height: u32, dpi: f32, commands: &mut Commands);
     /// Another thread called [`Waker::wake`].
     fn woken(&mut self, commands: &mut Commands);
+    /// Files were chosen in the Open dialog, or dropped on the window. None
+    /// means the Open dialog was cancelled.
     fn files_chosen(&mut self, paths: Vec<PathBuf>, commands: &mut Commands);
     /// A path was chosen in the save dialog.
     fn save_path_chosen(&mut self, path: PathBuf, commands: &mut Commands);
@@ -308,12 +310,12 @@ impl State {
                     let _ = unsafe { InvalidateRect(Some(self.hwnd.get()), None, false) };
                 }
                 Command::OpenFileDialog => {
+                    // Cancelling is reported too, as no files, so the handler
+                    // can drop whatever it asked for them for.
                     let paths = shell::choose_files(self.hwnd.get());
-                    if !paths.is_empty() {
-                        self.with_handler(|handler, commands| {
-                            handler.files_chosen(paths, commands);
-                        });
-                    }
+                    self.with_handler(|handler, commands| {
+                        handler.files_chosen(paths, commands);
+                    });
                 }
                 Command::OpenFolderDialog => {
                     if let Some(folder) = shell::choose_folder(self.hwnd.get()) {

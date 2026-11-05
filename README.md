@@ -63,7 +63,7 @@ The start page opens recent logs and folders, and this PC's usual log folders, s
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |
 | Right-click a row, Shift+F10 | The row's menu: add or remove its bookmark, or copy the selected rows |
 | Ctrl+B | Sidebar |
-| Ctrl+\ | Split view, with Ctrl+Shift+S to sync the panes by time |
+| Ctrl+\ | Split view, with Ctrl+Shift+S to sync the panes by time. With one log open, it asks for the log to show beside it |
 | Ctrl+U | Pause live updates |
 | Ctrl+Shift+M | Merge the open logs into one timeline |
 | Alt or F10 | The menus |

@@ -9,6 +9,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - A start page: buttons to open a log or a folder, recent folders and logs, and this PC's usual log folders with their key logs, such as `AppEnforce.log`, each one click away.
 - File > Open folder... (Ctrl+Shift+O), or dropping a folder, lists its logs with how many errors and warnings each has, so the ones worth reading stand out.
 - The event histogram is on by default.
+- With one log open, Split view asks for the log to show beside it, rather than only saying in the status bar that it needs two.
 
 **Command line**
 

@@ -359,6 +359,8 @@ pub struct Workspace {
     pub home: Home,
     /// Shows the start page over open logs, for a folder opened while they are.
     home_over_tabs: bool,
+    /// The tab Split view asked the Open dialog for a log to show beside.
+    split_beside: Option<usize>,
     chip_bar: ChipBar,
     chips: Vec<Chip>,
     /// The level each chip filters to.
@@ -495,6 +497,7 @@ impl Workspace {
             show_histogram: true,
             home: Home::default(),
             home_over_tabs: false,
+            split_beside: None,
             chip_bar: ChipBar::default(),
             chips: Vec::new(),
             chip_filters: Vec::new(),
@@ -935,7 +938,10 @@ impl Workspace {
                     item("Command palette...", command::PALETTE),
                     MenuItem::Separator,
                     checked(item("Sidebar", command::SIDEBAR), self.show_sidebar),
-                    checked(item("Split view", command::SPLIT), self.split.is_some()),
+                    enabled(
+                        checked(item("Split view", command::SPLIT), self.split.is_some()),
+                        !self.tabs.is_empty(),
+                    ),
                     checked(item("Sync split panes", command::SYNC), self.split.as_ref().is_some_and(|split| split.sync)),
                     checked(item("Severity chips", command::CHIPS), self.show_chips),
                     checked(item("Histogram", command::HISTOGRAM), self.show_histogram),
@@ -1070,8 +1076,14 @@ impl Workspace {
     }
 
     /// Opens files in new tabs, or switches to one that's already open. A
-    /// folder lists its logs on the start page instead.
+    /// folder lists its logs on the start page instead. No paths means the Open
+    /// dialog was cancelled.
     pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        let beside = self.split_beside.take();
+        if paths.is_empty() {
+            return;
+        }
+        let mut first_log = None;
         for path in paths {
             if path.is_dir() {
                 self.open_folder(path);
@@ -1086,14 +1098,39 @@ impl Workspace {
                 .position(|tab| tab.paths == [absolute.clone()])
             {
                 self.active = index;
+                first_log.get_or_insert(index);
                 continue;
             }
             self.tabs
                 .push(Tab::open(vec![absolute], self.formats.clone(), &self.waker));
             self.active = self.tabs.len() - 1;
+            first_log.get_or_insert(self.active);
+        }
+        if let (Some(left), Some(right)) = (beside, first_log) {
+            self.split_with(left, right);
         }
         self.focus = Focus::Grid;
         self.save_settings();
+    }
+
+    /// Shows two tabs side by side, with focus in `right`.
+    fn split_with(&mut self, left: usize, right: usize) {
+        if left == right || left >= self.tabs.len() {
+            self.notice = Some(
+                "That log is already open on its own, so choose another to see beside it"
+                    .to_string(),
+            );
+            return;
+        }
+        self.active = right;
+        self.split = Some(Split {
+            other: left,
+            focus_right: true,
+            sync: false,
+            splitter: Splitter::new(Orientation::Vertical, 0.0, MIN_PANE, MIN_PANE),
+            focused_tab: right,
+            synced: None,
+        });
     }
 
     /// Exports the active tab's rows to a CSV file, in the background. The file
@@ -1271,17 +1308,33 @@ impl Workspace {
             command::PALETTE => self.open_palette(Mode::Everything, "", commands),
             command::SPLIT => {
                 if self.split.take().is_none() {
-                    if self.tabs.len() >= 2 {
-                        self.split = Some(Split {
-                            other: (self.active + 1) % self.tabs.len(),
-                            focus_right: false,
-                            sync: false,
-                            splitter: Splitter::new(Orientation::Vertical, 0.0, MIN_PANE, MIN_PANE),
-                            focused_tab: self.active,
-                            synced: None,
-                        });
-                    } else {
-                        self.notice = Some("Open two logs to see them side by side".to_string());
+                    match self.tabs.len() {
+                        0 => {
+                            self.notice = Some(
+                                "Open a log, then split the view to see another beside it"
+                                    .to_string(),
+                            )
+                        }
+                        // Asks for the log to show beside the only one open.
+                        1 => {
+                            self.split_beside = Some(self.active);
+                            commands.push(Command::OpenFileDialog);
+                        }
+                        _ => {
+                            self.split = Some(Split {
+                                other: (self.active + 1) % self.tabs.len(),
+                                focus_right: false,
+                                sync: false,
+                                splitter: Splitter::new(
+                                    Orientation::Vertical,
+                                    0.0,
+                                    MIN_PANE,
+                                    MIN_PANE,
+                                ),
+                                focused_tab: self.active,
+                                synced: None,
+                            });
+                        }
                     }
                 }
             }
@@ -5149,12 +5202,74 @@ mod tests {
         assert_eq!(workspace.tabs[0].view.top_row(), 12);
     }
 
+    fn split_with_one_log(workspace: &mut Workspace) -> Commands {
+        let mut commands = Commands::default();
+        workspace.event(
+            Event::KeyDown(Key::Char('\\'), CTRL),
+            &mut RecordingCanvas::new(),
+            &mut commands,
+        );
+        commands
+    }
+
     #[test]
-    fn one_log_cannot_be_split() {
-        let (_dir, mut workspace) = opened(10);
-        send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+    fn splitting_one_log_asks_for_the_log_to_show_beside_it() {
+        let (dir, mut workspace) = opened(10);
+        let commands = split_with_one_log(&mut workspace);
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, Command::OpenFileDialog)));
+        assert!(
+            workspace.split.is_none(),
+            "nothing changes until one is chosen"
+        );
+
+        let second = log_file(&dir, "second.log", 10);
+        workspace.open_paths(vec![second.clone()]);
+        let split = workspace.split.as_ref().unwrap();
+        assert_eq!((split.other, split.focus_right), (0, true));
+        assert_eq!(workspace.active, 1);
+        assert_eq!(workspace.active_tab().unwrap().paths, [second]);
+    }
+
+    #[test]
+    fn cancelling_the_split_dialog_changes_nothing() {
+        let (dir, mut workspace) = opened(10);
+        split_with_one_log(&mut workspace);
+        workspace.open_paths(Vec::new());
         assert!(workspace.split.is_none());
-        assert!(workspace.status().contains("Open two logs"));
+        // A log opened later opens in a tab of its own, as always.
+        workspace.open_paths(vec![log_file(&dir, "later.log", 10)]);
+        assert!(workspace.split.is_none());
+        assert_eq!(workspace.tabs.len(), 2);
+    }
+
+    #[test]
+    fn splitting_with_the_same_log_says_to_choose_another() {
+        let (_dir, mut workspace) = opened(10);
+        split_with_one_log(&mut workspace);
+        let same = workspace.tabs[0].paths.clone();
+        workspace.open_paths(same);
+        assert!(workspace.split.is_none());
+        assert!(workspace.status().contains("choose another"));
+    }
+
+    #[test]
+    fn split_view_is_off_with_no_log_open() {
+        let mut workspace = workspace();
+        let split = workspace
+            .build_menus()
+            .iter()
+            .flat_map(|menu| &menu.items)
+            .find_map(|item| match item {
+                MenuItem::Command {
+                    command, enabled, ..
+                } if *command == command::SPLIT => Some(*enabled),
+                _ => None,
+            });
+        assert_eq!(split, Some(false));
+        send(&mut workspace, Event::KeyDown(Key::Char('\\'), CTRL));
+        assert!(workspace.status().contains("Open a log, then split"));
     }
 
     #[test]
