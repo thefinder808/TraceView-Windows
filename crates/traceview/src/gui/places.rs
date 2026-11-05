@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use tv_platform::Waker;
 
 /// A folder listing stops here, so a folder of thousands of files stays usable.
-const MOST_LOGS_PER_FOLDER: usize = 500;
+pub const MOST_LOGS_PER_FOLDER: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {

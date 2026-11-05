@@ -19,7 +19,7 @@ mod layouts;
 mod log_view;
 mod lookup;
 mod overview;
-mod places;
+pub(crate) mod places;
 mod reload;
 mod row_cache;
 mod rules;

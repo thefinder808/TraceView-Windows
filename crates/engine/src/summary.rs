@@ -6,16 +6,20 @@ use crate::encoding::{self, Encoding};
 use crate::file::LogFile;
 use crate::level::Level;
 use crate::parse::Format;
-use crate::query::{Control, QueryError, ROWS_PER_TASK};
+use crate::query::{self, Control, QueryError, ROWS_PER_TASK};
 use crate::time::Stamp;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io;
 use std::sync::atomic::Ordering;
 
 pub const DEFAULT_TOP: usize = 20;
 pub const MAX_TOP: usize = 200;
 const MAX_TEMPLATE_BYTES: usize = 200;
+/// An example keeps the pattern's real values, such as an exit code, so it's
+/// capped tighter than a query's messages.
+const MAX_EXAMPLE_CHARS: usize = 500;
 /// Limits on distinct patterns tracked, so a log of unique messages can't
 /// exhaust memory. Rows past the limit are counted in `other_rows`.
 const MAX_PATTERNS_PER_TASK: usize = 20_000;
@@ -79,6 +83,9 @@ impl LevelCounts {
 pub struct Pattern {
     /// The message with variable parts replaced by `<n>`, `<hex>` or `<guid>`.
     pub template: String,
+    /// The pattern's first row as written, with its real numbers and codes.
+    /// Capped at 500 characters.
+    pub example: String,
     pub count: u64,
     /// The highest severity seen with this pattern.
     pub level: Level,
@@ -231,16 +238,33 @@ fn stamp_text(log: &LogFile, row: u32) -> Option<String> {
         .map(|seconds| Stamp::from_seconds(seconds).to_string())
 }
 
-fn to_pattern(log: &LogFile, template: &[u8], tally: &Tally) -> Pattern {
-    Pattern {
+fn to_pattern(
+    log: &LogFile,
+    template: &[u8],
+    tally: &Tally,
+    buffers: &mut (Vec<u8>, Vec<u8>),
+) -> io::Result<Pattern> {
+    let first = query::read_record(
+        log,
+        tally.first_row as usize,
+        &mut buffers.0,
+        &mut buffers.1,
+    )?;
+    let example = if first.message.chars().count() > MAX_EXAMPLE_CHARS {
+        first.message.chars().take(MAX_EXAMPLE_CHARS).collect()
+    } else {
+        first.message
+    };
+    Ok(Pattern {
         template: encoding::display(template).into_owned(),
+        example,
         count: tally.count,
         level: tally.level,
         first_row: u64::from(tally.first_row) + 1,
         last_row: u64::from(tally.last_row) + 1,
         first_seen: stamp_text(log, tally.first_row),
         last_seen: stamp_text(log, tally.last_row),
-    }
+    })
 }
 
 /// Finds minutes well above the log's usual error rate.
@@ -366,11 +390,12 @@ pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary
             .cmp(&a.1.count)
             .then(a.1.first_row.cmp(&b.1.first_row))
     });
+    let mut buffers = (Vec::new(), Vec::new());
     let top_patterns = by_count
         .iter()
         .take(top)
-        .map(|(template, tally)| to_pattern(log, template, tally))
-        .collect();
+        .map(|(template, tally)| to_pattern(log, template, tally, &mut buffers))
+        .collect::<io::Result<_>>()?;
 
     let mut by_severity: Vec<&(&Vec<u8>, &Tally)> = by_count
         .iter()
@@ -385,8 +410,8 @@ pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary
     let problem_patterns = by_severity
         .iter()
         .take(top)
-        .map(|(template, tally)| to_pattern(log, template, tally))
-        .collect();
+        .map(|(template, tally)| to_pattern(log, template, tally, &mut buffers))
+        .collect::<io::Result<_>>()?;
 
     let has_times = rows_with_timestamps > 0;
     Ok(Summary {
@@ -476,6 +501,7 @@ mod tests {
 
         let top = &summary.top_patterns[0];
         assert_eq!(top.template, "retry <n> failed");
+        assert_eq!(top.example, "retry 1 failed");
         assert_eq!(top.count, 2);
         assert_eq!((top.first_row, top.last_row), (1, 3));
         assert_eq!(top.first_seen.as_deref(), Some("2026-01-01T10:00:00.000"));
@@ -494,6 +520,17 @@ mod tests {
         assert_eq!(summary.problem_patterns[0].template, "it failed");
         assert_eq!(summary.problem_patterns[1].template, "retrying now");
         assert_eq!(summary.top_patterns[0].template, "retrying now");
+    }
+
+    #[test]
+    fn a_long_example_is_cut_short() {
+        let (_dir, log) = open(&format!(
+            "{}
+",
+            "x".repeat(2000)
+        ));
+        let summary = summarize(&log, 10, &Control::default()).unwrap();
+        assert_eq!(summary.top_patterns[0].example.len(), MAX_EXAMPLE_CHARS);
     }
 
     #[test]
