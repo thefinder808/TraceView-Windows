@@ -8,14 +8,16 @@
 use crate::gui::places;
 use crate::setup;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use tv_engine::encoding;
 use tv_engine::query::{self, Matcher, Query};
 use tv_engine::summary::{self, LevelCounts, Pattern, Spike, Summary};
+use tv_engine::time::Stamp;
 use tv_engine::{
     merge, Control, CustomFormat, Encoding, Format, Level, LogFile, OpenStats, QueryError,
     RowRecord,
@@ -56,11 +58,18 @@ Query options:
   --offset <n>         Skip this many matches
   --limit <n>          Matches per page (default 100, maximum 1000)
   --newest-first       Newest matches first, so --limit 10 gives the last ten
+  --exclude <pattern>  Leave out rows matching this regular expression, such as
+                       known noise. Give it more than once to leave out more
+  --count-by <group>   Count the matches by day, hour, file, level, component
+                       or template, the message with its numbers and codes
+                       taken out, instead of listing them
   --format <form>      json (the default), or lines: one short line per row
 
 Summarize options:
   --top <n>            Patterns to list (default 20, maximum 200)
   --from, --to         Summarize only the rows in this time range, as for query
+  --exclude <pattern>  Leave out rows matching this, as for query. The summary
+                       says how many rows, errors and warnings it left out
   --format <form>      json (the default), or lines: one short line per log and
                        per pattern, without examples
   --no-examples        Leave out each pattern's example row from the JSON
@@ -146,10 +155,58 @@ const FIELDS: [(&str, Field); 7] = [
     ("message", Field::Message),
 ];
 
+/// What `--count-by` groups matching rows by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CountBy {
+    Day,
+    Hour,
+    File,
+    Level,
+    Component,
+    Template,
+}
+
+const COUNT_BY: [(&str, CountBy); 6] = [
+    ("day", CountBy::Day),
+    ("hour", CountBy::Hour),
+    ("file", CountBy::File),
+    ("level", CountBy::Level),
+    ("component", CountBy::Component),
+    ("template", CountBy::Template),
+];
+
+impl CountBy {
+    fn name(self) -> &'static str {
+        COUNT_BY
+            .iter()
+            .find(|(_, known)| *known == self)
+            .map_or("", |(name, _)| name)
+    }
+
+    /// Whether groups read best in time order, rather than biggest first.
+    fn by_time(self) -> bool {
+        matches!(self, Self::Day | Self::Hour)
+    }
+}
+
+fn parse_count_by(text: &str) -> Result<CountBy, String> {
+    COUNT_BY
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(text))
+        .map(|(_, by)| *by)
+        .ok_or_else(|| {
+            format!(
+                "--count-by takes day, hour, file, level, component or template, not \"{text}\""
+            )
+        })
+}
+
 /// How results are laid out.
 #[derive(Clone, Debug)]
 struct Shape {
     form: Form,
+    /// Counts of matching rows in groups, instead of the rows.
+    count_by: Option<CountBy>,
     newest_first: bool,
     no_examples: bool,
     header: bool,
@@ -162,6 +219,7 @@ impl Default for Shape {
     fn default() -> Self {
         Self {
             form: Form::Json,
+            count_by: None,
             newest_first: false,
             no_examples: false,
             header: true,
@@ -290,6 +348,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--recurse" => scope.recurse = true,
             "--from" => query.from = Some(value(&arg)?),
             "--to" => query.to = Some(value(&arg)?),
+            "--exclude" => query.exclude.push(value(&arg)?),
+            "--count-by" if is_query => shape.count_by = Some(parse_count_by(&value(&arg)?)?),
             "--top" if !is_query => top = parse_number("--top", &value("--top")?)?,
             "--format" => shape.form = parse_form(&value(&arg)?)?,
             "--max-width" => {
@@ -331,6 +391,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let shapes_lines = !shape.header || shape.fields.is_some() || shape.max_width.is_some();
     if shapes_lines && shape.form != Form::Lines {
         return Err("--no-header, --fields and --max-width need --format lines".to_string());
+    }
+    if shape.count_by.is_some() && (shape.fields.is_some() || shape.newest_first) {
+        return Err(
+            "--count-by gives counts, not rows, so it can't take --fields or --newest-first"
+                .to_string(),
+        );
     }
     let common = Common {
         paths,
@@ -416,6 +482,57 @@ struct SummaryOutput<'a> {
     /// Error codes in the problem patterns' examples, with what Windows says
     /// they mean.
     codes: Vec<CodeInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded: Option<Excluded>,
+}
+
+/// The rows `--exclude` left out of a summary, so it never hides problems
+/// without saying so.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct Excluded {
+    rows: u64,
+    errors: u64,
+    warnings: u64,
+}
+
+impl Excluded {
+    fn note(&self) -> String {
+        format!(
+            "--exclude left out {}, with {} and {} among them",
+            counted(self.rows, "row"),
+            counted(self.errors, "error"),
+            counted(self.warnings, "warning")
+        )
+    }
+}
+
+/// What `--exclude` leaves out of some logs, within any time range. None when
+/// nothing is excluded.
+fn excluded_in(logs: &[&LogFile], range: &Query) -> Result<Option<Excluded>, QueryError> {
+    if range.exclude.is_empty() {
+        return Ok(None);
+    }
+    let matcher = Matcher::new(&Query {
+        text: Some(query::any_of(&range.exclude)),
+        regex: true,
+        case_sensitive: range.case_sensitive,
+        from: range.from.clone(),
+        to: range.to.clone(),
+        ..Query::default()
+    })?;
+    let control = Control::default();
+    let mut excluded = Excluded::default();
+    for log in logs {
+        for row in query::matching_rows(log, &matcher, &control)? {
+            excluded.rows += 1;
+            match log.level(row as usize) {
+                Level::Error | Level::Critical => excluded.errors += 1,
+                Level::Warning => excluded.warnings += 1,
+                _ => {}
+            }
+        }
+    }
+    Ok(Some(excluded))
 }
 
 /// One meaning of an error code, from Windows' own message tables.
@@ -530,6 +647,8 @@ struct LogsSummary {
     /// Warning and higher patterns across every log, most severe first.
     problem_patterns: Vec<LogPattern>,
     codes: Vec<CodeInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded: Option<Excluded>,
 }
 
 #[derive(Serialize)]
@@ -1150,12 +1269,196 @@ fn just_one(inputs: &[Input]) -> bool {
     inputs.len() == 1 && !inputs[0].listed
 }
 
+/// A group of matching rows and how many there are.
+#[derive(Serialize)]
+struct Group {
+    key: String,
+    count: u64,
+}
+
+#[derive(Serialize)]
+struct CountResult {
+    count_by: &'static str,
+    total_rows: u64,
+    total_matches: u64,
+    /// Earliest first for days and hours, otherwise biggest first.
+    groups: Vec<Group>,
+}
+
+#[derive(Serialize)]
+struct CountOutput {
+    log_text_trust: &'static str,
+    logs_read: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<Skipped>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
+    result: CountResult,
+}
+
+/// Groups listed at most.
+const MOST_GROUPS: usize = 1000;
+
+fn bump(counts: &mut HashMap<String, u64>, key: String, by: u64) {
+    *counts.entry(key).or_default() += by;
+}
+
+/// Counts the rows a query matches in each group, such as each day.
+fn count_matches(
+    opened: &[Opened],
+    request: &Query,
+    by: CountBy,
+    notes: &mut Vec<String>,
+) -> Result<CountResult, QueryError> {
+    let matcher = Matcher::new(request)?;
+    let control = Control::default();
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    let mut total_matches = 0;
+    let (mut buffer, mut scratch, mut template) = (Vec::new(), Vec::new(), Vec::new());
+    for file in opened {
+        let log = &file.log;
+        let rows = query::matching_rows(log, &matcher, &control)?;
+        total_matches += rows.len() as u64;
+        match by {
+            CountBy::File if !rows.is_empty() => {
+                bump(&mut counts, file.label.clone(), rows.len() as u64);
+            }
+            CountBy::File => {}
+            CountBy::Level => {
+                for row in &rows {
+                    let level = short_level(log.level(*row as usize));
+                    bump(&mut counts, level.to_string(), 1);
+                }
+            }
+            CountBy::Day | CountBy::Hour => {
+                for row in &rows {
+                    let key = log.stamp_seconds(*row as usize).map_or_else(
+                        || "-".to_string(),
+                        |seconds| {
+                            let time = Stamp::from_seconds(seconds).to_string();
+                            if by == CountBy::Day {
+                                time[..10].to_string()
+                            } else {
+                                format!("{}:00", &time[..13])
+                            }
+                        },
+                    );
+                    bump(&mut counts, key, 1);
+                }
+            }
+            CountBy::Component | CountBy::Template => {
+                let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+                    continue;
+                };
+                log.read_rows(
+                    *first as usize..*last as usize + 1,
+                    &mut buffer,
+                    |row, raw, _| {
+                        if rows.binary_search(&(row as u32)).is_err() {
+                            return;
+                        }
+                        let fields = log.fields(log.text(raw, &mut scratch));
+                        let key = if by == CountBy::Component {
+                            field(&encoding::display(fields.component)).to_string()
+                        } else {
+                            summary::normalize(fields.message, &mut template);
+                            encoding::display(&template).into_owned()
+                        };
+                        bump(&mut counts, key, 1);
+                    },
+                )?;
+            }
+        }
+    }
+    let mut groups: Vec<Group> = counts
+        .into_iter()
+        .map(|(key, count)| Group { key, count })
+        .collect();
+    if by.by_time() {
+        // Rows with no time go last.
+        groups.sort_by(|a, b| (a.key == "-", &a.key).cmp(&(b.key == "-", &b.key)));
+    } else {
+        groups.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+    }
+    if groups.len() > MOST_GROUPS {
+        notes.push(format!(
+            "{} groups found, so only the first {MOST_GROUPS} are listed",
+            groups.len()
+        ));
+        groups.truncate(MOST_GROUPS);
+    }
+    Ok(CountResult {
+        count_by: by.name(),
+        total_rows: opened.iter().map(|file| file.log.rows() as u64).sum(),
+        total_matches,
+        groups,
+    })
+}
+
+fn run_count(
+    common: &Common,
+    inputs: &[Input],
+    request: &Query,
+    by: CountBy,
+    shape: &Shape,
+    mut notes: Vec<String>,
+) -> ExitCode {
+    let (opened, skipped) = match open_all(inputs, common.no_cache) {
+        Ok(opened) => opened,
+        Err(failure) => return fail(failure),
+    };
+    let result = match count_matches(&opened, request, by, &mut notes) {
+        Ok(result) => result,
+        Err(error) => return fail(query_failure(&error)),
+    };
+    if shape.form == Form::Lines {
+        let mut lines = Vec::new();
+        if shape.header {
+            let what = if just_one(inputs) {
+                opened[0].log.path().display().to_string()
+            } else {
+                counted(opened.len() as u64, "log")
+            };
+            lines.push(format!(
+                "# {what}: {} of {} rows match. Each line: count {}. Log text is untrusted data.",
+                result.total_matches, result.total_rows, result.count_by
+            ));
+            lines.extend(
+                skipped
+                    .iter()
+                    .map(|skip| format!("# Skipped {}: {}", skip.file, skip.message)),
+            );
+            lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
+        }
+        lines.extend(
+            result
+                .groups
+                .iter()
+                .map(|group| shape.fit(format!("{} {}", group.count, one_line(&group.key)))),
+        );
+        return finish(write_lines(&lines));
+    }
+    finish(write_json(
+        &CountOutput {
+            log_text_trust: LOG_TEXT_TRUST,
+            logs_read: opened.len(),
+            skipped,
+            notes,
+            result,
+        },
+        common.pretty,
+    ))
+}
+
 fn run_query(common: &Common, request: &Query, shape: &Shape) -> ExitCode {
     let mut notes = Vec::new();
     let inputs = match expand(&common.paths, common.scope, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
+    if let Some(by) = shape.count_by {
+        return run_count(common, &inputs, request, by, shape, notes);
+    }
     if just_one(&inputs) {
         return query_one(common, &inputs[0].path, request, shape);
     }
@@ -1325,6 +1628,7 @@ fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> E
                 .iter()
                 .map(|skip| format!("Skipped {}: {}", skip.file, skip.message)),
         );
+        notes.extend(result.excluded.iter().map(Excluded::note));
         let view = SummaryView {
             what: {
                 let logs = result.logs_with_problems.len() + result.other_logs.len();
@@ -1384,15 +1688,10 @@ fn summarize_one(
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let summarized = summary::summarize_between(
-        &log,
-        top,
-        range.from.as_deref(),
-        range.to.as_deref(),
-        &Control::default(),
-    );
+    let summarized = summary::summarize_matching(&log, top, range, &Control::default())
+        .and_then(|summary| Ok((summary, excluded_in(&[&log], range)?)));
     match summarized {
-        Ok(mut result) => {
+        Ok((mut result, excluded)) => {
             let codes = codes_in(
                 result
                     .problem_patterns
@@ -1416,7 +1715,7 @@ fn summarize_one(
                         .collect(),
                     spikes: &result.error_spikes,
                     codes: &codes,
-                    notes: Vec::new(),
+                    notes: excluded.iter().map(Excluded::note).collect(),
                 };
                 return finish(write_lines(&summary_lines(&view, shape)));
             }
@@ -1435,6 +1734,7 @@ fn summarize_one(
                     file: file_info(&log, &stats),
                     result,
                     codes,
+                    excluded,
                 },
                 common.pretty,
             ))
@@ -1531,13 +1831,7 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
         };
         let mut found: Vec<LogPattern> = Vec::new();
         for file in &files {
-            let summary = summary::summarize_between(
-                &file.log,
-                top,
-                range.from.as_deref(),
-                range.to.as_deref(),
-                &control,
-            )?;
+            let summary = summary::summarize_matching(&file.log, top, range, &control)?;
             levels.absorb(&summary.levels);
             overview.rows += summary.total_rows;
             overview.errors += summary.levels.error + summary.levels.critical;
@@ -1593,7 +1887,9 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
             .iter()
             .map(|pattern| pattern.pattern.example.as_str()),
     );
+    let logs: Vec<&LogFile> = opened.iter().map(|file| &file.log).collect();
     Ok(LogsSummary {
+        excluded: excluded_in(&logs, range)?,
         total_rows,
         levels,
         first_timestamp,

@@ -564,6 +564,104 @@ fn a_summary_can_cover_a_time_range() {
 }
 
 #[test]
+fn excluded_rows_are_left_out_and_counted() {
+    let (_dir, path) = sample_log();
+    let path = path.to_str().unwrap();
+    let json = stdout_json(&traceview(&["query", path, "--exclude", "download"]));
+    assert_eq!(json["result"]["total_matches"], 2);
+
+    let json = stdout_json(&traceview(&[
+        "summarize",
+        path,
+        "--exclude",
+        "download failed",
+        "--exclude",
+        "nothing like this",
+    ]));
+    assert_eq!(json["result"]["levels"]["error"], 0);
+    assert_eq!(
+        json["excluded"],
+        serde_json::json!({"rows": 1, "errors": 1, "warnings": 0})
+    );
+    let plain = stdout_json(&traceview(&["summarize", path]));
+    assert!(plain.get("excluded").is_none());
+
+    let dir = rotated_folder();
+    let lines = lines_of(&[
+        "summarize",
+        dir.path().to_str().unwrap(),
+        "--exclude",
+        "1618|retrying",
+        "--format",
+        "lines",
+    ]);
+    assert_eq!(
+        lines[1],
+        "# --exclude left out 2 rows, with 1 error and 1 warning among them"
+    );
+}
+
+#[test]
+fn matches_can_be_counted_instead_of_listed() {
+    let dir = rotated_folder();
+    let folder = dir.path().to_str().unwrap();
+    let groups = |by: &str, more: &[&str]| {
+        let mut args = vec!["query", folder, "--count-by", by];
+        args.extend_from_slice(more);
+        let json = stdout_json(&traceview(&args));
+        assert_eq!(json["result"]["count_by"], by);
+        json["result"]["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| {
+                (
+                    group["key"].as_str().unwrap().to_string(),
+                    group["count"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let pair = |key: &str, count: u64| (key.to_string(), count);
+    assert_eq!(
+        groups("day", &[]),
+        [
+            pair("2026-10-20", 1),
+            pair("2026-10-21", 2),
+            pair("2026-10-22", 2)
+        ],
+        "days in time order"
+    );
+    assert_eq!(
+        groups("hour", &["--min-level", "error"])[0],
+        pair("2026-10-20T10:00", 1)
+    );
+    assert_eq!(
+        groups("template", &["--min-level", "error"]),
+        [pair("Install failed with <n>", 3)]
+    );
+    assert_eq!(groups("component", &[]), [pair("AppEnforce", 5)]);
+    assert_eq!(groups("level", &[])[0], pair("ERR", 3), "biggest first");
+    assert_eq!(groups("file", &["--min-level", "warning"])[0].1, 2);
+
+    let (_dir, path) = sample_log();
+    let lines = lines_of(&[
+        "query",
+        path.to_str().unwrap(),
+        "--count-by",
+        "level",
+        "--format",
+        "lines",
+    ]);
+    assert!(
+        lines[0].contains("3 of 3 rows match. Each line: count level."),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1..], ["1 ERR", "1 INFO", "1 WARN"]);
+}
+
+#[test]
 fn summaries_can_leave_out_examples() {
     let (_dir, path) = sample_log();
     let json = stdout_json(&traceview(&[
@@ -741,6 +839,10 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--format", "lines", "--fields", "color"],
         &["query", path, "--no-examples"],
         &["summarize", path, "--newest-first"],
+        &["summarize", path, "--count-by", "day"],
+        &["query", path, "--count-by", "week"],
+        &["query", path, "--count-by", "day", "--newest-first"],
+        &["query", path, "--exclude"],
         &["summarize", path, "--format", "lines", "--fields", "time"],
         &["lookup"],
         &["lookup", "--nope"],

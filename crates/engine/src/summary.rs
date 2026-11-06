@@ -308,29 +308,31 @@ fn find_spikes(minutes: &HashMap<u32, (u64, u64)>) -> Vec<Spike> {
 
 /// Summarizes the whole log using all cores. `top` caps each pattern list.
 pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary, QueryError> {
-    summarize_between(log, top, None, None, control)
+    summarize_matching(log, top, &query::Query::default(), control)
 }
 
-/// Summarizes only the rows from `from` to `to`, read as a query reads them:
-/// `YYYY-MM-DD` or a full timestamp, with a bare end date meaning the end of
-/// that day. Rows without a time are left out when either is given, and
-/// `total_rows` counts only the rows kept.
-pub fn summarize_between(
+/// Summarizes only the rows `filter` matches, as a query would find them, such
+/// as those in a time range or not matching `exclude`. Its paging is ignored,
+/// and `total_rows` counts only the rows kept.
+pub fn summarize_matching(
     log: &LogFile,
     top: usize,
-    from: Option<&str>,
-    to: Option<&str>,
+    filter: &query::Query,
     control: &Control,
 ) -> Result<Summary, QueryError> {
     let top = top.clamp(1, MAX_TOP);
     let rows = log.rows();
-    let bounds = query::Matcher::new(&query::Query {
-        from: from.map(str::to_string),
-        to: to.map(str::to_string),
-        ..query::Query::default()
-    })?;
-    let bounded = from.is_some() || to.is_some();
-    let keep = |row: usize| !bounded || bounds.passes_index(log, row);
+    let matcher = query::Matcher::new(filter)?;
+    // Filters on text find their rows first. Others are answered by the index.
+    let matched = if matcher.needs_row_text() {
+        Some(query::matching_rows(log, &matcher, control)?)
+    } else {
+        None
+    };
+    let keep = |row: usize| match &matched {
+        Some(matched) => matched.binary_search(&(row as u32)).is_ok(),
+        None => matcher.passes_index(log, row),
+    };
 
     let mut kept = 0u64;
     let mut levels = LevelCounts::default();
@@ -529,14 +531,19 @@ mod tests {
         let (_dir, log) = open(
             "2026-01-01 10:00:00 host a[1]: retry 1 failed\nno time here\n2026-01-02 09:00:00 host a[1]: disk full error\n2026-01-03 08:00:00 host a[1]: all good\n",
         );
-        let day_two = summarize_between(
-            &log,
-            10,
-            Some("2026-01-02"),
-            Some("2026-01-02"),
-            &Control::default(),
-        )
-        .unwrap();
+        let between = |from: Option<&str>, to: Option<&str>| {
+            summarize_matching(
+                &log,
+                10,
+                &query::Query {
+                    from: from.map(str::to_string),
+                    to: to.map(str::to_string),
+                    ..query::Query::default()
+                },
+                &Control::default(),
+            )
+        };
+        let day_two = between(Some("2026-01-02"), Some("2026-01-02")).unwrap();
         assert_eq!(day_two.total_rows, 1, "rows with no time are left out");
         assert_eq!(day_two.levels.error, 1);
         assert_eq!(day_two.problem_patterns.len(), 1);
@@ -546,19 +553,51 @@ mod tests {
             Some("2026-01-02T09:00:00.000")
         );
 
-        let from_day_two =
-            summarize_between(&log, 10, Some("2026-01-02"), None, &Control::default()).unwrap();
+        let from_day_two = between(Some("2026-01-02"), None).unwrap();
         assert_eq!(from_day_two.total_rows, 2);
 
         let whole = summarize(&log, 10, &Control::default()).unwrap();
         assert_eq!(whole.total_rows, 4, "no range keeps every row");
 
         assert_eq!(
-            summarize_between(&log, 10, Some("someday"), None, &Control::default())
-                .unwrap_err()
-                .code(),
+            between(Some("someday"), None).unwrap_err().code(),
             "invalid_time"
         );
+    }
+
+    #[test]
+    fn excluded_rows_are_not_counted_or_grouped() {
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00 host a[1]: ReadStringFromFile failed (0x80070002)\n2026-01-01 10:00:01 host a[1]: disk full error\n2026-01-01 10:00:02 host a[1]: ReadStringFromFile failed (0x80070002)\n",
+        );
+        let summary = summarize_matching(
+            &log,
+            10,
+            &query::Query {
+                exclude: vec![
+                    "readstringfromfile".to_string(),
+                    "nothing (else".to_string(),
+                ],
+                ..query::Query::default()
+            },
+            &Control::default(),
+        );
+        assert_eq!(summary.unwrap_err().code(), "invalid_pattern");
+
+        let summary = summarize_matching(
+            &log,
+            10,
+            &query::Query {
+                exclude: vec!["readstringfromfile".to_string()],
+                ..query::Query::default()
+            },
+            &Control::default(),
+        )
+        .unwrap();
+        assert_eq!(summary.total_rows, 1);
+        assert_eq!(summary.levels.error, 1);
+        assert_eq!(summary.problem_patterns.len(), 1);
+        assert_eq!(summary.problem_patterns[0].template, "disk full error");
     }
 
     #[test]
