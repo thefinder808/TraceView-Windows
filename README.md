@@ -8,7 +8,7 @@ A fast, customizable Windows log viewer inspired by CMTrace, and the counterpart
 
 It's one signed EXE with nothing to install, so it can be copied to a USB stick or an admin share. It opens multi-gigabyte logs in seconds and follows them as they're written. It draws without needing a GPU, so it stays quick over RDP.
 
-**This is a beta.** 0.9.0 is the first release. It's been tested on Windows 11. It's built for Windows 10 1809, Server 2019 and later, but hasn't been tried there or with Narrator yet.
+**This is a beta.** It's been tested on Windows 11. It's built for Windows 10 1809, Server 2019 and later, but hasn't been tried there or with Narrator yet.
 
 ## Features
 
@@ -29,7 +29,7 @@ Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a
 3. **Check the download** against `SHA256SUMS.txt`, if you like:
 
    ```powershell
-   Get-FileHash TraceView-0.9.0-x64.zip
+   Get-FileHash TraceView-0.10.0-x64.zip
    ```
 
    The hash it prints should match that zip's line in `SHA256SUMS.txt`. PowerShell prints it in capitals, but the letters are the same.
