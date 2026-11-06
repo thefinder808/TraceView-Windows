@@ -111,7 +111,11 @@ To see what happened last, `--newest-first` starts from the end, so `--limit 10`
 .\traceview.exe query C:\Windows\CCM\Logs\AppEnforce.log --min-level error --newest-first --limit 10 --format lines
 ```
 
-Lines can be trimmed further with `--fields time,message`, `--max-width 200` and `--no-header`. `summarize --no-examples` leaves the example rows out of the JSON. `lookup` explains an error code with Windows' own text:
+Lines can be trimmed further with `--fields time,message`, `--max-width 200` and `--no-header`. `summarize --no-examples` leaves the example rows out of the JSON.
+
+Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
+
+`lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`:
 
 ```powershell
 .\traceview.exe lookup 0x80070005

@@ -37,7 +37,8 @@ crates/
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
                 contrast themes, per-user file type registration, the user's PATH (user_path.rs)
-  tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs
+  tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs.
+                names.rs holds Windows Update and Delivery Optimization code names, written by scripts/code-names.ps1
   traceview/    the EXE. No unsafe
     cli.rs        query, summarize, lookup and setup
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
@@ -256,6 +257,11 @@ The goal is one engine with several front ends in the same EXE:
    - `--recurse` walks subfolders breadth first, without following links or junctions, reading at most 1,000 folders and the newest 500 logs. Their logs are labeled by their path within the folder given. Without it, a note names the subfolders that weren't read.
    - `summarize --from` and `--to` go to the engine's `summary::summarize_between`, which uses a query's time bounds through `Matcher`, so they're read exactly as a query reads them. Rows outside the range, and rows with no time, aren't counted, and a stretch of rows with none in range isn't read.
    - Each summary pattern keeps its first row as an example, and the CLI looks up the error codes in the problem patterns' examples with `tv-errors`. Without this, an exit code of 1603 would read only as `<n>`.
+   - Error codes:
+     - WMI codes, 0x80041000 to 0x80042FFF, read from `System32\wbem\wmiutils.dll`, loaded as data like every other table. Other codes in the same facility, number 4, belong to other components, so only that range goes there.
+     - Windows has no text for Windows Update and Delivery Optimization codes. `tv-errors/src/names.rs` maps them to their names, and a lookup carries the name in `Decoded::name`, on its reading with text if any, or else on a reading of its own. `scripts/code-names.ps1` writes that file from the Windows SDK's `wuerror.h` and `deliveryoptimizationerrors.h`. It keeps only names, which are the codes' identifiers, not Microsoft's descriptions.
+     - The SDK has no names for CBS's `CBS_E_*` codes, but CBS logs write the name themselves.
+   - Rows carry `utc_offset` when the row says what zone its time is in: SCCM rows' bias, such as `+360` for six hours behind UTC, or an ISO time's `Z` or `+hh:mm`. `parse::utc_offset` reads it only for rows being output, since the index keeps no zones, so filters, merging and summaries still use the log's own clock. Lines output adds it after the time.
    - `--format lines` writes one line per row, `file:row time level component thread | message`, for agents that pay by the token. `--fields` picks which of those show, always in that order, `--max-width` cuts lines with an ellipsis, and `--no-header` drops the `#` lines.
    - One log and several go through the same `merged_query`, so rows read the same either way, and JSON rows always name their log. A log's matches stay in file order, and only two or more logs with matches go through `merge::merge_order`, since that reads every row's time.
    - `--newest-first` reverses the matches before paging, so `--offset` pages back in time. It's done in the CLI, so the engine's `Query` is unchanged.

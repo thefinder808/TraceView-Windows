@@ -55,10 +55,12 @@ pub fn explain(text: &str) -> String {
     readings
         .iter()
         .map(|decoded| {
-            let message = if decoded.message.is_empty() {
-                "Windows has no text for this code."
-            } else {
-                &decoded.message
+            let message = match (decoded.message.as_str(), decoded.name) {
+                ("", Some(name)) => {
+                    format!("{name}. Windows has no text for this code, so this is its name.")
+                }
+                ("", None) => "Windows has no text for this code.".to_string(),
+                (message, _) => message.to_string(),
             };
             format!("{}\n{message}", heading(decoded))
         })
@@ -73,7 +75,11 @@ pub fn code_lines(message: &str) -> Vec<String> {
         .iter()
         .filter_map(|found| {
             let decoded = lookup(&found.text).into_iter().next()?;
-            Some(format!("{}: {}", found.text, decoded.message))
+            let meaning = match decoded.name {
+                Some(name) if decoded.message.is_empty() => name,
+                _ => &decoded.message,
+            };
+            Some(format!("{}: {meaning}", found.text))
         })
         .take(MOST_CODE_LINES)
         .collect()

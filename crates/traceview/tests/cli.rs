@@ -57,6 +57,7 @@ fn query_returns_rows_as_json() {
     assert_eq!(row["thread"], "5240");
     assert_eq!(row["source"], "b.cpp");
     assert_eq!(row["timestamp"], "2026-04-06T10:23:02.334");
+    assert_eq!(row["utc_offset"], "+00:00");
     assert_eq!(row["message"], "Download failed - error 0x80004005");
     assert_eq!(
         json["result"]["rows"][2]["message"],
@@ -260,11 +261,11 @@ fn lines_output_puts_one_row_on_each_line() {
     // One log's rows name it, as a folder's do, so every row reads the same.
     assert_eq!(
         lines[2],
-        "sample.log:2 2026-04-06T10:23:02.334 ERR PolicyAgent 5240 | Download failed - error 0x80004005"
+        "sample.log:2 2026-04-06T10:23:02.334+00:00 ERR PolicyAgent 5240 | Download failed - error 0x80004005"
     );
     assert_eq!(
         lines[3],
-        "sample.log:3 2026-04-06T10:23:02.500 WARN PolicyAgent 5240 | Retrying in 15 minutes\\nsecond line"
+        "sample.log:3 2026-04-06T10:23:02.500+00:00 WARN PolicyAgent 5240 | Retrying in 15 minutes\\nsecond line"
     );
 }
 
@@ -341,7 +342,7 @@ fn lines_can_show_fewer_fields_narrower_and_without_the_header() {
     assert_eq!(with(&[]).len(), 3, "no # lines");
     assert_eq!(
         with(&["--fields", "time,message"])[0],
-        "2026-04-06T10:23:01.442 | Connected to mp01"
+        "2026-04-06T10:23:01.442+00:00 | Connected to mp01"
     );
     assert_eq!(
         with(&["--fields", "message,file"])[0],
@@ -350,8 +351,8 @@ fn lines_can_show_fewer_fields_narrower_and_without_the_header() {
     );
     assert_eq!(with(&["--fields", "message"])[0], "Connected to mp01");
     assert_eq!(
-        with(&["--fields", "time,message", "--max-width", "30"])[0],
-        "2026-04-06T10:23:01.442 | Con…"
+        with(&["--fields", "time,message", "--max-width", "40"])[0],
+        "2026-04-06T10:23:01.442+00:00 | Connect…"
     );
 }
 
@@ -604,7 +605,7 @@ fn lines_output_names_each_log_when_merged() {
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].contains("3 logs merged by time: 2 of 6 rows match"));
     assert!(lines[0].contains("Next page: --offset 1."));
-    assert!(lines[1].starts_with("CTM.log:1 2026-04-06T10:23:02.100 ERR "));
+    assert!(lines[1].starts_with("CTM.log:1 2026-04-06T10:23:02.100+00:00 ERR "));
 }
 
 #[test]
@@ -620,6 +621,55 @@ fn lookup_explains_a_code_in_any_form() {
     let json = stdout_json(&traceview(&["lookup", "1603"]));
     let readings = json["readings"].as_array().unwrap();
     assert!(readings.iter().all(|reading| reading["message"] != ""));
+}
+
+#[test]
+fn lookup_names_codes_windows_has_no_text_for_and_explains_wmi() {
+    let json = stdout_json(&traceview(&["lookup", "0x80D02002"]));
+    let reading = &json["readings"][0];
+    assert_eq!(reading["name"], "DO_E_DOWNLOAD_NO_PROGRESS");
+    assert_eq!(reading["message"], "");
+    let json = stdout_json(&traceview(&["lookup", "0x8024402C"]));
+    assert_eq!(json["readings"][0]["kind"], "Windows Update");
+    assert_eq!(
+        json["readings"][0]["name"],
+        "WU_E_PT_WINHTTP_NAME_NOT_RESOLVED"
+    );
+    let json = stdout_json(&traceview(&["lookup", "0x80041010"]));
+    assert_eq!(json["readings"][0]["kind"], "WMI");
+    assert!(!json["readings"][0]["message"].as_str().unwrap().is_empty());
+    assert!(json["readings"][0].get("name").is_none());
+}
+
+#[test]
+fn times_show_their_offset_from_utc() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("central.log");
+    std::fs::write(
+        &path,
+        "<![LOG[Clocks went back]LOG]!><time=\"01:30:00.000+300\" date=\"11-01-2026\" component=\"A\" context=\"\" type=\"1\" thread=\"1\" file=\"\">\r\n<![LOG[Same hour again]LOG]!><time=\"01:10:00.000+360\" date=\"11-01-2026\" component=\"A\" context=\"\" type=\"1\" thread=\"1\" file=\"\">\r\n",
+    )
+    .unwrap();
+    let path = path.to_str().unwrap();
+    let json = stdout_json(&traceview(&["query", path]));
+    assert_eq!(json["result"]["rows"][0]["utc_offset"], "-05:00");
+    assert_eq!(json["result"]["rows"][1]["utc_offset"], "-06:00");
+    let lines = lines_of(&[
+        "query",
+        path,
+        "--format",
+        "lines",
+        "--no-header",
+        "--fields",
+        "time",
+    ]);
+    assert_eq!(
+        lines,
+        [
+            "2026-11-01T01:30:00.000-05:00",
+            "2026-11-01T01:10:00.000-06:00"
+        ]
+    );
 }
 
 #[test]

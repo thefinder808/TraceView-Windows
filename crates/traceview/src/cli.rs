@@ -429,6 +429,10 @@ struct Reading {
     /// Empty when Windows has no text for it, as for Windows Update codes.
     message: String,
     source: String,
+    /// The code's name, for Windows Update and Delivery Optimization codes,
+    /// which Windows has no text for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -864,8 +868,10 @@ fn file_info<'a>(log: &'a LogFile, stats: &OpenStats) -> FileInfo<'a> {
 /// its kind and facility.
 fn readings(text: &str) -> Vec<Reading> {
     let mut decoded = tv_errors::lookup_all(text);
-    if decoded.iter().any(|reading| !reading.message.is_empty()) {
-        decoded.retain(|reading| !reading.message.is_empty());
+    let explains =
+        |reading: &tv_errors::Decoded| !reading.message.is_empty() || reading.name.is_some();
+    if decoded.iter().any(explains) {
+        decoded.retain(explains);
     } else {
         decoded.truncate(1);
     }
@@ -878,6 +884,7 @@ fn readings(text: &str) -> Vec<Reading> {
             facility: decoded.facility,
             message: decoded.message,
             source: decoded.source,
+            name: decoded.name,
         })
         .collect()
 }
@@ -985,7 +992,12 @@ fn row_line(row: &LogRow, shape: &Shape) -> String {
         (false, false) => {}
     }
     if shape.shows(Field::Time) {
-        parts.push(record.timestamp.as_deref().unwrap_or("-").to_string());
+        // With its offset from UTC when the row says, so the hour repeated when
+        // clocks go back, and logs from other time zones, read correctly.
+        parts.push(match &record.timestamp {
+            Some(time) => format!("{time}{}", record.utc_offset.as_deref().unwrap_or("")),
+            None => "-".to_string(),
+        });
     }
     if shape.shows(Field::Level) {
         parts.push(short_level(record.level).to_string());
@@ -1119,10 +1131,11 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
                     continue;
                 }
                 shown.push(&reading.message);
-                let meaning = if reading.message.is_empty() {
-                    "-"
-                } else {
-                    &reading.message
+                let meaning = match (reading.message.as_str(), reading.name) {
+                    ("", Some(name)) => name.to_string(),
+                    ("", None) => "-".to_string(),
+                    (message, Some(name)) => format!("{message} ({name})"),
+                    (message, None) => message.to_string(),
                 };
                 lines.push(shape.fit(format!("{} {} | {meaning}", code.code, reading.kind)));
             }

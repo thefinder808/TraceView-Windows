@@ -32,15 +32,17 @@ pub(crate) enum Table {
     WindowsUpdate,
     Bits,
     ConfigMgr,
+    Wmi,
 }
 
 /// The DLL tables, in the order of their slots in the handle cache.
-const DLL_TABLES: [Table; 5] = [
+const DLL_TABLES: [Table; 6] = [
     Table::Ntdll,
     Table::WinHttp,
     Table::WindowsUpdate,
     Table::Bits,
     Table::ConfigMgr,
+    Table::Wmi,
 ];
 
 impl Table {
@@ -57,6 +59,7 @@ impl Table {
             Self::WindowsUpdate => Some("wuaueng.dll"),
             Self::Bits => Some("qmgr.dll"),
             Self::ConfigMgr => Some("srsresources.dll"),
+            Self::Wmi => Some("wmiutils.dll"),
         }
     }
 
@@ -65,15 +68,19 @@ impl Table {
         let Some(file_name) = self.file_name() else {
             return Vec::new();
         };
-        if self == Self::ConfigMgr {
-            return configmgr_console_folders()
+        match self {
+            Self::ConfigMgr => configmgr_console_folders()
                 .into_iter()
                 .map(|folder| folder.join(file_name))
-                .collect();
+                .collect(),
+            // WMI keeps its files in System32's wbem folder.
+            Self::Wmi => system_directory()
+                .map(|folder| vec![folder.join("wbem").join(file_name)])
+                .unwrap_or_default(),
+            _ => system_directory()
+                .map(|folder| vec![folder.join(file_name)])
+                .unwrap_or_default(),
         }
-        system_directory()
-            .map(|folder| vec![folder.join(file_name)])
-            .unwrap_or_default()
     }
 }
 
@@ -266,8 +273,16 @@ mod tests {
 
     #[test]
     fn system_dlls_with_message_tables_load() {
-        for table in [Table::Ntdll, Table::WinHttp, Table::Bits] {
+        for table in [Table::Ntdll, Table::WinHttp, Table::Bits, Table::Wmi] {
             assert!(is_available(table), "{table:?} should load");
+        }
+    }
+
+    #[test]
+    fn wmi_codes_have_text_in_wmiutils() {
+        // WBEM_E_INVALID_CLASS and WBEM_E_PROVIDER_LOAD_FAILURE.
+        for code in [0x8004_1010, 0x8004_1013] {
+            assert!(message(Table::Wmi, code).is_some(), "{code:#x}");
         }
     }
 

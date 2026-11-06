@@ -2,9 +2,13 @@
 //! Error Lookup feature.
 //!
 //! Every message comes from Windows itself at run time, through `FormatMessageW`.
-//! Nothing here stores message text, code names or code tables, so messages are
-//! in the user's own language and match the Windows they're running on. The only
-//! table in this crate maps HRESULT facility numbers to short names.
+//! Nothing here stores message text, so messages are in the user's own language
+//! and match the Windows they're running on. The crate keeps two tables: short
+//! names for HRESULT facility numbers, and `names.rs`, the names of Windows
+//! Update and Delivery Optimization codes. Windows has no text for those, so a
+//! name is the best explanation there is. It's written by
+//! `scripts/code-names.ps1` from the Windows SDK's headers, keeping only the
+//! names, not Microsoft's descriptions.
 //!
 //! Where the text comes from, and what was proven on Windows 11 build 26300:
 //!
@@ -15,7 +19,9 @@
 //! | NTSTATUS | `ntdll.dll` | Works |
 //! | WinHTTP, 12001-12199 | `winhttp.dll` | Works |
 //! | BITS, 0x8020xxxx, and the HTTP statuses it reports, 0x8019xxxx | `qmgr.dll` | Works |
-//! | Windows Update, 0x8024xxxx | `wuaueng.dll` | Tried, but its table only holds event messages, so these don't decode |
+//! | Windows Update, 0x8024xxxx | `wuaueng.dll` | Tried, but its table only holds event messages, so these get their names from `names.rs` instead |
+//! | Delivery Optimization, 0x80D0xxxx | none | No Windows file has text for these, so they get their names from `names.rs` |
+//! | WMI, 0x80041xxx and 0x80042xxx | `wbem\wmiutils.dll` | Works |
 //! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console | Untested, as no console was installed. Never bundled |
 //!
 //! DLLs are loaded as data, so none of their code runs, and from full paths, so
@@ -27,6 +33,7 @@ mod decode;
 mod find;
 #[allow(unsafe_code)]
 mod messages;
+mod names;
 mod parse;
 
 pub use decode::{lookup, lookup_all};
@@ -49,6 +56,8 @@ pub enum CodeKind {
     Bits,
     /// A Configuration Manager result code.
     ConfigMgr,
+    /// A WMI result code, 0x80041xxx or 0x80042xxx.
+    Wmi,
 }
 
 impl CodeKind {
@@ -62,6 +71,7 @@ impl CodeKind {
             Self::WindowsUpdate => "Windows Update",
             Self::Bits => "BITS",
             Self::ConfigMgr => "ConfigMgr",
+            Self::Wmi => "WMI",
         }
     }
 }
@@ -88,6 +98,9 @@ pub struct Decoded {
     /// Where the text came from: `system`, or a DLL's file name such as
     /// `ntdll.dll`.
     pub source: String,
+    /// The code's name, such as `WU_E_PT_WINHTTP_NAME_NOT_RESOLVED`, for the
+    /// Windows Update and Delivery Optimization codes Windows has no text for.
+    pub name: Option<&'static str>,
 }
 
 /// A code-like token found in a log message.

@@ -83,6 +83,33 @@ pub fn fields<'a>(format: Format, row: &'a [u8], context: &ParseContext) -> Fiel
     }
 }
 
+/// The offset from UTC that a row's time was written in, as minutes east of
+/// UTC, when the row says. SCCM rows end their time with the bias Windows adds
+/// to local time to get UTC, so `10:23:01.442+360` is six hours behind UTC.
+/// Other rows that start with an ISO time can end it with `Z` or `+hh:mm`.
+/// It's read only for rows being shown, as the index keeps no zones.
+pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
+    let line = trim_line_ending(row);
+    match format {
+        Format::Sccm => {
+            let message = sccm_message(line)?;
+            let attributes = &line[SCCM_START.len() + message.len() + SCCM_END.len()..];
+            let time = sccm_attribute(attributes, b"time=\"");
+            let sign_at = time.iter().rposition(|byte| matches!(byte, b'+' | b'-'))?;
+            let bias = &time[sign_at + 1..];
+            if bias.is_empty() || bias.len() > 4 || !bias.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            let bias: i32 = std::str::from_utf8(bias).ok()?.parse().ok()?;
+            if bias > 14 * 60 {
+                return None;
+            }
+            Some(if time[sign_at] == b'+' { -bias } else { bias })
+        }
+        Format::Plain | Format::Custom => time::parse_iso(trim_spaces(line))?.zone,
+    }
+}
+
 /// The text a filter searches. SCCM metadata is left out, so searching for
 /// `type` doesn't match every row.
 pub fn searchable(format: Format, row: &[u8]) -> &[u8] {
@@ -526,6 +553,29 @@ mod tests {
         assert_eq!(parsed.thread, b"5240");
         assert_eq!(parsed.source, b"a.cpp");
         assert_eq!(parsed.message, b"Failed ]LOG]!> text");
+    }
+
+    #[test]
+    fn rows_say_their_offset_from_utc() {
+        let sccm = |time: &str| {
+            let row = format!("<![LOG[hi]LOG]!><time=\"{time}\" date=\"11-01-2026\" type=\"1\">");
+            utc_offset(Format::Sccm, row.as_bytes())
+        };
+        // SCCM writes the bias added to local time to get UTC.
+        assert_eq!(sccm("01:30:00.000+360"), Some(-360));
+        assert_eq!(sccm("01:30:00.000-060"), Some(60));
+        assert_eq!(sccm("01:30:00.000+000"), Some(0));
+        assert_eq!(sccm("01:30:00.000"), None);
+        assert_eq!(sccm("01:30:00.000+99999"), None);
+        assert_eq!(
+            utc_offset(Format::Plain, b"2026-11-01T01:30:00-05:00 host a[1]: hi"),
+            Some(-300)
+        );
+        assert_eq!(
+            utc_offset(Format::Plain, b"2026-11-01 01:30:00, Info CBS hi"),
+            None
+        );
+        assert_eq!(utc_offset(Format::Plain, b"no time at all"), None);
     }
 
     #[test]

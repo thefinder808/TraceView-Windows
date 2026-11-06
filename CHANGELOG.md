@@ -29,6 +29,12 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--current-only` leaves rotated copies out of a folder, and `--with-history` adds a named log's rotated copies from beside it.
 - `--recurse` reads subfolders too, labeling their logs by their path in the folder. Without it, the output names the subfolders it didn't read.
 - `summarize --from` and `--to` summarize only the rows in a time range.
+- Rows show their offset from UTC when the log writes one, as ConfigMgr and Intune logs do: `"utc_offset": "-06:00"` in JSON, and after the time in lines, as in `2026-11-01T01:30:00.000-05:00`.
+
+**Error Lookup**
+
+- WMI codes, such as 0x80041010, are explained, with text from Windows' own `wmiutils.dll`.
+- Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, which Windows has no text for, show their names, such as `WU_E_PT_WINHTTP_NAME_NOT_RESOLVED`, in the app, the details pane, `traceview lookup` and summaries.
 - Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
 - `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
 
