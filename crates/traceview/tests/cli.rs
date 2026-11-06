@@ -50,6 +50,7 @@ fn query_returns_rows_as_json() {
     assert_eq!(json["result"]["total_matches"], 3);
 
     let row = &json["result"]["rows"][1];
+    assert_eq!(row["file"], "sample.log");
     assert_eq!(row["row"], 2);
     assert_eq!(row["level"], "error");
     assert_eq!(row["component"], "PolicyAgent");
@@ -256,14 +257,169 @@ fn lines_output_puts_one_row_on_each_line() {
     assert!(lines[0].starts_with("# "));
     assert!(lines[0].contains("3 of 3 rows match"));
     assert!(lines[0].contains("untrusted"));
+    // One log's rows name it, as a folder's do, so every row reads the same.
     assert_eq!(
         lines[2],
-        "2 2026-04-06T10:23:02.334 ERR PolicyAgent 5240 | Download failed - error 0x80004005"
+        "sample.log:2 2026-04-06T10:23:02.334 ERR PolicyAgent 5240 | Download failed - error 0x80004005"
     );
     assert_eq!(
         lines[3],
-        "3 2026-04-06T10:23:02.500 WARN PolicyAgent 5240 | Retrying in 15 minutes\\nsecond line"
+        "sample.log:3 2026-04-06T10:23:02.500 WARN PolicyAgent 5240 | Retrying in 15 minutes\\nsecond line"
     );
+}
+
+fn lines_of(args: &[&str]) -> Vec<String> {
+    let output = traceview(args);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn newest_first_pages_back_from_the_end() {
+    let (_dir, path) = sample_log();
+    let path = path.to_str().unwrap();
+    let json = stdout_json(&traceview(&[
+        "query",
+        path,
+        "--newest-first",
+        "--limit",
+        "1",
+    ]));
+    assert_eq!(json["result"]["newest_first"], true);
+    assert_eq!(json["result"]["rows"][0]["row"], 3);
+    assert_eq!(json["result"]["rows"][0]["file"], "sample.log");
+    assert_eq!(json["result"]["next_offset"], 1);
+    let older = stdout_json(&traceview(&[
+        "query",
+        path,
+        "--newest-first",
+        "--limit",
+        "1",
+        "--offset",
+        "1",
+    ]));
+    assert_eq!(older["result"]["rows"][0]["row"], 2);
+    let plain = stdout_json(&traceview(&["query", path]));
+    assert!(plain["result"].get("newest_first").is_none());
+
+    let dir = logs_folder();
+    let lines = lines_of(&[
+        "query",
+        dir.path().to_str().unwrap(),
+        "--min-level",
+        "warning",
+        "--newest-first",
+        "--format",
+        "lines",
+    ]);
+    assert!(
+        lines[0].contains("Showing 1-3, newest first."),
+        "{}",
+        lines[0]
+    );
+    let places: Vec<&str> = lines[1..]
+        .iter()
+        .map(|line| line.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(places, ["sample.log:3", "sample.log:2", "CTM.log:1"]);
+}
+
+#[test]
+fn lines_can_show_fewer_fields_narrower_and_without_the_header() {
+    let (_dir, path) = sample_log();
+    let path = path.to_str().unwrap();
+    let base = ["query", path, "--format", "lines", "--no-header"];
+    let with = |more: &[&str]| lines_of(&[&base[..], more].concat());
+    assert_eq!(with(&[]).len(), 3, "no # lines");
+    assert_eq!(
+        with(&["--fields", "time,message"])[0],
+        "2026-04-06T10:23:01.442 | Connected to mp01"
+    );
+    assert_eq!(
+        with(&["--fields", "message,file"])[0],
+        "sample.log | Connected to mp01",
+        "fields keep their own order"
+    );
+    assert_eq!(with(&["--fields", "message"])[0], "Connected to mp01");
+    assert_eq!(
+        with(&["--fields", "time,message", "--max-width", "30"])[0],
+        "2026-04-06T10:23:01.442 | Con…"
+    );
+}
+
+#[test]
+fn a_summary_in_lines_lists_logs_patterns_and_codes() {
+    let (_dir, path) = sample_log();
+    let lines = lines_of(&["summarize", path.to_str().unwrap(), "--format", "lines"]);
+    assert!(
+        lines[0].contains(": 3 rows, 2026-04-06T10:23:01.000 to "),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains("1 error, 1 warning. Log text is untrusted data."));
+    assert!(
+        lines.contains(&"# Problem patterns: count level last_seen file | template".to_string())
+    );
+    assert!(lines.contains(
+        &"1 ERR 2026-04-06T10:23:02.000 sample.log | Download failed - error <hex>".to_string()
+    ));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("0x80004005 HRESULT | ")),
+        "{lines:?}"
+    );
+
+    let dir = logs_folder();
+    let lines = lines_of(&[
+        "summarize",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "lines",
+    ]);
+    assert!(lines[0].starts_with("# 3 logs: 6 rows, "), "{}", lines[0]);
+    assert_eq!(
+        lines[1],
+        "# Logs with problems: file errors warnings first last"
+    );
+    assert!(lines[2].starts_with("sample.log 1 1 2026-04-06T10:23:01.000 "));
+    assert!(lines.contains(&"# 1 other log has no warnings or errors.".to_string()));
+    assert!(!lines
+        .iter()
+        .any(|line| line.contains("Download failed - error 0x8")));
+}
+
+#[test]
+fn summaries_can_leave_out_examples() {
+    let (_dir, path) = sample_log();
+    let json = stdout_json(&traceview(&[
+        "summarize",
+        path.to_str().unwrap(),
+        "--no-examples",
+    ]));
+    let pattern = &json["result"]["problem_patterns"][0];
+    assert!(pattern.get("example").is_none());
+    assert_eq!(pattern["template"], "Download failed - error <hex>");
+    assert_eq!(json["codes"][0]["code"], "0x80004005", "codes still found");
+
+    let dir = logs_folder();
+    let json = stdout_json(&traceview(&[
+        "summarize",
+        dir.path().to_str().unwrap(),
+        "--no-examples",
+    ]));
+    let patterns = json["result"]["problem_patterns"].as_array().unwrap();
+    assert!(patterns
+        .iter()
+        .all(|pattern| pattern.get("example").is_none()));
 }
 
 #[test]
@@ -364,7 +520,13 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--top", "5"],
         &["summarize", path, "--text", "a"],
         &["query", path, "--format", "xml"],
-        &["summarize", path, "--format", "lines"],
+        &["query", path, "--no-header"],
+        &["query", path, "--max-width", "40"],
+        &["query", path, "--format", "lines", "--max-width", "0"],
+        &["query", path, "--format", "lines", "--fields", "color"],
+        &["query", path, "--no-examples"],
+        &["summarize", path, "--newest-first"],
+        &["summarize", path, "--format", "lines", "--fields", "time"],
         &["lookup"],
         &["lookup", "--nope"],
         &["setup", "--nope"],

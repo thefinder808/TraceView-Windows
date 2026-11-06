@@ -15,11 +15,16 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 - `traceview setup`, or Tools > Set up for AI agents..., gets AI agents using TraceView with no editing by hand. For your Windows account only, it copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, adds that folder to your PATH, and adds a skill telling Claude Code, Codex and the ChatGPT app how to use it, for whichever are installed. It says what will change and asks first. `traceview setup --remove`, or Tools > Remove AI agent setup..., undoes it.
 - `traceview setup --print`, or Tools > Copy instructions for AI agents, gives the instructions for any other agent.
+- The skill tells agents to use `summarize --format lines` and `query --newest-first`. Run `traceview setup` again to update a skill written before.
 
 **Command line**
 
 - `query` and `summarize` take several logs, or folders of them. A query merges them into one timeline by time. A summary lists the logs with problems, worst first, and the worst problems across all of them.
-- `query --format lines` prints one short line per row, at under half the size of the JSON.
+- `query --format lines` prints one short line per row, at under half the size of the JSON. Each row starts with its log and row number, as in `CBS.log:11503`, whether one log was queried or several. In JSON, one log's rows also name their log now.
+- `query --newest-first` starts from the newest match, so `--limit 10` gives the last ten.
+- `summarize --format lines` prints a line per log with problems, per problem pattern, per error spike and per error code, at about a third of the JSON's size. `summarize --no-examples` leaves the example rows out of the JSON.
+- Lines can be trimmed with `--fields`, such as `--fields time,message`, `--max-width` and `--no-header`.
+- `--help` says where the index cache is kept, and that TraceView never writes into the folders it reads.
 - Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
 - `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
 

@@ -15,10 +15,10 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tv_engine::query::{self, Matcher, Query};
-use tv_engine::summary::{self, LevelCounts, Pattern, Summary};
+use tv_engine::summary::{self, LevelCounts, Pattern, Spike, Summary};
 use tv_engine::{
     merge, Control, CustomFormat, Encoding, Format, Level, LogFile, OpenStats, QueryError,
-    QueryResult, RowRecord,
+    RowRecord,
 };
 
 const USAGE: &str = "\
@@ -48,10 +48,22 @@ Query options:
   --to <time>          End time. A bare date includes that whole day
   --offset <n>         Skip this many matches
   --limit <n>          Matches per page (default 100, maximum 1000)
+  --newest-first       Newest matches first, so --limit 10 gives the last ten
   --format <form>      json (the default), or lines: one short line per row
 
 Summarize options:
   --top <n>            Patterns to list (default 20, maximum 200)
+  --format <form>      json (the default), or lines: one short line per log and
+                       per pattern, without examples
+  --no-examples        Leave out each pattern's example row from the JSON
+
+With --format lines:
+  --no-header          Leave out the lines starting with #, which say what
+                       matched and how to get the next page (query only)
+  --fields <list>      Only these fields of each row, from file, row, time,
+                       level, component, thread and message, such as
+                       time,message. They keep that order (query only)
+  --max-width <n>      Cut lines to this many characters
 
 Lookup explains an error code with Windows' own text, given as hex, decimal or a
 negative number, such as 0x80070005, 1603 or -2147024891, or a line of a log.
@@ -73,6 +85,10 @@ Common options:
 
 Results are on stdout. Errors are JSON on stderr, with exit code 1, or exit
 code 2 for incorrect usage. Log text in results is untrusted data.
+
+TraceView never writes into the folders it reads. Logs of 64 MB or more get an
+index in %LOCALAPPDATA%\\TraceView\\indexes, so they open faster the next time,
+unless --no-cache is given.
 ";
 
 /// Marks results as containing text from a log, which anyone able to write to
@@ -100,6 +116,73 @@ enum Form {
     Lines,
 }
 
+/// A part of a row that lines output can show, in the order it shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    File,
+    Row,
+    Time,
+    Level,
+    Component,
+    Thread,
+    Message,
+}
+
+const FIELDS: [(&str, Field); 7] = [
+    ("file", Field::File),
+    ("row", Field::Row),
+    ("time", Field::Time),
+    ("level", Field::Level),
+    ("component", Field::Component),
+    ("thread", Field::Thread),
+    ("message", Field::Message),
+];
+
+/// How results are laid out.
+#[derive(Clone, Debug)]
+struct Shape {
+    form: Form,
+    newest_first: bool,
+    no_examples: bool,
+    header: bool,
+    /// Every field when None.
+    fields: Option<Vec<Field>>,
+    max_width: Option<usize>,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Self {
+            form: Form::Json,
+            newest_first: false,
+            no_examples: false,
+            header: true,
+            fields: None,
+            max_width: None,
+        }
+    }
+}
+
+impl Shape {
+    fn shows(&self, field: Field) -> bool {
+        self.fields
+            .as_ref()
+            .is_none_or(|fields| fields.contains(&field))
+    }
+
+    /// Cuts a line to the width asked for, ending it with an ellipsis.
+    fn fit(&self, line: String) -> String {
+        match self.max_width {
+            Some(width) if line.chars().count() > width => {
+                let mut cut: String = line.chars().take(width.saturating_sub(1)).collect();
+                cut.push('…');
+                cut
+            }
+            _ => line,
+        }
+    }
+}
+
 struct Common {
     paths: Vec<PathBuf>,
     no_cache: bool,
@@ -110,8 +193,8 @@ enum Command {
     Help,
     Version,
     Licenses,
-    Query(Common, Query, Form),
-    Summarize(Common, usize),
+    Query(Common, Query, Shape),
+    Summarize(Common, usize, Shape),
     Lookup(String, bool),
     Setup(SetupAction),
 }
@@ -148,6 +231,22 @@ fn parse_form(text: &str) -> Result<Form, String> {
     }
 }
 
+fn parse_fields(text: &str) -> Result<Vec<Field>, String> {
+    let mut fields = Vec::new();
+    for name in text.split(',').map(str::trim) {
+        let (_, field) = FIELDS
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                format!(
+                    "--fields takes file, row, time, level, component, thread and message, not \"{name}\""
+                )
+            })?;
+        fields.push(*field);
+    }
+    Ok(fields)
+}
+
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut args = args.peekable();
     let command = args.next().ok_or("no command given")?;
@@ -167,7 +266,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut query = Query::default();
     let mut text_given = false;
     let mut top = summary::DEFAULT_TOP;
-    let mut form = Form::Json;
+    let mut shape = Shape::default();
     let is_query = command == "query";
 
     while let Some(arg) = args.next() {
@@ -177,7 +276,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--no-cache" => no_cache = true,
             "--pretty" => pretty = true,
             "--top" if !is_query => top = parse_number("--top", &value("--top")?)?,
-            "--format" if is_query => form = parse_form(&value(&arg)?)?,
+            "--format" => shape.form = parse_form(&value(&arg)?)?,
+            "--max-width" => {
+                let width = parse_number(&arg, &value(&arg)?)?;
+                if width == 0 {
+                    return Err("--max-width needs a number above 0".to_string());
+                }
+                shape.max_width = Some(width);
+            }
+            "--no-examples" if !is_query => shape.no_examples = true,
+            "--newest-first" if is_query => shape.newest_first = true,
+            "--no-header" if is_query => shape.header = false,
+            "--fields" if is_query => shape.fields = Some(parse_fields(&value(&arg)?)?),
             "--text" | "--regex" if is_query => {
                 if text_given {
                     return Err("use only one of --text and --regex".to_string());
@@ -205,15 +315,19 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     if paths.is_empty() {
         return Err("no log file or folder given".to_string());
     }
+    let shapes_lines = !shape.header || shape.fields.is_some() || shape.max_width.is_some();
+    if shapes_lines && shape.form != Form::Lines {
+        return Err("--no-header, --fields and --max-width need --format lines".to_string());
+    }
     let common = Common {
         paths,
         no_cache,
         pretty,
     };
     Ok(if is_query {
-        Command::Query(common, query, form)
+        Command::Query(common, query, shape)
     } else {
-        Command::Summarize(common, top)
+        Command::Summarize(common, top, shape)
     })
 }
 
@@ -275,7 +389,8 @@ struct FileInfo<'a> {
 struct QueryOutput<'a> {
     log_text_trust: &'static str,
     file: FileInfo<'a>,
-    result: QueryResult,
+    /// The same as a query of several logs gives, so each row names its log.
+    result: MergedResult,
 }
 
 #[derive(Serialize)]
@@ -336,7 +451,10 @@ struct MergedResult {
     total_matches: u64,
     offset: usize,
     limit: usize,
-    /// In time order across every log.
+    /// True when rows run newest first. Only written then.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    newest_first: bool,
+    /// In time order across every log, or the reverse when newest first.
     rows: Vec<LogRow>,
     next_offset: Option<usize>,
 }
@@ -674,83 +792,210 @@ fn field(text: &str) -> &str {
     }
 }
 
-/// One row as a line: where it is, its time, level, component and thread, then
-/// its message. Line breaks in the message become `\n`, so a row stays one
-/// line, and its leading spaces are dropped.
-fn row_line(location: &str, record: &RowRecord) -> String {
-    let message = record
-        .message
-        .trim_start()
+/// A count with its noun, such as "1 error" or "2 errors".
+fn counted(count: u64, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Text on one line: line breaks become `\n`, and leading spaces are dropped.
+fn one_line(text: &str) -> String {
+    text.trim_start()
         .replace("\r\n", "\\n")
-        .replace(['\r', '\n'], "\\n");
-    format!(
-        "{location} {} {} {} {} | {message}{}",
-        record.timestamp.as_deref().unwrap_or("-"),
-        short_level(record.level),
-        field(&record.component),
-        field(&record.thread),
-        if record.truncated { " [cut]" } else { "" },
-    )
+        .replace(['\r', '\n'], "\\n")
+}
+
+/// One row as a line: where it is, as `file:row`, its time, level, component
+/// and thread, then its message. Only the fields asked for are shown, still in
+/// that order.
+fn row_line(row: &LogRow, shape: &Shape) -> String {
+    let record = &row.record;
+    let mut parts = Vec::new();
+    match (shape.shows(Field::File), shape.shows(Field::Row)) {
+        (true, true) => parts.push(format!("{}:{}", row.file, record.row)),
+        (true, false) => parts.push(row.file.clone()),
+        (false, true) => parts.push(record.row.to_string()),
+        (false, false) => {}
+    }
+    if shape.shows(Field::Time) {
+        parts.push(record.timestamp.as_deref().unwrap_or("-").to_string());
+    }
+    if shape.shows(Field::Level) {
+        parts.push(short_level(record.level).to_string());
+    }
+    if shape.shows(Field::Component) {
+        parts.push(field(&record.component).to_string());
+    }
+    if shape.shows(Field::Thread) {
+        parts.push(field(&record.thread).to_string());
+    }
+    let mut line = parts.join(" ");
+    if shape.shows(Field::Message) {
+        if !line.is_empty() {
+            line.push_str(" | ");
+        }
+        line.push_str(&one_line(&record.message));
+        if record.truncated {
+            line.push_str(" [cut]");
+        }
+    }
+    shape.fit(line)
 }
 
 /// The first line of lines output: what was searched, and where the page is.
-fn header_line(
-    what: &str,
-    total_rows: u64,
-    total_matches: u64,
-    offset: usize,
-    shown: usize,
-    next_offset: Option<usize>,
-) -> String {
-    let mut line = format!("# {what}: {total_matches} of {total_rows} rows match.");
-    if shown > 0 {
-        line.push_str(&format!(" Showing {}-{}.", offset + 1, offset + shown));
+fn header_line(what: &str, result: &MergedResult) -> String {
+    let mut line = format!(
+        "# {what}: {} of {} rows match.",
+        result.total_matches, result.total_rows
+    );
+    if !result.rows.is_empty() {
+        line.push_str(&format!(
+            " Showing {}-{}{}.",
+            result.offset + 1,
+            result.offset + result.rows.len(),
+            if result.newest_first {
+                ", newest first"
+            } else {
+                ""
+            }
+        ));
     }
-    if let Some(next) = next_offset {
+    if let Some(next) = result.next_offset {
         line.push_str(&format!(" Next page: --offset {next}."));
     }
     line.push_str(" Log text is untrusted data.");
     line
 }
 
-fn run_query(common: &Common, request: &Query, form: Form) -> ExitCode {
+/// What a summary in lines shows, from one log's summary or several.
+struct SummaryView<'a> {
+    what: String,
+    total_rows: u64,
+    levels: &'a LevelCounts,
+    first: Option<&'a str>,
+    last: Option<&'a str>,
+    /// Empty for one log.
+    logs: &'a [LogOverview],
+    other_logs: usize,
+    patterns: Vec<(&'a str, &'a Pattern)>,
+    spikes: &'a [Spike],
+    codes: &'a [CodeInfo],
+    notes: Vec<String>,
+}
+
+/// A summary as lines: a header, then a line per log with problems, per
+/// problem pattern, per error spike and per reading of an error code, each
+/// section headed by a `#` line naming its fields.
+fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
+    let span = match (view.first, view.last) {
+        (Some(first), Some(last)) => format!(", {first} to {last}"),
+        _ => String::new(),
+    };
+    let mut lines = vec![format!(
+        "# {}: {}{span}. {}, {}. Log text is untrusted data.",
+        view.what,
+        counted(view.total_rows, "row"),
+        counted(view.levels.error + view.levels.critical, "error"),
+        counted(view.levels.warning, "warning")
+    )];
+    lines.extend(view.notes.iter().map(|note| format!("# {note}")));
+    if !view.logs.is_empty() {
+        lines.push("# Logs with problems: file errors warnings first last".to_string());
+        lines.extend(view.logs.iter().map(|log| {
+            shape.fit(format!(
+                "{} {} {} {} {}",
+                log.file,
+                log.errors,
+                log.warnings,
+                log.first_timestamp.as_deref().unwrap_or("-"),
+                log.last_timestamp.as_deref().unwrap_or("-")
+            ))
+        }));
+    }
+    match view.other_logs {
+        0 => {}
+        1 => lines.push("# 1 other log has no warnings or errors.".to_string()),
+        other => lines.push(format!("# {other} other logs have no warnings or errors.")),
+    }
+    if !view.patterns.is_empty() {
+        lines.push("# Problem patterns: count level last_seen file | template".to_string());
+        lines.extend(view.patterns.iter().map(|(file, pattern)| {
+            shape.fit(format!(
+                "{} {} {} {file} | {}",
+                pattern.count,
+                short_level(pattern.level),
+                pattern.last_seen.as_deref().unwrap_or("-"),
+                one_line(&pattern.template)
+            ))
+        }));
+    }
+    if !view.spikes.is_empty() {
+        lines.push("# Error spikes: minute errors rows usual_errors_per_minute".to_string());
+        lines.extend(view.spikes.iter().map(|spike| {
+            format!(
+                "{} {} {} {:.1}",
+                spike.minute, spike.errors, spike.rows, spike.typical_errors
+            )
+        }));
+    }
+    if !view.codes.is_empty() {
+        lines.push("# Error codes: code kind | meaning".to_string());
+        for code in view.codes {
+            // An HRESULT that wraps a Win32 code reads the same both ways,
+            // so a reading only shows when its text is new.
+            let mut shown: Vec<&str> = Vec::new();
+            for reading in &code.readings {
+                if shown.contains(&reading.message.as_str()) {
+                    continue;
+                }
+                shown.push(&reading.message);
+                let meaning = if reading.message.is_empty() {
+                    "-"
+                } else {
+                    &reading.message
+                };
+                lines.push(shape.fit(format!("{} {} | {meaning}", code.code, reading.kind)));
+            }
+        }
+    }
+    lines
+}
+
+fn run_query(common: &Common, request: &Query, shape: &Shape) -> ExitCode {
     let mut notes = Vec::new();
     let inputs = match expand(&common.paths, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
     if common.paths.len() == 1 && !common.paths[0].is_dir() {
-        return query_one(common, &inputs[0].path, request, form);
+        return query_one(common, &inputs[0].path, request, shape);
     }
     let (opened, skipped) = match open_all(&inputs, common.no_cache) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match merged_query(&opened, request) {
+    let result = match merged_query(&opened, request, shape.newest_first) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
-    if form == Form::Lines {
-        let mut lines = vec![header_line(
-            &format!("{} logs merged by time", opened.len()),
-            result.total_rows,
-            result.total_matches,
-            result.offset,
-            result.rows.len(),
-            result.next_offset,
-        )];
-        lines.extend(
-            skipped
-                .iter()
-                .map(|skip| format!("# Skipped {}: {}", skip.file, skip.message)),
-        );
-        lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
-        lines.extend(
-            result
-                .rows
-                .iter()
-                .map(|row| row_line(&format!("{}:{}", row.file, row.record.row), &row.record)),
-        );
+    if shape.form == Form::Lines {
+        let mut lines = Vec::new();
+        if shape.header {
+            lines.push(header_line(
+                &format!("{} logs merged by time", opened.len()),
+                &result,
+            ));
+            lines.extend(
+                skipped
+                    .iter()
+                    .map(|skip| format!("# Skipped {}: {}", skip.file, skip.message)),
+            );
+            lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
+        }
+        lines.extend(result.rows.iter().map(|row| row_line(row, shape)));
         return finish(write_lines(&lines));
     }
     finish(write_json(
@@ -765,44 +1010,45 @@ fn run_query(common: &Common, request: &Query, form: Form) -> ExitCode {
     ))
 }
 
-fn query_one(common: &Common, path: &Path, request: &Query, form: Form) -> ExitCode {
+fn query_one(common: &Common, path: &Path, request: &Query, shape: &Shape) -> ExitCode {
     let (log, stats) = match open_log(path, common.no_cache, &crate::gui::saved_formats()) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match query::run(&log, request, &Control::default()) {
+    let opened = [Opened {
+        label: labels(&[path]).remove(0),
+        log,
+    }];
+    let result = match merged_query(&opened, request, shape.newest_first) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
-    if form == Form::Lines {
-        let mut lines = vec![header_line(
-            &log.path().display().to_string(),
-            result.total_rows,
-            result.total_matches,
-            result.offset,
-            result.rows.len(),
-            result.next_offset,
-        )];
-        lines.extend(
-            result
-                .rows
-                .iter()
-                .map(|record| row_line(&record.row.to_string(), record)),
-        );
+    let log = &opened[0].log;
+    if shape.form == Form::Lines {
+        let mut lines = Vec::new();
+        if shape.header {
+            lines.push(header_line(&log.path().display().to_string(), &result));
+        }
+        lines.extend(result.rows.iter().map(|row| row_line(row, shape)));
         return finish(write_lines(&lines));
     }
     finish(write_json(
         &QueryOutput {
             log_text_trust: LOG_TEXT_TRUST,
-            file: file_info(&log, &stats),
+            file: file_info(log, &stats),
             result,
         },
         common.pretty,
     ))
 }
 
-/// Queries several logs as one timeline, in the order a merged view shows them.
-fn merged_query(opened: &[Opened], request: &Query) -> Result<MergedResult, QueryError> {
+/// Queries logs as one timeline, in the order a merged view shows them, and
+/// returns a page of it: from the start, or from the end when newest first.
+fn merged_query(
+    opened: &[Opened],
+    request: &Query,
+    newest_first: bool,
+) -> Result<MergedResult, QueryError> {
     let matcher = Matcher::new(request)?;
     let control = Control::default();
     let matched = opened
@@ -811,21 +1057,25 @@ fn merged_query(opened: &[Opened], request: &Query) -> Result<MergedResult, Quer
         .collect::<Result<Vec<_>, _>>()?;
 
     // Merging reads every row of a log for its exact time, so only logs with
-    // matches are merged.
+    // matches are merged, and one log's matches stay in file order.
     let sources: Vec<usize> = (0..opened.len())
         .filter(|index| !matched[*index].is_empty())
         .collect();
-    let logs: Vec<&LogFile> = sources.iter().map(|index| &opened[*index].log).collect();
-    let order = if logs.is_empty() {
+    let mut rows: Vec<(usize, u32)> = if let &[only] = sources.as_slice() {
+        matched[only].iter().map(|row| (only, *row)).collect()
+    } else if sources.is_empty() {
         Vec::new()
     } else {
+        let logs: Vec<&LogFile> = sources.iter().map(|index| &opened[*index].log).collect();
         merge::merge_order(&logs, &control)?
+            .into_iter()
+            .map(|merged| (sources[merged.source as usize], merged.row))
+            .filter(|(index, row)| matched[*index].binary_search(row).is_ok())
+            .collect()
     };
-    let rows: Vec<(usize, u32)> = order
-        .into_iter()
-        .map(|merged| (sources[merged.source as usize], merged.row))
-        .filter(|(index, row)| matched[*index].binary_search(row).is_ok())
-        .collect();
+    if newest_first {
+        rows.reverse();
+    }
 
     let limit = request
         .limit
@@ -849,52 +1099,115 @@ fn merged_query(opened: &[Opened], request: &Query) -> Result<MergedResult, Quer
         total_matches: rows.len() as u64,
         offset: start,
         limit,
+        newest_first,
         rows: page,
         next_offset: (end < rows.len()).then_some(end),
     })
 }
 
-fn run_summarize(common: &Common, top: usize) -> ExitCode {
+fn run_summarize(common: &Common, top: usize, shape: &Shape) -> ExitCode {
     let mut notes = Vec::new();
     let inputs = match expand(&common.paths, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
     if common.paths.len() == 1 && !common.paths[0].is_dir() {
-        return summarize_one(common, &inputs[0].path, top);
+        return summarize_one(common, &inputs[0].path, top, shape);
     }
     let (opened, skipped) = match open_all(&inputs, common.no_cache) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    match summarize_logs(&opened, top) {
-        Ok(result) => finish(write_json(
-            &LogsSummaryOutput {
-                log_text_trust: LOG_TEXT_TRUST,
-                logs_read: opened.len(),
-                skipped,
-                notes,
-                result,
-            },
-            common.pretty,
-        )),
-        Err(error) => fail(query_failure(&error)),
+    let mut result = match summarize_logs(&opened, top) {
+        Ok(result) => result,
+        Err(error) => return fail(query_failure(&error)),
+    };
+    if shape.form == Form::Lines {
+        let mut notes: Vec<String> = notes.iter().map(|note| format!("Note: {note}")).collect();
+        notes.extend(
+            skipped
+                .iter()
+                .map(|skip| format!("Skipped {}: {}", skip.file, skip.message)),
+        );
+        let view = SummaryView {
+            what: format!("{} logs", opened.len()),
+            total_rows: result.total_rows,
+            levels: &result.levels,
+            first: result.first_timestamp.as_deref(),
+            last: result.last_timestamp.as_deref(),
+            logs: &result.logs_with_problems,
+            other_logs: result.other_logs.len(),
+            patterns: result
+                .problem_patterns
+                .iter()
+                .map(|found| (found.file.as_str(), &found.pattern))
+                .collect(),
+            spikes: &[],
+            codes: &result.codes,
+            notes,
+        };
+        return finish(write_lines(&summary_lines(&view, shape)));
     }
+    if shape.no_examples {
+        for found in &mut result.problem_patterns {
+            found.pattern.example.clear();
+        }
+    }
+    finish(write_json(
+        &LogsSummaryOutput {
+            log_text_trust: LOG_TEXT_TRUST,
+            logs_read: opened.len(),
+            skipped,
+            notes,
+            result,
+        },
+        common.pretty,
+    ))
 }
 
-fn summarize_one(common: &Common, path: &Path, top: usize) -> ExitCode {
+fn summarize_one(common: &Common, path: &Path, top: usize, shape: &Shape) -> ExitCode {
     let (log, stats) = match open_log(path, common.no_cache, &crate::gui::saved_formats()) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
     match summary::summarize(&log, top, &Control::default()) {
-        Ok(result) => {
+        Ok(mut result) => {
             let codes = codes_in(
                 result
                     .problem_patterns
                     .iter()
                     .map(|pattern| pattern.example.as_str()),
             );
+            if shape.form == Form::Lines {
+                let label = labels(&[path]).remove(0);
+                let view = SummaryView {
+                    what: log.path().display().to_string(),
+                    total_rows: result.total_rows,
+                    levels: &result.levels,
+                    first: result.first_timestamp.as_deref(),
+                    last: result.last_timestamp.as_deref(),
+                    logs: &[],
+                    other_logs: 0,
+                    patterns: result
+                        .problem_patterns
+                        .iter()
+                        .map(|pattern| (label.as_str(), pattern))
+                        .collect(),
+                    spikes: &result.error_spikes,
+                    codes: &codes,
+                    notes: Vec::new(),
+                };
+                return finish(write_lines(&summary_lines(&view, shape)));
+            }
+            if shape.no_examples {
+                for pattern in result
+                    .top_patterns
+                    .iter_mut()
+                    .chain(&mut result.problem_patterns)
+                {
+                    pattern.example.clear();
+                }
+            }
             finish(write_json(
                 &SummaryOutput {
                     log_text_trust: LOG_TEXT_TRUST,
@@ -1023,8 +1336,8 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
             env!("CARGO_PKG_VERSION")
         )),
         Command::Licenses => finish(io::stdout().write_all(LICENSES.as_bytes())),
-        Command::Query(common, request, form) => run_query(&common, &request, form),
-        Command::Summarize(common, top) => run_summarize(&common, top),
+        Command::Query(common, request, shape) => run_query(&common, &request, &shape),
+        Command::Summarize(common, top, shape) => run_summarize(&common, top, &shape),
         Command::Lookup(text, pretty) => run_lookup(&text, pretty),
         Command::Setup(action) => run_setup(action),
     }
