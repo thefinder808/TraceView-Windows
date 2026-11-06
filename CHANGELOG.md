@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.10.0
+
+A start page and folder view, a command line built for AI agents to read logs with, and `traceview setup` to get Claude Code, Codex and the ChatGPT app using it. Still a beta, tested on Windows 11.
 
 **Viewer**
 
@@ -15,11 +17,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 - `traceview setup`, or Tools > Set up for AI agents..., gets AI agents using TraceView with no editing by hand. For your Windows account only, it copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, adds that folder to your PATH, and adds a skill telling Claude Code, Codex and the ChatGPT app how to use it, for whichever are installed. It says what will change and asks first. `traceview setup --remove`, or Tools > Remove AI agent setup..., undoes it.
 - `traceview setup --print`, or Tools > Copy instructions for AI agents, gives the instructions for any other agent.
-- The skill tells agents to use `summarize --format lines` and `query --newest-first`. Run `traceview setup` again to update a skill written before.
+- The skill tells agents to start with `summarize --format lines`, then narrow down with `query`. To update TraceView and its skills later, run `traceview setup` from the newer EXE.
 
 **Command line**
 
 - `query` and `summarize` take several logs, or folders of them. A query merges them into one timeline by time. A summary lists the logs with problems, worst first, and the worst problems across all of them.
+- Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
+- `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
 - `query --format lines` prints one short line per row, at under half the size of the JSON. Each row starts with its log and row number, as in `CBS.log:11503`, whether one log was queried or several. In JSON, one log's rows also name their log now.
 - `query --newest-first` starts from the newest match, so `--limit 10` gives the last ten.
 - `summarize --format lines` prints a line per log with problems, per problem pattern, per error spike and per error code, at about a third of the JSON's size. `summarize --no-examples` leaves the example rows out of the JSON.
@@ -38,8 +42,6 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 - WMI codes, such as 0x80041010, are explained, with text from Windows' own `wmiutils.dll`.
 - Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, which Windows has no text for, show their names, such as `WU_E_PT_WINHTTP_NAME_NOT_RESOLVED`, in the app, the details pane, `traceview lookup` and summaries.
-- Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
-- `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
 
 ## 0.9.0
 

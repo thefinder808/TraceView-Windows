@@ -4,7 +4,7 @@ members = ["crates/engine", "crates/traceview", "crates/d2d-probe", "crates/tv-u
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "MIT"
 
