@@ -38,6 +38,9 @@ pub struct Query {
     pub from: Option<String>,
     /// Inclusive end. A bare date means the end of that day.
     pub to: Option<String>,
+    /// Regular expressions for rows to leave out, such as known noise. A row
+    /// matching any of them doesn't match the query.
+    pub exclude: Vec<String>,
     pub offset: usize,
     /// Rows per page. Defaults to [`DEFAULT_LIMIT`] and is capped at [`MAX_LIMIT`].
     pub limit: Option<usize>,
@@ -127,9 +130,26 @@ pub struct Control {
     pub rows_done: AtomicUsize,
 }
 
+/// One regular expression matching any of `patterns`.
+pub fn any_of(patterns: &[String]) -> String {
+    patterns
+        .iter()
+        .map(|pattern| format!("(?:{pattern})"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn compile(source: &str, case_sensitive: bool) -> Result<Regex, QueryError> {
+    RegexBuilder::new(source)
+        .case_insensitive(!case_sensitive)
+        .build()
+        .map_err(|error| QueryError::InvalidPattern(error.to_string()))
+}
+
 /// A compiled query, ready to test rows.
 pub struct Matcher {
     pattern: Option<Regex>,
+    exclude: Option<Regex>,
     min_level: Option<Level>,
     level: Option<Level>,
     component: Option<Vec<u8>>,
@@ -163,17 +183,18 @@ impl Matcher {
                 } else {
                     regex::escape(text)
                 };
-                Some(
-                    RegexBuilder::new(&source)
-                        .case_insensitive(!query.case_sensitive)
-                        .build()
-                        .map_err(|error| QueryError::InvalidPattern(error.to_string()))?,
-                )
+                Some(compile(&source, query.case_sensitive)?)
             }
             None => None,
         };
+        let exclude = if query.exclude.is_empty() {
+            None
+        } else {
+            Some(compile(&any_of(&query.exclude), query.case_sensitive)?)
+        };
         Ok(Self {
             pattern,
+            exclude,
             min_level: query.min_level,
             level: query.level,
             component: query
@@ -197,8 +218,8 @@ impl Matcher {
         })
     }
 
-    fn needs_row_text(&self) -> bool {
-        self.pattern.is_some() || self.needs_fields()
+    pub(crate) fn needs_row_text(&self) -> bool {
+        self.pattern.is_some() || self.exclude.is_some() || self.needs_fields()
     }
 
     fn needs_fields(&self) -> bool {
@@ -234,9 +255,14 @@ impl Matcher {
                 return false;
             }
         }
+        let searchable = parse::searchable(log.format(), text);
         self.pattern
             .as_ref()
-            .is_none_or(|pattern| pattern.is_match(parse::searchable(log.format(), text)))
+            .is_none_or(|pattern| pattern.is_match(searchable))
+            && !self
+                .exclude
+                .as_ref()
+                .is_some_and(|exclude| exclude.is_match(searchable))
     }
 
     /// Tests one row, given its decoded text from [`LogFile::text`]. This is
@@ -670,6 +696,32 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let (log, _) = LogFile::open_with_cache(&path, None, &AtomicU64::new(0)).unwrap();
         assert_eq!(matched(&log, text_query("caf\u{e9}")), vec![2]);
+    }
+
+    #[test]
+    fn excluded_rows_never_match() {
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00 host a[1]: Failed to check PeerDistribution status\n2026-01-01 10:00:01 host a[1]: install failed\n2026-01-01 10:00:02 host a[1]: mapResources.end() != it\n",
+        );
+        let query = Query {
+            text: Some("fail".to_string()),
+            exclude: vec![
+                "peerdistribution".to_string(),
+                r"mapResources\.end\(\)".to_string(),
+            ],
+            ..Query::default()
+        };
+        let result = run(&log, &query, &Control::default()).unwrap();
+        assert_eq!(result.total_matches, 1);
+        assert_eq!(result.rows[0].message, "install failed");
+        // Excluding works with no other text filter too.
+        let only_exclude = Query {
+            exclude: vec!["failed".to_string()],
+            ..Query::default()
+        };
+        let result = run(&log, &only_exclude, &Control::default()).unwrap();
+        assert_eq!(result.total_matches, 1);
+        assert_eq!(any_of(&["a".into(), "b|c".into()]), "(?:a)|(?:b|c)");
     }
 
     #[test]

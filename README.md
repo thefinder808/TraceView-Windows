@@ -113,6 +113,18 @@ To see what happened last, `--newest-first` starts from the end, so `--limit 10`
 
 Lines can be trimmed further with `--fields time,message`, `--max-width 200` and `--no-header`. `summarize --no-examples` leaves the example rows out of the JSON.
 
+`--count-by` counts the matches instead of listing them, by `day`, `hour`, `file`, `level`, `component` or `template`, which is the message with its numbers and codes taken out:
+
+```powershell
+.\traceview.exe query C:\Windows\CCM\Logs --text "upload" --count-by day --format lines
+```
+
+`--exclude` leaves out rows matching a regular expression, such as errors that are routine where you work. Give it more than once to leave out more. A summary says how many rows, errors and warnings it left out, so nothing goes missing silently:
+
+```powershell
+.\traceview.exe summarize C:\Windows\CCM\Logs --exclude "ReadStringFromFile failed" --exclude "PeerDistribution" --format lines
+```
+
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
 `lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`:

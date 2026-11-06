@@ -29,6 +29,8 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--current-only` leaves rotated copies out of a folder, and `--with-history` adds a named log's rotated copies from beside it.
 - `--recurse` reads subfolders too, labeling their logs by their path in the folder. Without it, the output names the subfolders it didn't read.
 - `summarize --from` and `--to` summarize only the rows in a time range.
+- `query --count-by day|hour|file|level|component|template` counts the matches in groups instead of listing them.
+- `--exclude <pattern>` leaves out rows matching a regular expression, such as known noise, in queries and summaries. It can be given more than once. A summary says how many rows, errors and warnings it left out.
 - Rows show their offset from UTC when the log writes one, as ConfigMgr and Intune logs do: `"utc_offset": "-06:00"` in JSON, and after the time in lines, as in `2026-11-01T01:30:00.000-05:00`.
 
 **Error Lookup**
