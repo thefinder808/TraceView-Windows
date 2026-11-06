@@ -25,6 +25,7 @@ use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
 use super::themes::{self, FileTheme};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel, ThemesResponse};
+use crate::setup;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
@@ -112,6 +113,13 @@ pub mod command {
     pub const THEME_CONTRAST: u32 = 72;
     pub const ABOUT: u32 = 73;
     pub const OPEN_FOLDER: u32 = 74;
+    pub const SET_UP_AGENTS: u32 = 75;
+    pub const COPY_AGENT_INSTRUCTIONS: u32 = 76;
+    pub const REMOVE_AGENT_SETUP: u32 = 77;
+    /// Run once OK is chosen in the box that [`SET_UP_AGENTS`] and
+    /// [`REMOVE_AGENT_SETUP`] show. They're in no menu.
+    pub const SET_UP_AGENTS_CONFIRMED: u32 = 78;
+    pub const REMOVE_AGENT_SETUP_CONFIRMED: u32 = 79;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -1020,6 +1028,13 @@ impl Workspace {
                         item("Stop using TraceView for .log files", command::STOP_FOR_LOGS),
                         self.file_types.is_some(),
                     ),
+                    MenuItem::Separator,
+                    item("Set up for AI agents...", command::SET_UP_AGENTS),
+                    item(
+                        "Copy instructions for AI agents",
+                        command::COPY_AGENT_INSTRUCTIONS,
+                    ),
+                    item("Remove AI agent setup...", command::REMOVE_AGENT_SETUP),
                 ],
             },
             Menu {
@@ -1349,6 +1364,11 @@ impl Workspace {
             command::SAVE_LAYOUT => self.open_palette(Mode::SaveLayout, "", commands),
             command::USE_FOR_LOGS => commands.push(Command::SetFileTypes(true)),
             command::STOP_FOR_LOGS => commands.push(Command::SetFileTypes(false)),
+            command::SET_UP_AGENTS
+            | command::SET_UP_AGENTS_CONFIRMED
+            | command::REMOVE_AGENT_SETUP
+            | command::REMOVE_AGENT_SETUP_CONFIRMED
+            | command::COPY_AGENT_INSTRUCTIONS => self.agent_setup(id, commands),
             command::ABOUT => commands.push(Command::ShowMessage {
                 title: "About TraceView".to_string(),
                 text: about_text(),
@@ -2273,6 +2293,73 @@ impl Workspace {
                 .to_string_lossy()
                 .eq_ignore_ascii_case(&here.to_string_lossy()),
             _ => false,
+        }
+    }
+
+    /// Sets TraceView up for AI agents or takes that back, saying first what
+    /// will change, or copies the instructions to give any other agent.
+    fn agent_setup(&mut self, id: u32, commands: &mut Commands) {
+        let places = setup::Places::current();
+        let exe = std::env::current_exe();
+        let (places, exe) = match (places, exe) {
+            (Ok(places), Ok(exe)) => (places, exe),
+            (Err(message), _) => {
+                self.notice = Some(format!("Couldn't set up for AI agents: {message}"));
+                return;
+            }
+            (_, Err(error)) => {
+                self.notice = Some(format!("Couldn't set up for AI agents: {error}"));
+                return;
+            }
+        };
+        let title = "AI agents".to_string();
+        let show = |text: String| Command::ShowMessage {
+            title: title.clone(),
+            text,
+        };
+        match id {
+            command::COPY_AGENT_INSTRUCTIONS => {
+                commands.push(Command::SetClipboard(setup::instructions(
+                    &places.exe_for_agents(&exe),
+                )));
+                self.notice = Some(
+                    "Copied instructions for AI agents. Paste them into your agent's instructions file, such as AGENTS.md"
+                        .to_string(),
+                );
+            }
+            command::SET_UP_AGENTS => {
+                let plan = setup::plan(&places, &exe);
+                commands.push(if plan.is_done() {
+                    show(plan.describe())
+                } else {
+                    Command::Confirm {
+                        title: title.clone(),
+                        text: plan.describe(),
+                        command: command::SET_UP_AGENTS_CONFIRMED,
+                    }
+                });
+            }
+            command::SET_UP_AGENTS_CONFIRMED => {
+                let done = setup::plan(&places, &exe).apply(&places);
+                commands.push(show(done.unwrap_or_else(|error| error)));
+            }
+            command::REMOVE_AGENT_SETUP => {
+                let removal = setup::removal(&places, &exe);
+                commands.push(if removal.is_empty() {
+                    show(removal.describe())
+                } else {
+                    Command::Confirm {
+                        title: title.clone(),
+                        text: removal.describe(),
+                        command: command::REMOVE_AGENT_SETUP_CONFIRMED,
+                    }
+                });
+            }
+            command::REMOVE_AGENT_SETUP_CONFIRMED => {
+                let done = setup::removal(&places, &exe).apply(&places);
+                commands.push(show(done.unwrap_or_else(|error| error)));
+            }
+            _ => {}
         }
     }
 
@@ -4117,6 +4204,47 @@ mod tests {
         workspace.file_types_changed(Ok(None));
         assert!(workspace.status().contains("no longer opens"));
         assert!(!tools_item(&workspace, command::STOP_FOR_LOGS).1);
+    }
+
+    #[test]
+    fn setting_up_for_agents_says_what_will_change_first() {
+        let mut workspace = workspace();
+        assert_eq!(
+            tools_item(&workspace, command::SET_UP_AGENTS).0,
+            "Set up for AI agents..."
+        );
+        assert!(tools_item(&workspace, command::REMOVE_AGENT_SETUP).1);
+        // Only asks or reports here, so nothing on this PC changes.
+        for (id, confirmed) in [
+            (command::SET_UP_AGENTS, command::SET_UP_AGENTS_CONFIRMED),
+            (
+                command::REMOVE_AGENT_SETUP,
+                command::REMOVE_AGENT_SETUP_CONFIRMED,
+            ),
+        ] {
+            let mut commands = Commands::default();
+            workspace.run_command(id, &mut commands);
+            let asked = commands.iter().any(|command| match command {
+                Command::Confirm { text, command, .. } => {
+                    *command == confirmed && text.contains("TraceView will")
+                }
+                Command::ShowMessage { text, .. } => text.contains("AI agents"),
+                _ => false,
+            });
+            assert!(asked, "command {id}");
+        }
+    }
+
+    #[test]
+    fn instructions_for_other_agents_are_copied() {
+        let mut workspace = workspace();
+        let mut commands = Commands::default();
+        workspace.run_command(command::COPY_AGENT_INSTRUCTIONS, &mut commands);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            Command::SetClipboard(text) if text.contains("traceview summarize <folder>")
+        )));
+        assert!(workspace.status().contains("Copied instructions"));
     }
 
     #[test]

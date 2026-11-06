@@ -6,6 +6,7 @@
 //! and summarized as a list of logs with the worst problems across them.
 
 use crate::gui::places;
+use crate::setup;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -27,6 +28,8 @@ Usage:
   traceview query <log or folder>... [options]
   traceview summarize <log or folder>... [options]
   traceview lookup <code>
+  traceview setup [--remove] [--yes]
+  traceview setup --print
   traceview [file]             Open the viewer
 
 A folder means the logs directly in it: .log, .lo_ and .txt files, the newest
@@ -52,6 +55,14 @@ Summarize options:
 
 Lookup explains an error code with Windows' own text, given as hex, decimal or a
 negative number, such as 0x80070005, 1603 or -2147024891, or a line of a log.
+
+Setup gets TraceView ready for AI agents, for your Windows account only: it
+copies TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds that folder to your
+PATH, and adds a skill telling Claude Code, Codex and the ChatGPT app how to use
+it, for those that are installed. It says what will change and asks first.
+  --yes                Go ahead without asking
+  --remove             Undo it
+  --print              Show the instructions to give any other agent
 
 Common options:
   --no-cache           Don't read or write the index cache
@@ -102,6 +113,19 @@ enum Command {
     Query(Common, Query, Form),
     Summarize(Common, usize),
     Lookup(String, bool),
+    Setup(SetupAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetupAction {
+    /// Set up, asking first unless told not to.
+    Install {
+        ask: bool,
+    },
+    Remove {
+        ask: bool,
+    },
+    Print,
 }
 
 /// An error to report: a stable code for callers to act on, and a message.
@@ -132,6 +156,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         "--version" | "-V" => return Ok(Command::Version),
         "--licenses" => return Ok(Command::Licenses),
         "lookup" => return parse_lookup(args),
+        "setup" => return parse_setup(args),
         "query" | "summarize" => {}
         other => return Err(format!("unknown command \"{other}\"")),
     }
@@ -212,6 +237,25 @@ fn parse_lookup(args: impl Iterator<Item = String>) -> Result<Command, String> {
         return Err("no code given".to_string());
     }
     Ok(Command::Lookup(text, pretty))
+}
+
+fn parse_setup(args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let (mut yes, mut remove, mut print) = (false, false, false);
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Command::Help),
+            "--yes" | "-y" => yes = true,
+            "--remove" => remove = true,
+            "--print" => print = true,
+            other => return Err(format!("unknown option {other} for setup")),
+        }
+    }
+    Ok(Command::Setup(match (print, remove) {
+        (true, false) if !yes => SetupAction::Print,
+        (true, _) => return Err("use --print on its own".to_string()),
+        (false, true) => SetupAction::Remove { ask: !yes },
+        (false, false) => SetupAction::Install { ask: !yes },
+    }))
 }
 
 #[derive(Serialize)]
@@ -982,10 +1026,83 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         Command::Query(common, request, form) => run_query(&common, &request, form),
         Command::Summarize(common, top) => run_summarize(&common, top),
         Command::Lookup(text, pretty) => run_lookup(&text, pretty),
+        Command::Setup(action) => run_setup(action),
+    }
+}
+
+/// Asks a yes or no question on the console. No answer, as when nothing is
+/// typing, as with an agent running the command, means no.
+fn ask(question: &str) -> bool {
+    print!("{question} [y/N] ");
+    let _ = io::stdout().flush();
+    let mut answer = String::new();
+    match io::stdin().read_line(&mut answer) {
+        Ok(read) if read > 0 => matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"),
+        _ => {
+            println!();
+            false
+        }
+    }
+}
+
+fn run_setup(action: SetupAction) -> ExitCode {
+    let places = match setup::Places::current() {
+        Ok(places) => places,
+        Err(message) => return fail(("setup_failed", message)),
+    };
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => return fail(("setup_failed", error.to_string())),
+    };
+    let declined = || {
+        let flag = if matches!(action, SetupAction::Remove { .. }) {
+            "setup --remove --yes"
+        } else {
+            "setup --yes"
+        };
+        finish(writeln!(
+            io::stdout(),
+            "Nothing changed. To go ahead without being asked, run `traceview {flag}`."
+        ))
+    };
+    let outcome = match action {
+        SetupAction::Print => {
+            return finish(write!(
+                io::stdout(),
+                "{}",
+                setup::instructions(&places.exe_for_agents(&exe))
+            ))
+        }
+        SetupAction::Install { ask: asking } => {
+            let plan = setup::plan(&places, &exe);
+            println!("{}\n", plan.describe());
+            if plan.is_done() {
+                return ExitCode::SUCCESS;
+            }
+            if asking && !ask("Go ahead?") {
+                return declined();
+            }
+            plan.apply(&places)
+        }
+        SetupAction::Remove { ask: asking } => {
+            let removal = setup::removal(&places, &exe);
+            println!("{}\n", removal.describe());
+            if removal.is_empty() {
+                return ExitCode::SUCCESS;
+            }
+            if asking && !ask("Go ahead?") {
+                return declined();
+            }
+            removal.apply(&places)
+        }
+    };
+    match outcome {
+        Ok(report) => finish(writeln!(io::stdout(), "{report}")),
+        Err(message) => fail(("setup_failed", message)),
     }
 }
 
 /// True if the argument is a subcommand rather than a file to open.
 pub fn is_command(arg: &str) -> bool {
-    matches!(arg, "query" | "summarize" | "lookup" | "help")
+    matches!(arg, "query" | "summarize" | "lookup" | "setup" | "help")
 }

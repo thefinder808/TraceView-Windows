@@ -121,6 +121,13 @@ pub enum Command {
         title: String,
         text: String,
     },
+    /// Asks, in a standard Windows box with OK and Cancel, whether to go
+    /// ahead. The handler hears `command` only if OK is chosen.
+    Confirm {
+        title: String,
+        text: String,
+        command: u32,
+    },
     Close,
 }
 
@@ -183,6 +190,9 @@ pub trait Handler {
         outcome: std::result::Result<Option<PathBuf>, String>,
         commands: &mut Commands,
     );
+    /// OK was chosen in a [`Command::Confirm`] box, which asked to go ahead
+    /// with `command`.
+    fn confirmed(&mut self, command: u32, commands: &mut Commands);
     fn accessibility_tree(&mut self) -> TreeUpdate;
     fn accessibility_action(&mut self, request: ActionRequest, commands: &mut Commands);
 }
@@ -357,6 +367,17 @@ impl State {
                 Command::DefaultCaptionColors => shell::default_caption_colors(self.hwnd.get()),
                 Command::ShowMessage { title, text } => {
                     shell::show_message(self.hwnd.get(), &title, &text);
+                }
+                Command::Confirm {
+                    title,
+                    text,
+                    command,
+                } => {
+                    if shell::confirm(self.hwnd.get(), &title, &text) {
+                        self.with_handler(|handler, commands| {
+                            handler.confirmed(command, commands);
+                        });
+                    }
                 }
                 Command::SetImePosition(point) => self.ime_position.set(point),
                 Command::SetCursor(cursor) => {

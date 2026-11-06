@@ -11,6 +11,11 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - The event histogram is on by default.
 - With one log open, Split view asks for the log to show beside it, rather than only saying in the status bar that it needs two.
 
+**AI agents**
+
+- `traceview setup`, or Tools > Set up for AI agents..., gets AI agents using TraceView with no editing by hand. For your Windows account only, it copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, adds that folder to your PATH, and adds a skill telling Claude Code, Codex and the ChatGPT app how to use it, for whichever are installed. It says what will change and asks first. `traceview setup --remove`, or Tools > Remove AI agent setup..., undoes it.
+- `traceview setup --print`, or Tools > Copy instructions for AI agents, gives the instructions for any other agent.
+
 **Command line**
 
 - `query` and `summarize` take several logs, or folders of them. A query merges them into one timeline by time. A summary lists the logs with problems, worst first, and the worst problems across all of them.
