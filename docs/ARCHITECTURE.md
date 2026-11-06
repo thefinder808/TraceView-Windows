@@ -36,10 +36,11 @@ crates/
                 command palette with fuzzy matching. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
-                contrast themes, per-user file type registration
+                contrast themes, per-user file type registration, the user's PATH (user_path.rs)
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs
   traceview/    the EXE. No unsafe
-    cli.rs        query and summarize
+    cli.rs        query, summarize, lookup and setup
+    setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
     gui/          app (connects the window and renderer to the workspace)
                   workspace (menus, tabs, focus, layout, input routing)
                   tab (one log or a merged set: filter, find, details, live tail)
@@ -252,6 +253,14 @@ The goal is one engine with several front ends in the same EXE:
    - With several logs, `summarize` summarizes each one, then lists the logs with warnings or worse and the worst patterns across all of them.
    - Each summary pattern keeps its first row as an example, and the CLI looks up the error codes in the problem patterns' examples with `tv-errors`. Without this, an exit code of 1603 would read only as `<n>`.
    - `--format lines` writes one line per row, `row time level component thread | message`, for agents that pay by the token.
+   - **Setup** (`traceview setup`, or Tools > Set up for AI agents...) gets agents using the CLI with no editing by hand. It's in `crates/traceview/src/setup.rs`, and works for this Windows user only, with no administrator rights:
+     - It copies the EXE to `%LOCALAPPDATA%\Programs\TraceView`, through a `.new` file swapped in, so a failed copy never leaves half an EXE.
+     - It adds that folder to the end of the user's PATH, through `tv_platform::UserPath`. That reads and writes `HKEY_CURRENT_USER\Environment` as stored, so `%USERPROFILE%` entries keep their variables and the value keeps its type, then broadcasts `WM_SETTINGCHANGE` so new programs see it. Tests use a scratch key instead.
+     - It writes one skill, `SKILL.md`, for each agent whose folder it finds: `%USERPROFILE%\.claude\skills\traceview` for Claude Code, and `%USERPROFILE%\.agents\skills\traceview` for Codex and the ChatGPT app, found by `%USERPROFILE%\.codex` or `CODEX_HOME`. Both follow the Agent Skills standard, so the file uses only its fields. The skill names the installed EXE's full path, for agents started before PATH changed, and sends agents to `--help` for options, so new options don't make it stale.
+     - A `metadata` line marks the skill as TraceView's. Setup updates and removal deletes only a skill with that mark, never one someone else wrote.
+     - Both setup and removal describe the change first. The CLI asks on the console, where no answer, as when an agent runs it, means no, and `--yes` skips asking. The app asks with `Command::Confirm`, an OK and Cancel box, and runs the confirmed command only on OK.
+     - Removal can't delete a running EXE, so when it runs from the installed copy, it moves that EXE to the temp folder, which Windows allows, and removes the folder.
+     - `setup --print` and Tools > Copy instructions for AI agents give the same instructions as text, for any other agent's instructions file. Setup never edits a `CLAUDE.md` or `AGENTS.md`, since those are the user's own.
 2. **Local stdio MCP server** (`traceview mcp`), a thin layer over the CLI's functions. Not built. Tools:
    - `open_log`
    - `summarize`: groups repeated messages into patterns with counts, first and last seen, and spikes

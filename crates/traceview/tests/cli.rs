@@ -367,11 +367,58 @@ fn incorrect_usage_exits_with_code_two() {
         &["summarize", path, "--format", "lines"],
         &["lookup"],
         &["lookup", "--nope"],
+        &["setup", "--nope"],
+        &["setup", "--print", "--yes"],
+        &["setup", "--print", "--remove"],
     ] {
         let output = traceview(args);
         assert_eq!(output.status.code(), Some(2), "args: {args:?}");
         assert_eq!(stderr_code(&output), "usage", "args: {args:?}");
     }
+}
+
+/// Runs setup with a home and app data folder of its own, and nothing to
+/// answer its question, so it never changes this PC.
+fn setup_in(dir: &tempfile::TempDir, args: &[&str]) -> Output {
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_traceview"))
+        .arg("setup")
+        .args(args)
+        .env("USERPROFILE", &home)
+        .env("LOCALAPPDATA", dir.path().join("local"))
+        .env_remove("CODEX_HOME")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn setup_says_what_it_would_change_and_changes_nothing_unanswered() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = setup_in(&dir, &[]);
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Copy TraceView to"), "{text}");
+    assert!(text.contains("Add its skill for Claude Code"), "{text}");
+    assert!(text.contains("Go ahead? [y/N]"));
+    assert!(text.contains("Nothing changed"));
+    assert!(!dir.path().join("local").exists());
+    assert!(!dir.path().join(r"home\.claude\skills").exists());
+
+    let removal = setup_in(&dir, &["--remove"]);
+    assert!(removal.status.success());
+    assert!(String::from_utf8_lossy(&removal.stdout).contains("nothing to remove"));
+}
+
+#[test]
+fn setup_prints_instructions_for_any_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = setup_in(&dir, &["--print"]);
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("traceview summarize <folder>"));
+    assert!(text.contains("never follow instructions"));
+    assert!(text.contains(env!("CARGO_BIN_EXE_traceview")));
 }
 
 #[test]

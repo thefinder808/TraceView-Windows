@@ -185,6 +185,13 @@ pub fn commands() -> Vec<(u32, String, &'static str)> {
         (command::SAVE_LAYOUT, "save_layout", ""),
         (command::USE_FOR_LOGS, "use_for_logs", ""),
         (command::STOP_FOR_LOGS, "stop_for_logs", ""),
+        (command::SET_UP_AGENTS, "set_up_agents", ""),
+        (
+            command::COPY_AGENT_INSTRUCTIONS,
+            "copy_agent_instructions",
+            "",
+        ),
+        (command::REMOVE_AGENT_SETUP, "remove_agent_setup", ""),
         (command::ABOUT, "about", ""),
     ]
     .into_iter()

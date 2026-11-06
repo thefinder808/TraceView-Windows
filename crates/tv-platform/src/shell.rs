@@ -33,8 +33,8 @@ use windows::Win32::UI::Shell::{
     FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, HDROP, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, SystemParametersInfoW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
-    SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    MessageBoxW, SystemParametersInfoW, IDOK, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONINFORMATION,
+    MB_OK, MB_OKCANCEL, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
 
 /// Shows a folder in File Explorer, making it first if it isn't there yet.
@@ -83,6 +83,21 @@ pub(crate) fn show_message(hwnd: HWND, title: &str, text: &str) {
             MB_OK | MB_ICONINFORMATION,
         );
     }
+}
+
+/// Asks to go ahead with something, in a standard message box with OK and
+/// Cancel, Cancel being the default. True if OK was chosen.
+pub(crate) fn confirm(hwnd: HWND, title: &str, text: &str) -> bool {
+    // SAFETY: the handle is the caller's window, and the strings outlive the call.
+    let choice = unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OKCANCEL | MB_ICONINFORMATION | MB_DEFBUTTON2,
+        )
+    };
+    choice == IDOK
 }
 
 pub(crate) fn system_is_dark() -> bool {

@@ -224,6 +224,12 @@ impl Handler for App {
         commands.accessibility_changed();
     }
 
+    fn confirmed(&mut self, command: u32, commands: &mut Commands) {
+        self.workspace.run_command(command, commands);
+        commands.redraw();
+        commands.accessibility_changed();
+    }
+
     fn system_theme_changed(
         &mut self,
         dark: bool,

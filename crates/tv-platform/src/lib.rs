@@ -7,11 +7,13 @@ mod file_types;
 mod input;
 pub mod metrics;
 mod shell;
+mod user_path;
 mod window;
 
 pub use console::{prepare_console_for_gui, ConsoleOutcome};
 pub use file_types::{registered_file_types, FILE_TYPES};
 pub use shell::{clipboard_text, show_error, show_folder};
+pub use user_path::UserPath;
 pub use window::{run, Command, Commands, Cursor, Handler, WindowContext, WindowOptions};
 
 /// Lets another thread wake the window's message loop. Wakes coalesce, so
