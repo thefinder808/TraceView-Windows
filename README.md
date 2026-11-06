@@ -103,7 +103,15 @@ Both take several logs, or a folder, which means the logs directly in it. A quer
 .\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10:00 --to 2026-11-05T10:20:00 --format lines
 ```
 
-`--format lines` gives one short line per row instead of JSON, at under half the size. `lookup` explains an error code with Windows' own text:
+`--format lines` gives one short line per row instead of JSON, at under half the size, and each row starts with its log and row number, as in `CBS.log:11503`. For a summary, it gives a line per log with problems and per problem pattern, at about a third of the JSON's size.
+
+To see what happened last, `--newest-first` starts from the end, so `--limit 10` gives the last ten matches:
+
+```powershell
+.\traceview.exe query C:\Windows\CCM\Logs\AppEnforce.log --min-level error --newest-first --limit 10 --format lines
+```
+
+Lines can be trimmed further with `--fields time,message`, `--max-width 200` and `--no-header`. `summarize --no-examples` leaves the example rows out of the JSON. `lookup` explains an error code with Windows' own text:
 
 ```powershell
 .\traceview.exe lookup 0x80070005

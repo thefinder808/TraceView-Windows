@@ -84,7 +84,9 @@ pub struct Pattern {
     /// The message with variable parts replaced by `<n>`, `<hex>` or `<guid>`.
     pub template: String,
     /// The pattern's first row as written, with its real numbers and codes.
-    /// Capped at 500 characters.
+    /// Capped at 500 characters. Left out of JSON when empty, as when a caller
+    /// drops examples for shorter output.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub example: String,
     pub count: u64,
     /// The highest severity seen with this pattern.
