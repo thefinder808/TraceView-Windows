@@ -25,7 +25,7 @@ Nothing is published until the draft is checked and published by hand. A release
    ```
 
 3. When the run finishes, open the draft release and download a zip. Check that Explorer shows a valid signature under Properties > Digital Signatures, and try the EXE.
-4. Publish the draft. Releases before 1.0 are marked as pre-releases.
+4. Publish the draft. It's a full release, even before 1.0, so it becomes the latest one on the repository's front page, which leaves pre-releases out. The README and the notes say TraceView is a beta. 0.9.0, the first release, stays a pre-release.
 
 `pwsh -File scripts/build-release.ps1` makes the same zips locally, unsigned, for trying a build. It warns that they're unsigned.
 

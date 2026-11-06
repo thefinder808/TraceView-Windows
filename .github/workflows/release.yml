@@ -110,8 +110,9 @@ jobs:
           $version = $env:TAG.TrimStart('v')
           # Only these are downloads. The notes come from CHANGELOG.md.
           $files = @(Get-ChildItem dist -File | Where-Object { $_.Extension -eq '.zip' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object FullName)
+          # A full release, even before 1.0, so it shows on the repository's front
+          # page as the latest. Pre-releases are left out there. The README and
+          # the notes say TraceView is a beta.
           $options = @('--draft', '--verify-tag', '--notes-file', 'dist/release-notes.md', '--title', "TraceView $version")
-          # Before 1.0, every release is marked as a pre-release.
-          if ($version.StartsWith('0.')) { $options += '--prerelease' }
           gh release create $env:TAG @files @options --repo $env:REPO
           if ($LASTEXITCODE -ne 0) { throw 'Creating the draft release failed' }
