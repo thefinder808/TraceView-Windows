@@ -3,7 +3,7 @@
 Pushing a tag like `v0.9.0` runs [`release.yml`](../.github/workflows/release.yml):
 
 1. **Build**, with no access to signing: test everything, then build `traceview.exe` for x64 and ARM64 with [`scripts/build-release.ps1`](../scripts/build-release.ps1). The tag has to match the version in `Cargo.toml`, and `CHANGELOG.md` needs a section for that version.
-2. **Release**, in the `release` environment:
+2. **Release**, in the `release` environment, once you approve it:
    - sign both EXEs with Azure Artifact Signing;
    - check each signature and its timestamp;
    - zip each EXE with `LICENSE` and `THIRD-PARTY-NOTICES.txt`, and write `SHA256SUMS.txt`;
@@ -24,7 +24,7 @@ Nothing is published until the draft is checked and published by hand. A release
    git push origin v0.9.0
    ```
 
-3. When the run finishes, open the draft release and download a zip. Check that Explorer shows a valid signature under Properties > Digital Signatures, and try the EXE.
+3. When the build job finishes, the run waits for you: open it under Actions, choose **Review deployments**, tick `release` and approve. When the run finishes, open the draft release and download a zip. Check that Explorer shows a valid signature under Properties > Digital Signatures, and try the EXE.
 4. Publish the draft. It's a full release, even before 1.0, so it becomes the latest one on the repository's front page, which leaves pre-releases out. The README and the notes say TraceView is a beta. 0.9.0, the first release, stays a pre-release.
 
 `pwsh -File scripts/build-release.ps1` makes the same zips locally, unsigned, for trying a build. It warns that they're unsigned.
@@ -49,7 +49,7 @@ These assume an Artifact Signing account and certificate profile already exist, 
 
 ### In GitHub
 
-1. **Create the `release` environment** (Settings > Environments > New environment) and, under Deployment branches and tags, allow only the tag pattern `v*`. That way only a release tag can reach the signing settings. If the page offers Required reviewers, turn it on for yourself, so each release waits for your approval.
+1. **Create the `release` environment** (Settings > Environments > New environment) and, under Deployment branches and tags, allow only the tag pattern `v*`. That way only a release tag can reach the signing settings. Under Required reviewers, add yourself and leave Prevent self-review off, so each release waits for your own approval.
 2. **Add these environment secrets** to `release`. None is a password, but keeping them as secrets keeps them out of logs.
 
    | Secret | What |
@@ -70,5 +70,6 @@ These assume an Artifact Signing account and certificate profile already exist, 
 
 - **Signing is kept apart from the build.** The build job has no secrets and no Azure sign-in, so code that runs while building, such as a crate's build script, can't reach them. It uses no cache, so a release is built only from the tag and crates.io.
 - **Actions are pinned to exact commits** in every workflow, so a moved tag can't change what runs.
+- **A person approves each release.** The `release` environment needs your approval, so a leaked token that pushes a tag still can't get a build signed.
 - **Only tag pushes trigger it.** Pull requests never get the environment's secrets, and nothing that reacts to pull requests should be added to it.
 - **Least privilege.** The workflow's token can only write releases. The Azure app can only sign, with the one certificate profile.

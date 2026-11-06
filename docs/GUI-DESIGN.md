@@ -458,8 +458,8 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Decided at the start:**
 
-- **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It's left until the repository is public, because a private repository's releases can't be read without signing in.
-- **The repository stays private for now,** so releases are private too.
+- **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It was left until the repository was public, because a private repository's releases can't be read without signing in, and it isn't built yet, so TraceView still never connects to the internet.
+- **The repository stayed private at first,** so the first releases were private too. It went public on 2026-11-06.
 - **Signing uses Microsoft's own GitHub action** with an existing Azure Artifact Signing account. It signs in to Azure with OpenID Connect, so no Azure secret is stored in GitHub.
 - **The first release is 0.9.0, a beta,** tested on Windows 11 only.
 
@@ -473,11 +473,12 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Docs for the people using it:** the README now starts with what TraceView is, how to download it and check its signature, and how to use it. It also covers portable copies, the command line, what it writes and where, and how to remove it all. Building from source comes after. The screenshots are frames the snapshot tests draw, of their sample log, so they show no one's paths. `CHANGELOG.md`, `SECURITY.md` and a Buy Me a Coffee link (in the README and `.github/FUNDING.yml`) match the Mac app's.
 
-**Before the repository goes public:**
+**Going public, on 2026-11-06:**
 
-- The privacy sweep over the full history, every ref and the object database.
-- Turn on private vulnerability reporting, which `SECURITY.md` points to.
-- The update check, which needs public releases to read.
+- A privacy sweep came first, over the full history, every ref including pull requests, the object database, pull request text, release notes and every Actions log.
+- Private vulnerability reporting, which `SECURITY.md` points to, and secret scanning with push protection were turned on.
+- The `release` environment now needs the owner's approval before it signs anything.
+- The update check, which needs public releases to read, is still to do.
 
 **Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
