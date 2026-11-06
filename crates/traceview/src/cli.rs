@@ -60,6 +60,11 @@ Query options:
   --newest-first       Newest matches first, so --limit 10 gives the last ten
   --exclude <pattern>  Leave out rows matching this regular expression, such as
                        known noise. Give it more than once to leave out more
+  --unless-followed-by <text>
+                       Keep only matches with no row containing this after them
+                       before the next match, such as an \"Entering CS mode\"
+                       never followed by \"Leaving CS mode\". Read as --text or
+                       --regex is, in the same log, whatever other filters say
   --count-by <group>   Count the matches by day, hour, file, level, component
                        or template, the message with its numbers and codes
                        taken out, instead of listing them
@@ -260,7 +265,8 @@ enum Command {
     Help,
     Version,
     Licenses,
-    Query(Common, Query, Shape),
+    /// The last part is `--unless-followed-by`.
+    Query(Common, Query, Shape, Option<String>),
     Summarize(Common, usize, Query, Shape),
     Lookup(String, bool),
     Setup(SetupAction),
@@ -335,6 +341,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut top = summary::DEFAULT_TOP;
     let mut shape = Shape::default();
     let mut scope = Scope::default();
+    let mut unless_followed_by = None;
     let is_query = command == "query";
 
     while let Some(arg) = args.next() {
@@ -371,6 +378,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 query.regex = arg == "--regex";
                 query.text = Some(value(&arg)?);
             }
+            "--unless-followed-by" if is_query => unless_followed_by = Some(value(&arg)?),
             "--case-sensitive" if is_query => query.case_sensitive = true,
             "--min-level" if is_query => query.min_level = Some(parse_level(&value(&arg)?)?),
             "--level" if is_query => query.level = Some(parse_level(&value(&arg)?)?),
@@ -398,6 +406,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 .to_string(),
         );
     }
+    if unless_followed_by.is_some() && !text_given {
+        return Err(
+            "--unless-followed-by needs --text or --regex to say what to look for".to_string(),
+        );
+    }
     let common = Common {
         paths,
         scope,
@@ -405,7 +418,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         pretty,
     };
     Ok(if is_query {
-        Command::Query(common, query, shape)
+        Command::Query(common, query, shape, unless_followed_by)
     } else {
         // A summary uses only the query's time range.
         Command::Summarize(common, top, query, shape)
@@ -590,6 +603,10 @@ struct MergedResult {
     /// True when rows run newest first. Only written then.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     newest_first: bool,
+    /// The text `--unless-followed-by` looked for: matches with it after
+    /// them, before the next match, were left out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unless_followed_by: Option<String>,
     /// In time order across every log, or the reverse when newest first.
     rows: Vec<LogRow>,
     next_offset: Option<usize>,
@@ -1143,8 +1160,10 @@ fn row_line(row: &LogRow, shape: &Shape) -> String {
 /// The first line of lines output: what was searched, and where the page is.
 fn header_line(what: &str, result: &MergedResult) -> String {
     let mut line = format!(
-        "# {what}: {} of {} rows match.",
-        result.total_matches, result.total_rows
+        "# {what}: {} of {} rows match{}.",
+        result.total_matches,
+        result.total_rows,
+        unless_words(result.unless_followed_by.as_deref())
     );
     if !result.rows.is_empty() {
         line.push_str(&format!(
@@ -1303,21 +1322,73 @@ fn bump(counts: &mut HashMap<String, u64>, key: String, by: u64) {
     *counts.entry(key).or_default() += by;
 }
 
+/// A query compiled for matching rows, with what `--unless-followed-by`
+/// looks for, if given.
+struct Search {
+    matcher: Matcher,
+    closer: Option<Matcher>,
+}
+
+impl Search {
+    /// The closing rows are found by their text alone, read as the query's
+    /// own text is, so a filter such as --min-level or --to never hides one.
+    fn new(request: &Query, unless_followed_by: Option<&str>) -> Result<Self, QueryError> {
+        let closer = unless_followed_by
+            .map(|text| {
+                Matcher::new(&Query {
+                    text: Some(text.to_string()),
+                    regex: request.regex,
+                    case_sensitive: request.case_sensitive,
+                    ..Query::default()
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            matcher: Matcher::new(request)?,
+            closer,
+        })
+    }
+
+    /// A log's matching rows, in file order. With a closer, only those with
+    /// no closing row after them before the next match, such as an "Entering"
+    /// with no "Leaving" after it.
+    fn rows(&self, log: &LogFile, control: &Control) -> Result<Vec<u32>, QueryError> {
+        let rows = query::matching_rows(log, &self.matcher, control)?;
+        let Some(closer) = &self.closer else {
+            return Ok(rows);
+        };
+        let closing = query::matching_rows(log, closer, control)?;
+        Ok(rows
+            .iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                let next = rows.get(index + 1).copied().unwrap_or(u32::MAX);
+                let first_after = closing.partition_point(|closed| closed <= *row);
+                closing
+                    .get(first_after)
+                    .is_none_or(|closed| *closed >= next)
+            })
+            .map(|(_, row)| *row)
+            .collect())
+    }
+}
+
 /// Counts the rows a query matches in each group, such as each day.
 fn count_matches(
     opened: &[Opened],
     request: &Query,
+    unless_followed_by: Option<&str>,
     by: CountBy,
     notes: &mut Vec<String>,
 ) -> Result<CountResult, QueryError> {
-    let matcher = Matcher::new(request)?;
+    let search = Search::new(request, unless_followed_by)?;
     let control = Control::default();
     let mut counts: HashMap<String, u64> = HashMap::new();
     let mut total_matches = 0;
     let (mut buffer, mut scratch, mut template) = (Vec::new(), Vec::new(), Vec::new());
     for file in opened {
         let log = &file.log;
-        let rows = query::matching_rows(log, &matcher, &control)?;
+        let rows = search.rows(log, &control)?;
         total_matches += rows.len() as u64;
         match by {
             CountBy::File if !rows.is_empty() => {
@@ -1395,10 +1466,18 @@ fn count_matches(
     })
 }
 
+/// Says what `--unless-followed-by` kept, for a header line.
+fn unless_words(unless_followed_by: Option<&str>) -> String {
+    unless_followed_by.map_or_else(String::new, |closer| {
+        format!(", with no \"{closer}\" after them before the next match")
+    })
+}
+
 fn run_count(
     common: &Common,
     inputs: &[Input],
     request: &Query,
+    unless_followed_by: Option<&str>,
     by: CountBy,
     shape: &Shape,
     mut notes: Vec<String>,
@@ -1407,7 +1486,7 @@ fn run_count(
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match count_matches(&opened, request, by, &mut notes) {
+    let result = match count_matches(&opened, request, unless_followed_by, by, &mut notes) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1420,8 +1499,11 @@ fn run_count(
                 counted(opened.len() as u64, "log")
             };
             lines.push(format!(
-                "# {what}: {} of {} rows match. Each line: count {}. Log text is untrusted data.",
-                result.total_matches, result.total_rows, result.count_by
+                "# {what}: {} of {} rows match{}. Each line: count {}. Log text is untrusted data.",
+                result.total_matches,
+                result.total_rows,
+                unless_words(unless_followed_by),
+                result.count_by
             ));
             lines.extend(
                 skipped
@@ -1450,23 +1532,36 @@ fn run_count(
     ))
 }
 
-fn run_query(common: &Common, request: &Query, shape: &Shape) -> ExitCode {
+fn run_query(
+    common: &Common,
+    request: &Query,
+    shape: &Shape,
+    unless_followed_by: Option<&str>,
+) -> ExitCode {
     let mut notes = Vec::new();
     let inputs = match expand(&common.paths, common.scope, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
     if let Some(by) = shape.count_by {
-        return run_count(common, &inputs, request, by, shape, notes);
+        return run_count(
+            common,
+            &inputs,
+            request,
+            unless_followed_by,
+            by,
+            shape,
+            notes,
+        );
     }
     if just_one(&inputs) {
-        return query_one(common, &inputs[0].path, request, shape);
+        return query_one(common, &inputs[0].path, request, shape, unless_followed_by);
     }
     let (opened, skipped) = match open_all(&inputs, common.no_cache) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match merged_query(&opened, request, shape.newest_first) {
+    let result = match merged_query(&opened, request, unless_followed_by, shape.newest_first) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1499,7 +1594,13 @@ fn run_query(common: &Common, request: &Query, shape: &Shape) -> ExitCode {
     ))
 }
 
-fn query_one(common: &Common, path: &Path, request: &Query, shape: &Shape) -> ExitCode {
+fn query_one(
+    common: &Common,
+    path: &Path,
+    request: &Query,
+    shape: &Shape,
+    unless_followed_by: Option<&str>,
+) -> ExitCode {
     let (log, stats) = match open_log(path, common.no_cache, &crate::gui::saved_formats()) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
@@ -1508,7 +1609,7 @@ fn query_one(common: &Common, path: &Path, request: &Query, shape: &Shape) -> Ex
         label: file_name_of(path),
         log,
     }];
-    let result = match merged_query(&opened, request, shape.newest_first) {
+    let result = match merged_query(&opened, request, unless_followed_by, shape.newest_first) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1536,13 +1637,14 @@ fn query_one(common: &Common, path: &Path, request: &Query, shape: &Shape) -> Ex
 fn merged_query(
     opened: &[Opened],
     request: &Query,
+    unless_followed_by: Option<&str>,
     newest_first: bool,
 ) -> Result<MergedResult, QueryError> {
-    let matcher = Matcher::new(request)?;
+    let search = Search::new(request, unless_followed_by)?;
     let control = Control::default();
     let matched = opened
         .iter()
-        .map(|log| query::matching_rows(&log.log, &matcher, &control))
+        .map(|log| search.rows(&log.log, &control))
         .collect::<Result<Vec<_>, _>>()?;
 
     // Merging reads every row of a log for its exact time, so only logs with
@@ -1589,6 +1691,7 @@ fn merged_query(
         offset: start,
         limit,
         newest_first,
+        unless_followed_by: unless_followed_by.map(str::to_string),
         rows: page,
         next_offset: (end < rows.len()).then_some(end),
     })
@@ -1931,7 +2034,9 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
             env!("CARGO_PKG_VERSION")
         )),
         Command::Licenses => finish(io::stdout().write_all(LICENSES.as_bytes())),
-        Command::Query(common, request, shape) => run_query(&common, &request, &shape),
+        Command::Query(common, request, shape, unless) => {
+            run_query(&common, &request, &shape, unless.as_deref())
+        }
         Command::Summarize(common, top, range, shape) => {
             run_summarize(&common, top, &range, &shape)
         }
