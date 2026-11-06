@@ -116,6 +116,56 @@ fn is_log(path: &Path) -> bool {
         })
 }
 
+/// The end of `text` after removing `suffix` in any case, if it ends with it.
+fn strip_suffix_ignoring_case<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
+    let start = text.len().checked_sub(suffix.len())?;
+    text.get(start..)
+        .filter(|end| end.eq_ignore_ascii_case(suffix))
+        .map(|_| &text[..start])
+}
+
+/// Whether `text` is digits and separators laid out like `pattern`, where
+/// `d` stands for a digit.
+fn shaped_like(text: &str, pattern: &str) -> bool {
+    text.len() == pattern.len()
+        && text.bytes().zip(pattern.bytes()).all(|(byte, wanted)| {
+            if wanted == b'd' {
+                byte.is_ascii_digit()
+            } else {
+                byte == wanted
+            }
+        })
+}
+
+/// The name of the current log that a rotated copy was rolled over from, or
+/// None for a name that isn't a rotated copy. ConfigMgr and the Intune
+/// Management Extension roll `AppEnforce.log` over to `AppEnforce.lo_` or
+/// `AppEnforce-20261020-123456.log`, Windows rolls `setupapi.dev.log` over to
+/// `setupapi.dev.20261014_095916.log`, and CBS rolls `CBS.log` over to
+/// `CbsPersist_20261105172003.log`.
+pub fn current_name(file_name: &str) -> Option<String> {
+    if let Some(stem) = strip_suffix_ignoring_case(file_name, ".lo_") {
+        return Some(format!("{stem}.log"));
+    }
+    let stem = strip_suffix_ignoring_case(file_name, ".log")?;
+    let cbs_stamp = stem
+        .get(..11)
+        .filter(|start| start.eq_ignore_ascii_case("CbsPersist_"))
+        .and(stem.get(11..));
+    if cbs_stamp.is_some_and(|stamp| shaped_like(stamp, "dddddddddddddd")) {
+        return Some("CBS.log".to_string());
+    }
+    for stamp in ["-dddddddd-dddddd", ".dddddddd_dddddd"] {
+        let Some(start) = stem.len().checked_sub(stamp.len()) else {
+            continue;
+        };
+        if start > 0 && stem.get(start..).is_some_and(|end| shaped_like(end, stamp)) {
+            return Some(format!("{}.log", &stem[..start]));
+        }
+    }
+    None
+}
+
 /// The logs directly in a folder, newest first.
 pub fn logs_in(folder: &Path) -> io::Result<Vec<LogEntry>> {
     let mut logs: Vec<LogEntry> = std::fs::read_dir(folder)?
@@ -248,6 +298,41 @@ mod tests {
     fn a_missing_folder_is_an_error_not_a_crash() {
         let job = FolderJob::start(PathBuf::from("Z:\\does\\not\\exist"), &Waker::detached());
         assert!(wait(|| job.poll()).is_err());
+    }
+
+    #[test]
+    fn rotated_copies_name_their_current_log() {
+        for (rotated, current) in [
+            ("AppEnforce.lo_", "AppEnforce.log"),
+            ("StateMessage.LO_", "StateMessage.log"),
+            ("AppEnforce-20261020-123456.log", "AppEnforce.log"),
+            (
+                "IntuneManagementExtension-20261101-080910.log",
+                "IntuneManagementExtension.log",
+            ),
+            ("setupapi.dev.20261014_095916.log", "setupapi.dev.log"),
+            ("CbsPersist_20261105172003.log", "CBS.log"),
+            ("cbspersist_20261105172003.LOG", "CBS.log"),
+        ] {
+            assert_eq!(current_name(rotated).as_deref(), Some(current), "{rotated}");
+        }
+    }
+
+    #[test]
+    fn current_logs_and_lookalikes_are_not_rotated_copies() {
+        for name in [
+            "AppEnforce.log",
+            "CBS.log",
+            "setupapi.dev.log",
+            "notes.txt",
+            "-20261020-123456.log",
+            "AppEnforce-2026102-123456.log",
+            "AppEnforce_20261020_123456.log",
+            "CbsPersist_2026.log",
+            "Ünïcode-ㅤ.log",
+        ] {
+            assert_eq!(current_name(name), None, "{name}");
+        }
     }
 
     #[test]

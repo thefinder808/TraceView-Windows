@@ -25,6 +25,10 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `summarize --format lines` prints a line per log with problems, per problem pattern, per error spike and per error code, at about a third of the JSON's size. `summarize --no-examples` leaves the example rows out of the JSON.
 - Lines can be trimmed with `--fields`, such as `--fields time,message`, `--max-width` and `--no-header`.
 - `--help` says where the index cache is kept, and that TraceView never writes into the folders it reads.
+- A summary counts a log's rotated copies as part of it: `AppEnforce.lo_` and `AppEnforce-20261020-123456.log` add to `AppEnforce.log`, `setupapi.dev.20261014_095916.log` to `setupapi.dev.log`, and `CbsPersist_20261105172003.log` to `CBS.log`. An error repeated across them is one problem, with one count.
+- `--current-only` leaves rotated copies out of a folder, and `--with-history` adds a named log's rotated copies from beside it.
+- `--recurse` reads subfolders too, labeling their logs by their path in the folder. Without it, the output names the subfolders it didn't read.
+- `summarize --from` and `--to` summarize only the rows in a time range.
 - Summary patterns keep an example row, with its real numbers and codes, and summaries look up the error codes in their problems.
 - `traceview lookup <code>` explains an error code, as Error Lookup does in the app.
 

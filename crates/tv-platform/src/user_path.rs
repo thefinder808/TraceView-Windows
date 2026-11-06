@@ -41,11 +41,12 @@ impl UserPath {
     }
 
     /// A PATH of its own under `HKEY_CURRENT_USER\Software`, removed when
-    /// dropped, so tests never touch the real one.
+    /// dropped, so tests never touch the real one. Its key starts with
+    /// `PATH`, so it can't be another test's key of the same name.
     #[doc(hidden)]
     pub fn for_tests(name: &str) -> Self {
         Self {
-            key: format!(r"{TESTS}\{name} {}", std::process::id()),
+            key: format!(r"{TESTS}\PATH {name} {}", std::process::id()),
         }
     }
 
