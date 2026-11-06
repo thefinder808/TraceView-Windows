@@ -308,15 +308,41 @@ fn find_spikes(minutes: &HashMap<u32, (u64, u64)>) -> Vec<Spike> {
 
 /// Summarizes the whole log using all cores. `top` caps each pattern list.
 pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary, QueryError> {
+    summarize_between(log, top, None, None, control)
+}
+
+/// Summarizes only the rows from `from` to `to`, read as a query reads them:
+/// `YYYY-MM-DD` or a full timestamp, with a bare end date meaning the end of
+/// that day. Rows without a time are left out when either is given, and
+/// `total_rows` counts only the rows kept.
+pub fn summarize_between(
+    log: &LogFile,
+    top: usize,
+    from: Option<&str>,
+    to: Option<&str>,
+    control: &Control,
+) -> Result<Summary, QueryError> {
     let top = top.clamp(1, MAX_TOP);
     let rows = log.rows();
+    let bounds = query::Matcher::new(&query::Query {
+        from: from.map(str::to_string),
+        to: to.map(str::to_string),
+        ..query::Query::default()
+    })?;
+    let bounded = from.is_some() || to.is_some();
+    let keep = |row: usize| !bounded || bounds.passes_index(log, row);
 
+    let mut kept = 0u64;
     let mut levels = LevelCounts::default();
     let mut rows_with_timestamps = 0;
     let (mut earliest, mut latest) = (u32::MAX, 0);
     let mut minutes: HashMap<u32, (u64, u64)> = HashMap::new();
     let mut current_minute = (u32::MAX, 0u64, 0u64);
     for row in 0..rows {
+        if !keep(row) {
+            continue;
+        }
+        kept += 1;
         let level = log.level(row);
         levels.add(level);
         if let Some(seconds) = log.stamp_seconds(row) {
@@ -354,7 +380,15 @@ pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary
                 let start = task * ROWS_PER_TASK;
                 let end = (start + ROWS_PER_TASK).min(rows);
                 let mut counts = PatternCounts::default();
+                // A task with no rows in range skips reading the file.
+                if !(start..end).any(keep) {
+                    control.rows_done.fetch_add(end - start, Ordering::Relaxed);
+                    return Ok(counts);
+                }
                 log.read_rows(start..end, buffer, |row, raw, _| {
+                    if !keep(row) {
+                        return;
+                    }
                     let text = log.text(raw, scratch);
                     normalize(log.fields(text).message, template);
                     let level = log.level(row);
@@ -419,7 +453,7 @@ pub fn summarize(log: &LogFile, top: usize, control: &Control) -> Result<Summary
     Ok(Summary {
         format: log.format(),
         encoding: log.encoding(),
-        total_rows: rows as u64,
+        total_rows: kept,
         rows_with_timestamps,
         levels,
         first_timestamp: has_times.then(|| Stamp::from_seconds(earliest).to_string()),
@@ -488,6 +522,43 @@ mod tests {
         for text in ["0x", "0", "deadbeef", "6F9619FF-8B86", "6F9619FF-", ""] {
             let _ = normalized(text);
         }
+    }
+
+    #[test]
+    fn a_time_range_summarizes_only_its_rows() {
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00 host a[1]: retry 1 failed\nno time here\n2026-01-02 09:00:00 host a[1]: disk full error\n2026-01-03 08:00:00 host a[1]: all good\n",
+        );
+        let day_two = summarize_between(
+            &log,
+            10,
+            Some("2026-01-02"),
+            Some("2026-01-02"),
+            &Control::default(),
+        )
+        .unwrap();
+        assert_eq!(day_two.total_rows, 1, "rows with no time are left out");
+        assert_eq!(day_two.levels.error, 1);
+        assert_eq!(day_two.problem_patterns.len(), 1);
+        assert_eq!(day_two.problem_patterns[0].template, "disk full error");
+        assert_eq!(
+            day_two.first_timestamp.as_deref(),
+            Some("2026-01-02T09:00:00.000")
+        );
+
+        let from_day_two =
+            summarize_between(&log, 10, Some("2026-01-02"), None, &Control::default()).unwrap();
+        assert_eq!(from_day_two.total_rows, 2);
+
+        let whole = summarize(&log, 10, &Control::default()).unwrap();
+        assert_eq!(whole.total_rows, 4, "no range keeps every row");
+
+        assert_eq!(
+            summarize_between(&log, 10, Some("someday"), None, &Control::default())
+                .unwrap_err()
+                .code(),
+            "invalid_time"
+        );
     }
 
     #[test]

@@ -202,7 +202,7 @@ impl Matcher {
     }
 
     /// Checks everything answerable from the index, without reading the file.
-    fn passes_index(&self, log: &LogFile, row: usize) -> bool {
+    pub(crate) fn passes_index(&self, log: &LogFile, row: usize) -> bool {
         if self
             .min_level
             .is_some_and(|minimum| log.level(row) < minimum)

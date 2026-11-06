@@ -35,6 +35,13 @@ Usage:
 A folder means the logs directly in it: .log, .lo_ and .txt files, the newest
 500 at most. Given several logs, query merges them into one timeline by time,
 and summarize lists the logs with problems and the worst problems across them.
+A summary counts a log's rotated copies, such as AppEnforce.lo_ and
+AppEnforce-20261020-123456.log, as part of AppEnforce.log.
+
+Choosing logs:
+  --recurse            Read the logs in subfolders too
+  --current-only       Skip rotated copies when reading a folder
+  --with-history       Add each named log's rotated copies from beside it
 
 Query options:
   --text <text>        Find this text, ignoring case
@@ -53,6 +60,7 @@ Query options:
 
 Summarize options:
   --top <n>            Patterns to list (default 20, maximum 200)
+  --from, --to         Summarize only the rows in this time range, as for query
   --format <form>      json (the default), or lines: one short line per log and
                        per pattern, without examples
   --no-examples        Leave out each pattern's example row from the JSON
@@ -185,6 +193,7 @@ impl Shape {
 
 struct Common {
     paths: Vec<PathBuf>,
+    scope: Scope,
     no_cache: bool,
     pretty: bool,
 }
@@ -194,7 +203,7 @@ enum Command {
     Version,
     Licenses,
     Query(Common, Query, Shape),
-    Summarize(Common, usize, Shape),
+    Summarize(Common, usize, Query, Shape),
     Lookup(String, bool),
     Setup(SetupAction),
 }
@@ -267,6 +276,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut text_given = false;
     let mut top = summary::DEFAULT_TOP;
     let mut shape = Shape::default();
+    let mut scope = Scope::default();
     let is_query = command == "query";
 
     while let Some(arg) = args.next() {
@@ -275,6 +285,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--help" | "-h" => return Ok(Command::Help),
             "--no-cache" => no_cache = true,
             "--pretty" => pretty = true,
+            "--current-only" => scope.current_only = true,
+            "--with-history" => scope.with_history = true,
+            "--recurse" => scope.recurse = true,
+            "--from" => query.from = Some(value(&arg)?),
+            "--to" => query.to = Some(value(&arg)?),
             "--top" if !is_query => top = parse_number("--top", &value("--top")?)?,
             "--format" => shape.form = parse_form(&value(&arg)?)?,
             "--max-width" => {
@@ -301,8 +316,6 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--level" if is_query => query.level = Some(parse_level(&value(&arg)?)?),
             "--component" if is_query => query.component = Some(value(&arg)?),
             "--thread" if is_query => query.thread = Some(value(&arg)?),
-            "--from" if is_query => query.from = Some(value(&arg)?),
-            "--to" if is_query => query.to = Some(value(&arg)?),
             "--offset" if is_query => query.offset = parse_number("--offset", &value(&arg)?)?,
             "--limit" if is_query => query.limit = Some(parse_number("--limit", &value(&arg)?)?),
             flag if flag.starts_with('-') && flag.len() > 1 => {
@@ -321,13 +334,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     }
     let common = Common {
         paths,
+        scope,
         no_cache,
         pretty,
     };
     Ok(if is_query {
         Command::Query(common, query, shape)
     } else {
-        Command::Summarize(common, top, shape)
+        // A summary uses only the query's time range.
+        Command::Summarize(common, top, query, shape)
     })
 }
 
@@ -470,11 +485,18 @@ struct MergedQueryOutput {
     result: MergedResult,
 }
 
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
 /// One log's place in a summary of several, kept short since a folder can
-/// hold hundreds.
+/// hold hundreds. A log's rotated copies count as part of it.
 #[derive(Serialize)]
 struct LogOverview {
     file: String,
+    /// Rotated copies counted in with it, such as `AppEnforce.lo_`.
+    #[serde(skip_serializing_if = "is_zero")]
+    rotated_files: usize,
     rows: u64,
     /// Errors and critical rows.
     errors: u64,
@@ -485,6 +507,7 @@ struct LogOverview {
 
 #[derive(Serialize)]
 struct LogPattern {
+    /// The file it was seen in last, which its rows and example are from.
     file: String,
     #[serde(flatten)]
     pattern: Pattern,
@@ -572,33 +595,174 @@ fn open_log(
 struct Input {
     path: PathBuf,
     listed: bool,
+    /// Its path within the folder given, for a log found in a subfolder.
+    under: Option<String>,
 }
 
-/// The logs a command reads: files as given, and the logs directly in each
-/// folder, each once.
-fn expand(paths: &[PathBuf], notes: &mut Vec<String>) -> Result<Vec<Input>, Failure> {
+/// Which logs a folder or file brings in.
+#[derive(Clone, Copy, Debug, Default)]
+struct Scope {
+    /// Skip rotated copies, such as `AppEnforce.lo_`, when listing folders.
+    current_only: bool,
+    /// Add each named log's rotated copies from beside it.
+    with_history: bool,
+    /// List subfolders' logs too.
+    recurse: bool,
+}
+
+/// Folders read at most by one --recurse, so a mistaken `C:\` stays quick.
+const MOST_FOLDERS: usize = 1000;
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn is_rotated_copy(path: &Path) -> bool {
+    places::current_name(&file_name_of(path)).is_some()
+}
+
+/// A folder's subfolders, by path. Links and junctions aren't followed, so
+/// walking can't loop.
+fn subfolders(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// The logs in a folder and every folder below it, newest first.
+fn logs_under(
+    folder: &Path,
+    notes: &mut Vec<String>,
+) -> io::Result<Vec<(places::LogEntry, String)>> {
+    let mut found = Vec::new();
+    let mut waiting = std::collections::VecDeque::from([folder.to_path_buf()]);
+    let mut read = 0;
+    while let Some(next) = waiting.pop_front() {
+        if read == MOST_FOLDERS {
+            notes.push(format!(
+                "{} has more than {MOST_FOLDERS} folders below it, so only the first {MOST_FOLDERS} were searched",
+                folder.display()
+            ));
+            break;
+        }
+        read += 1;
+        // The folder given must be readable. A subfolder that isn't is passed by.
+        let logs = if next == folder {
+            places::logs_in(&next)?
+        } else {
+            places::logs_in(&next).unwrap_or_default()
+        };
+        for log in logs {
+            let under = log.path.strip_prefix(folder).map_or_else(
+                |_| file_name_of(&log.path),
+                |within| within.display().to_string(),
+            );
+            found.push((log, under));
+        }
+        waiting.extend(subfolders(&next));
+    }
+    found.sort_by_key(|(log, _)| std::cmp::Reverse(log.modified));
+    Ok(found)
+}
+
+/// The rotated copies beside a log, such as `AppEnforce.lo_` and
+/// `AppEnforce-20261020-123456.log` beside `AppEnforce.log`.
+fn history_of(path: &Path) -> Vec<PathBuf> {
+    let name = file_name_of(path);
+    let folder = match path.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder,
+        _ => Path::new("."),
+    };
+    places::logs_in(folder)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|log| {
+            places::current_name(&file_name_of(&log.path))
+                .is_some_and(|current| current.eq_ignore_ascii_case(&name))
+        })
+        .map(|log| log.path)
+        .collect()
+}
+
+/// The logs a command reads: files as given, and the logs in each folder,
+/// each once. Rotated copies are left out or added as the scope says.
+fn expand(paths: &[PathBuf], scope: Scope, notes: &mut Vec<String>) -> Result<Vec<Input>, Failure> {
     let mut inputs = Vec::new();
     let mut seen = HashSet::new();
     for path in paths {
-        let found = if path.is_dir() {
-            let logs = places::logs_in(path).map_err(|error| io_failure(path, &error))?;
-            if logs.len() >= places::MOST_LOGS_PER_FOLDER {
+        let found: Vec<Input> = if path.is_dir() {
+            let mut more_than_read = false;
+            let mut logs: Vec<(places::LogEntry, Option<String>)> = if scope.recurse {
+                logs_under(path, notes)
+                    .map_err(|error| io_failure(path, &error))?
+                    .into_iter()
+                    .map(|(log, under)| (log, Some(under)))
+                    .collect()
+            } else {
+                let skipped = subfolders(path);
+                if !skipped.is_empty() {
+                    let mut names: Vec<String> = skipped
+                        .iter()
+                        .take(5)
+                        .map(|folder| file_name_of(folder))
+                        .collect();
+                    if skipped.len() > 5 {
+                        names.push(format!("and {} more", skipped.len() - 5));
+                    }
+                    notes.push(format!(
+                        "Subfolders of {} weren't searched: {}. Add --recurse to include them",
+                        path.display(),
+                        names.join(", ")
+                    ));
+                }
+                let logs = places::logs_in(path).map_err(|error| io_failure(path, &error))?;
+                // A listing stops at its limit, so reaching it means there may be more.
+                more_than_read = logs.len() >= places::MOST_LOGS_PER_FOLDER;
+                logs.into_iter().map(|log| (log, None)).collect()
+            };
+            more_than_read |= logs.len() > MOST_LOGS;
+            if scope.current_only {
+                logs.retain(|(log, _)| !is_rotated_copy(&log.path));
+            }
+            if more_than_read {
                 notes.push(format!(
                     "{} has {MOST_LOGS} logs or more, so only the newest {MOST_LOGS} were read",
                     path.display()
                 ));
+                logs.truncate(MOST_LOGS);
             }
             logs.into_iter()
-                .map(|log| Input {
+                .map(|(log, under)| Input {
                     path: log.path,
                     listed: true,
+                    under,
                 })
                 .collect()
         } else {
-            vec![Input {
+            let mut files = vec![Input {
                 path: path.clone(),
                 listed: false,
-            }]
+                under: None,
+            }];
+            if scope.with_history {
+                // A copy that can't be read is skipped, as a folder's logs are.
+                files.extend(history_of(path).into_iter().map(|copy| Input {
+                    path: copy,
+                    listed: true,
+                    under: None,
+                }));
+            }
+            files
         };
         for input in found {
             if seen.insert(input.path.to_string_lossy().to_lowercase()) {
@@ -624,29 +788,30 @@ fn expand(paths: &[PathBuf], notes: &mut Vec<String>) -> Result<Vec<Input>, Fail
     Ok(inputs)
 }
 
-/// What output calls each log: its file name, or its full path for logs that
-/// share a name with another.
-fn labels(paths: &[&Path]) -> Vec<String> {
-    let name = |path: &Path| {
-        path.file_name().map_or_else(
-            || path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+/// What output calls each log: its file name, or its path within the folder
+/// given for one found in a subfolder, or its full path for logs that would
+/// otherwise share a name.
+fn labels(inputs: &[Input]) -> Vec<String> {
+    let short = |input: &Input| {
+        input
+            .under
+            .clone()
+            .unwrap_or_else(|| file_name_of(&input.path))
     };
     let mut seen = HashSet::new();
-    let shared: HashSet<String> = paths
+    let shared: HashSet<String> = inputs
         .iter()
-        .map(|path| name(path).to_lowercase())
+        .map(|input| short(input).to_lowercase())
         .filter(|name| !seen.insert(name.clone()))
         .collect();
-    paths
+    inputs
         .iter()
-        .map(|path| {
-            let short = name(path);
-            if shared.contains(&short.to_lowercase()) {
-                path.display().to_string()
+        .map(|input| {
+            let label = short(input);
+            if shared.contains(&label.to_lowercase()) {
+                input.path.display().to_string()
             } else {
-                short
+                label
             }
         })
         .collect()
@@ -661,10 +826,9 @@ struct Opened {
 /// but one named on the command line is an error, as a typo would be.
 fn open_all(inputs: &[Input], no_cache: bool) -> Result<(Vec<Opened>, Vec<Skipped>), Failure> {
     let formats = crate::gui::saved_formats();
-    let paths: Vec<&Path> = inputs.iter().map(|input| input.path.as_path()).collect();
     let mut opened = Vec::new();
     let mut skipped = Vec::new();
-    for (input, label) in inputs.iter().zip(labels(&paths)) {
+    for (input, label) in inputs.iter().zip(labels(inputs)) {
         match open_log(&input.path, no_cache, &formats) {
             Ok((log, _)) => opened.push(Opened { label, log }),
             Err(failure) if !input.listed => return Err(failure),
@@ -903,15 +1067,18 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
     )];
     lines.extend(view.notes.iter().map(|note| format!("# {note}")));
     if !view.logs.is_empty() {
-        lines.push("# Logs with problems: file errors warnings first last".to_string());
+        lines.push(
+            "# Logs with problems: file errors warnings first last rotated_files".to_string(),
+        );
         lines.extend(view.logs.iter().map(|log| {
             shape.fit(format!(
-                "{} {} {} {} {}",
+                "{} {} {} {} {} {}",
                 log.file,
                 log.errors,
                 log.warnings,
                 log.first_timestamp.as_deref().unwrap_or("-"),
-                log.last_timestamp.as_deref().unwrap_or("-")
+                log.last_timestamp.as_deref().unwrap_or("-"),
+                log.rotated_files
             ))
         }));
     }
@@ -964,13 +1131,19 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
     lines
 }
 
+/// Whether the command reads one log, named on its own, which gets that file's
+/// details in its output.
+fn just_one(inputs: &[Input]) -> bool {
+    inputs.len() == 1 && !inputs[0].listed
+}
+
 fn run_query(common: &Common, request: &Query, shape: &Shape) -> ExitCode {
     let mut notes = Vec::new();
-    let inputs = match expand(&common.paths, &mut notes) {
+    let inputs = match expand(&common.paths, common.scope, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
-    if common.paths.len() == 1 && !common.paths[0].is_dir() {
+    if just_one(&inputs) {
         return query_one(common, &inputs[0].path, request, shape);
     }
     let (opened, skipped) = match open_all(&inputs, common.no_cache) {
@@ -1016,7 +1189,7 @@ fn query_one(common: &Common, path: &Path, request: &Query, shape: &Shape) -> Ex
         Err(failure) => return fail(failure),
     };
     let opened = [Opened {
-        label: labels(&[path]).remove(0),
+        label: file_name_of(path),
         log,
     }];
     let result = match merged_query(&opened, request, shape.newest_first) {
@@ -1105,20 +1278,30 @@ fn merged_query(
     })
 }
 
-fn run_summarize(common: &Common, top: usize, shape: &Shape) -> ExitCode {
+/// The time range a summary keeps, in words for its first line.
+fn range_words(range: &Query) -> String {
+    match (&range.from, &range.to) {
+        (Some(from), Some(to)) => format!(", rows from {from} to {to}"),
+        (Some(from), None) => format!(", rows from {from}"),
+        (None, Some(to)) => format!(", rows to {to}"),
+        (None, None) => String::new(),
+    }
+}
+
+fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> ExitCode {
     let mut notes = Vec::new();
-    let inputs = match expand(&common.paths, &mut notes) {
+    let inputs = match expand(&common.paths, common.scope, &mut notes) {
         Ok(inputs) => inputs,
         Err(failure) => return fail(failure),
     };
-    if common.paths.len() == 1 && !common.paths[0].is_dir() {
-        return summarize_one(common, &inputs[0].path, top, shape);
+    if just_one(&inputs) {
+        return summarize_one(common, &inputs[0].path, top, range, shape);
     }
     let (opened, skipped) = match open_all(&inputs, common.no_cache) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let mut result = match summarize_logs(&opened, top) {
+    let mut result = match summarize_logs(&opened, top, range) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1130,7 +1313,19 @@ fn run_summarize(common: &Common, top: usize, shape: &Shape) -> ExitCode {
                 .map(|skip| format!("Skipped {}: {}", skip.file, skip.message)),
         );
         let view = SummaryView {
-            what: format!("{} logs", opened.len()),
+            what: {
+                let logs = result.logs_with_problems.len() + result.other_logs.len();
+                let files = if logs == opened.len() {
+                    String::new()
+                } else {
+                    format!(" in {} files", opened.len())
+                };
+                format!(
+                    "{}{files}{}",
+                    counted(logs as u64, "log"),
+                    range_words(range)
+                )
+            },
             total_rows: result.total_rows,
             levels: &result.levels,
             first: result.first_timestamp.as_deref(),
@@ -1165,12 +1360,25 @@ fn run_summarize(common: &Common, top: usize, shape: &Shape) -> ExitCode {
     ))
 }
 
-fn summarize_one(common: &Common, path: &Path, top: usize, shape: &Shape) -> ExitCode {
+fn summarize_one(
+    common: &Common,
+    path: &Path,
+    top: usize,
+    range: &Query,
+    shape: &Shape,
+) -> ExitCode {
     let (log, stats) = match open_log(path, common.no_cache, &crate::gui::saved_formats()) {
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    match summary::summarize(&log, top, &Control::default()) {
+    let summarized = summary::summarize_between(
+        &log,
+        top,
+        range.from.as_deref(),
+        range.to.as_deref(),
+        &Control::default(),
+    );
+    match summarized {
         Ok(mut result) => {
             let codes = codes_in(
                 result
@@ -1179,9 +1387,9 @@ fn summarize_one(common: &Common, path: &Path, top: usize, shape: &Shape) -> Exi
                     .map(|pattern| pattern.example.as_str()),
             );
             if shape.form == Form::Lines {
-                let label = labels(&[path]).remove(0);
+                let label = file_name_of(path);
                 let view = SummaryView {
-                    what: log.path().display().to_string(),
+                    what: format!("{}{}", log.path().display(), range_words(range)),
                     total_rows: result.total_rows,
                     levels: &result.levels,
                     first: result.first_timestamp.as_deref(),
@@ -1222,57 +1430,135 @@ fn summarize_one(common: &Common, path: &Path, top: usize, shape: &Shape) -> Exi
     }
 }
 
-/// Summarizes each log, then lists the ones with problems and the worst
-/// problems across all of them.
-fn summarize_logs(opened: &[Opened], top: usize) -> Result<LogsSummary, QueryError> {
+/// Keeps the earlier of two times. Times print as YYYY-MM-DDTHH:MM:SS.mmm,
+/// so text order is time order.
+fn keep_earliest(earliest: &mut Option<String>, time: Option<&String>) {
+    if let Some(time) = time {
+        if earliest.as_ref().is_none_or(|known| time < known) {
+            *earliest = Some(time.clone());
+        }
+    }
+}
+
+fn keep_latest(latest: &mut Option<String>, time: Option<&String>) {
+    if let Some(time) = time {
+        if latest.as_ref().is_none_or(|known| time > known) {
+            *latest = Some(time.clone());
+        }
+    }
+}
+
+/// Which log a file is, counting rotated copies as the log they came from,
+/// so `AppEnforce.lo_` and `AppEnforce.log` in one folder are one log.
+fn log_family(path: &Path) -> String {
+    let name = file_name_of(path);
+    let current = places::current_name(&name).unwrap_or(name);
+    let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    folder.join(current).to_string_lossy().to_lowercase()
+}
+
+impl LogPattern {
+    /// Adds the same pattern from another file of the log. The rows and
+    /// example stay those of the file it was seen in last.
+    fn absorb(&mut self, file: &str, other: Pattern) {
+        let mine = &mut self.pattern;
+        mine.count += other.count;
+        mine.level = mine.level.max(other.level);
+        keep_earliest(&mut mine.first_seen, other.first_seen.as_ref());
+        if other.last_seen > mine.last_seen {
+            *mine = Pattern {
+                count: mine.count,
+                level: mine.level,
+                first_seen: mine.first_seen.take(),
+                ..other
+            };
+            self.file = file.to_string();
+        }
+    }
+}
+
+/// Summarizes each log with its rotated copies, then lists the ones with
+/// problems and the worst problems across all of them. A range, as from
+/// `--from` and `--to`, keeps only its rows.
+fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSummary, QueryError> {
     let top = top.clamp(1, summary::MAX_TOP);
     let control = Control::default();
+    // Each log's files, in the order the logs were first listed.
+    let mut families: Vec<(String, Vec<&Opened>)> = Vec::new();
+    for log in opened {
+        let family = log_family(log.log.path());
+        match families.iter_mut().find(|(known, _)| *known == family) {
+            Some((_, files)) => files.push(log),
+            None => families.push((family, vec![log])),
+        }
+    }
+
+    let mut total_rows = 0;
     let mut levels = LevelCounts::default();
     let mut first_timestamp: Option<String> = None;
     let mut last_timestamp: Option<String> = None;
     let mut with_problems = Vec::new();
     let mut other_logs = Vec::new();
-    let mut patterns = Vec::new();
-    for log in opened {
-        let summary = summary::summarize(&log.log, top, &control)?;
-        levels.absorb(&summary.levels);
-        // Times print as YYYY-MM-DDTHH:MM:SS.mmm, so text order is time order.
-        if let Some(first) = &summary.first_timestamp {
-            if first_timestamp
-                .as_ref()
-                .is_none_or(|earliest| first < earliest)
-            {
-                first_timestamp = Some(first.clone());
+    let mut patterns: Vec<LogPattern> = Vec::new();
+    for (_, files) in families {
+        // The current log names the whole, or else its newest copy, as the
+        // first listed.
+        let named = files
+            .iter()
+            .find(|file| !is_rotated_copy(file.log.path()))
+            .unwrap_or(&files[0]);
+        let mut overview = LogOverview {
+            file: named.label.clone(),
+            rotated_files: files.len() - 1,
+            rows: 0,
+            errors: 0,
+            warnings: 0,
+            first_timestamp: None,
+            last_timestamp: None,
+        };
+        let mut found: Vec<LogPattern> = Vec::new();
+        for file in &files {
+            let summary = summary::summarize_between(
+                &file.log,
+                top,
+                range.from.as_deref(),
+                range.to.as_deref(),
+                &control,
+            )?;
+            levels.absorb(&summary.levels);
+            overview.rows += summary.total_rows;
+            overview.errors += summary.levels.error + summary.levels.critical;
+            overview.warnings += summary.levels.warning;
+            keep_earliest(
+                &mut overview.first_timestamp,
+                summary.first_timestamp.as_ref(),
+            );
+            keep_latest(
+                &mut overview.last_timestamp,
+                summary.last_timestamp.as_ref(),
+            );
+            for pattern in summary.problem_patterns {
+                match found
+                    .iter_mut()
+                    .find(|known| known.pattern.template == pattern.template)
+                {
+                    Some(known) => known.absorb(&file.label, pattern),
+                    None => found.push(LogPattern {
+                        file: file.label.clone(),
+                        pattern,
+                    }),
+                }
             }
         }
-        if let Some(last) = &summary.last_timestamp {
-            if last_timestamp.as_ref().is_none_or(|latest| last > latest) {
-                last_timestamp = Some(last.clone());
-            }
-        }
-        let errors = summary.levels.error + summary.levels.critical;
-        let warnings = summary.levels.warning;
-        if errors + warnings == 0 {
-            other_logs.push(log.label.clone());
+        total_rows += overview.rows;
+        keep_earliest(&mut first_timestamp, overview.first_timestamp.as_ref());
+        keep_latest(&mut last_timestamp, overview.last_timestamp.as_ref());
+        if overview.errors + overview.warnings == 0 {
+            other_logs.push(overview.file);
             continue;
         }
-        patterns.extend(
-            summary
-                .problem_patterns
-                .into_iter()
-                .map(|pattern| LogPattern {
-                    file: log.label.clone(),
-                    pattern,
-                }),
-        );
-        with_problems.push(LogOverview {
-            file: log.label.clone(),
-            rows: summary.total_rows,
-            errors,
-            warnings,
-            first_timestamp: summary.first_timestamp,
-            last_timestamp: summary.last_timestamp,
-        });
+        patterns.extend(found);
+        with_problems.push(overview);
     }
 
     with_problems.sort_by(|a, b| {
@@ -1295,7 +1581,7 @@ fn summarize_logs(opened: &[Opened], top: usize) -> Result<LogsSummary, QueryErr
             .map(|pattern| pattern.pattern.example.as_str()),
     );
     Ok(LogsSummary {
-        total_rows: opened.iter().map(|log| log.log.rows() as u64).sum(),
+        total_rows,
         levels,
         first_timestamp,
         last_timestamp,
@@ -1337,7 +1623,9 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         )),
         Command::Licenses => finish(io::stdout().write_all(LICENSES.as_bytes())),
         Command::Query(common, request, shape) => run_query(&common, &request, &shape),
-        Command::Summarize(common, top, shape) => run_summarize(&common, top, &shape),
+        Command::Summarize(common, top, range, shape) => {
+            run_summarize(&common, top, &range, &shape)
+        }
         Command::Lookup(text, pretty) => run_lookup(&text, pretty),
         Command::Setup(action) => run_setup(action),
     }

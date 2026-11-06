@@ -388,13 +388,178 @@ fn a_summary_in_lines_lists_logs_patterns_and_codes() {
     assert!(lines[0].starts_with("# 3 logs: 6 rows, "), "{}", lines[0]);
     assert_eq!(
         lines[1],
-        "# Logs with problems: file errors warnings first last"
+        "# Logs with problems: file errors warnings first last rotated_files"
     );
     assert!(lines[2].starts_with("sample.log 1 1 2026-04-06T10:23:01.000 "));
     assert!(lines.contains(&"# 1 other log has no warnings or errors.".to_string()));
     assert!(!lines
         .iter()
         .any(|line| line.contains("Download failed - error 0x8")));
+}
+
+/// An SCCM row on 20 October 2026 or the days after it.
+fn sccm_row(message: &str, day: u32, kind: u8) -> String {
+    format!(
+        "<![LOG[{message}]LOG]!><time=\"10:00:00.000+000\" date=\"10-{day}-2026\" component=\"AppEnforce\" context=\"\" type=\"{kind}\" thread=\"1\" file=\"a.cpp\">\r\n"
+    )
+}
+
+/// AppEnforce.log with two rotated copies, oldest first in time, and another log.
+fn rotated_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: String| std::fs::write(dir.path().join(name), text).unwrap();
+    write(
+        "AppEnforce-20261020-235959.log",
+        sccm_row("Install failed with 1603", 20, 3),
+    );
+    write(
+        "AppEnforce.lo_",
+        sccm_row("Install failed with 1618", 21, 3) + &sccm_row("Retrying", 21, 2),
+    );
+    write(
+        "AppEnforce.log",
+        sccm_row("Install failed with 1603", 22, 3),
+    );
+    write("Other.log", sccm_row("All good", 22, 1));
+    dir
+}
+
+#[test]
+fn a_summary_counts_rotated_copies_as_their_log() {
+    let dir = rotated_folder();
+    let json = stdout_json(&traceview(&["summarize", dir.path().to_str().unwrap()]));
+    assert_eq!(json["logs_read"], 4);
+    let result = &json["result"];
+    let logs = result["logs_with_problems"].as_array().unwrap();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert_eq!(logs[0]["file"], "AppEnforce.log");
+    assert_eq!(logs[0]["rotated_files"], 2);
+    assert_eq!(logs[0]["errors"], 3);
+    assert_eq!(logs[0]["warnings"], 1);
+    assert_eq!(logs[0]["first_timestamp"], "2026-10-20T10:00:00.000");
+    assert_eq!(result["other_logs"], serde_json::json!(["Other.log"]));
+    let failed = &result["problem_patterns"][0];
+    assert_eq!(failed["template"], "Install failed with <n>");
+    assert_eq!(failed["count"], 3, "one pattern across the copies");
+    assert_eq!(failed["first_seen"], "2026-10-20T10:00:00.000");
+    assert_eq!(failed["last_seen"], "2026-10-22T10:00:00.000");
+    assert_eq!(failed["file"], "AppEnforce.log", "where it was seen last");
+    assert_eq!(failed["example"], "Install failed with 1603");
+
+    let lines = lines_of(&[
+        "summarize",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "lines",
+    ]);
+    assert!(
+        lines[0].starts_with("# 2 logs in 4 files: 5 rows, "),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[2].starts_with("AppEnforce.log 3 1 2026-10-20T10:00:00.000 "));
+    assert!(lines[2].ends_with(" 2"));
+}
+
+#[test]
+fn rotated_copies_can_be_left_out_or_added() {
+    let dir = rotated_folder();
+    let folder = dir.path().to_str().unwrap();
+    let current = stdout_json(&traceview(&["query", folder, "--current-only"]));
+    assert_eq!(current["logs_read"], 2);
+    assert_eq!(current["result"]["total_matches"], 2);
+
+    let log = dir.path().join("AppEnforce.log");
+    let alone = stdout_json(&traceview(&["query", log.to_str().unwrap()]));
+    assert_eq!(alone["result"]["total_matches"], 1);
+    let with_history = stdout_json(&traceview(&[
+        "query",
+        log.to_str().unwrap(),
+        "--with-history",
+    ]));
+    assert_eq!(with_history["logs_read"], 3);
+    let files: Vec<&str> = with_history["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        files,
+        [
+            "AppEnforce-20261020-235959.log",
+            "AppEnforce.lo_",
+            "AppEnforce.lo_",
+            "AppEnforce.log"
+        ],
+        "one timeline, oldest first"
+    );
+}
+
+#[test]
+fn subfolders_are_named_and_read_with_recurse() {
+    let dir = rotated_folder();
+    let deeper = dir.path().join("Evidence").join("20261022");
+    std::fs::create_dir_all(&deeper).unwrap();
+    std::fs::write(deeper.join("Stale.log"), sccm_row("Policy stale", 23, 3)).unwrap();
+    let folder = dir.path().to_str().unwrap();
+
+    let flat = stdout_json(&traceview(&["query", folder, "--min-level", "error"]));
+    let notes = flat["notes"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("weren't searched: Evidence")),
+        "{notes:?}"
+    );
+    assert_eq!(flat["result"]["total_matches"], 3);
+
+    let deep = stdout_json(&traceview(&[
+        "query",
+        folder,
+        "--min-level",
+        "error",
+        "--recurse",
+        "--newest-first",
+        "--limit",
+        "1",
+    ]));
+    assert_eq!(deep["result"]["total_matches"], 4);
+    assert_eq!(
+        deep["result"]["rows"][0]["file"],
+        r"Evidence\20261022\Stale.log"
+    );
+}
+
+#[test]
+fn a_summary_can_cover_a_time_range() {
+    let dir = rotated_folder();
+    let json = stdout_json(&traceview(&[
+        "summarize",
+        dir.path().to_str().unwrap(),
+        "--from",
+        "2026-10-22",
+    ]));
+    let result = &json["result"];
+    assert_eq!(result["total_rows"], 2);
+    assert_eq!(result["logs_with_problems"][0]["errors"], 1);
+    assert_eq!(result["problem_patterns"][0]["count"], 1);
+
+    let (_dir, path) = sample_log();
+    let lines = lines_of(&[
+        "summarize",
+        path.to_str().unwrap(),
+        "--to",
+        "2026-04-06T10:23:01",
+        "--format",
+        "lines",
+    ]);
+    assert!(
+        lines[0].contains(", rows to 2026-04-06T10:23:01: 1 row, "),
+        "{}",
+        lines[0]
+    );
 }
 
 #[test]

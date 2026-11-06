@@ -93,7 +93,7 @@ The same EXE searches and summarizes logs, with results as JSON:
 .\traceview.exe summarize C:\Windows\Logs\CBS\CBS.log --pretty
 ```
 
-Both take several logs, or a folder, which means the logs directly in it. A query of several logs merges them into one timeline by time, with each row naming its log. A summary of several lists the logs with errors or warnings, worst first, and the worst problems across all of them:
+Both take several logs, or a folder, which means the logs directly in it, or in its subfolders too with `--recurse`. A query of several logs merges them into one timeline by time, with each row naming its log. A summary of several lists the logs with errors or warnings, worst first, and the worst problems across all of them. It counts a log's rotated copies as part of it, so `AppEnforce.lo_` and `AppEnforce-20261020-123456.log` add to `AppEnforce.log`, and an error repeated across them is one problem. `--current-only` leaves rotated copies out, `--with-history` adds a named log's copies, and `summarize --from` and `--to` cover only a time range:
 
 ```powershell
 .\traceview.exe summarize C:\Windows\CCM\Logs
