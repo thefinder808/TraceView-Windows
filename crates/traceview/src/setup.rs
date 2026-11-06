@@ -253,7 +253,11 @@ impl Plan {
         let mut done = Vec::new();
         if self.copy {
             copy_exe(&self.this_exe, &self.installed)?;
-            done.push(format!("- Copied TraceView to {folder}"));
+            done.push(if self.replaces {
+                format!("- Replaced the copy of TraceView in {folder}")
+            } else {
+                format!("- Copied TraceView to {folder}")
+            });
         }
         if !self.on_path {
             places
@@ -267,7 +271,12 @@ impl Plan {
             if matches!(state, SkillState::New | SkillState::Changed) {
                 write_skill(file, &text)
                     .map_err(|error| format!("Couldn't write {}: {error}", file.display()))?;
-                done.push(format!("- Added its skill for {agent}"));
+                let verb = if *state == SkillState::New {
+                    "Added"
+                } else {
+                    "Updated"
+                };
+                done.push(format!("- {verb} its skill for {agent}"));
             }
         }
         if done.is_empty() {
@@ -473,7 +482,12 @@ mod tests {
         assert!(described.contains("skill for Claude Code"));
         assert!(described.contains("skill for Codex and the ChatGPT app"));
 
-        plan.apply(&places).unwrap();
+        let report = plan.apply(&places).unwrap();
+        assert!(report.contains("- Copied TraceView to"), "{report}");
+        assert!(
+            report.contains("- Added its skill for Claude Code"),
+            "{report}"
+        );
         assert_eq!(fs::read(places.installed_exe()).unwrap(), b"the program");
         assert!(places.path.contains(&places.folder()));
         for agent in 0..2 {
@@ -547,7 +561,15 @@ mod tests {
         let described = plan.describe();
         assert!(described.contains("Replace the copy"), "{described}");
         assert!(described.contains("Update its skill for Claude Code"));
-        plan.apply(&places).unwrap();
+        let report = plan.apply(&places).unwrap();
+        assert!(
+            report.contains("- Replaced the copy of TraceView in"),
+            "{report}"
+        );
+        assert!(
+            report.contains("- Updated its skill for Claude Code"),
+            "{report}"
+        );
         assert_eq!(
             fs::read(places.installed_exe()).unwrap(),
             b"a newer program"
