@@ -123,12 +123,29 @@ fn bits_codes_come_from_qmgr() {
 #[test]
 fn windows_update_and_configmgr_codes_never_fail() {
     // Their tables may be missing or lack these codes, but any result must
-    // still be well formed.
+    // still be well formed: tidy text, or else a name in its place.
     for text in ["0x8024402C", "0x80240022", "0x87D00324", "0x87D1041C"] {
         for decoded in lookup(text) {
-            assert_tidy(&decoded);
+            if decoded.message.is_empty() {
+                assert!(decoded.name.is_some(), "{decoded:?}");
+            } else {
+                assert_tidy(&decoded);
+            }
         }
     }
+    assert_eq!(
+        first("0x8024402C").name,
+        Some("WU_E_PT_WINHTTP_NAME_NOT_RESOLVED")
+    );
+}
+
+#[test]
+fn wmi_codes_decode_from_wmi_text() {
+    let decoded = first("0x80041010");
+    assert_eq!(decoded.kind, CodeKind::Wmi);
+    assert_eq!(decoded.source, "wmiutils.dll");
+    assert_eq!(decoded.facility.as_deref(), Some("ITF (4)"));
+    assert_tidy(&decoded);
 }
 
 #[test]

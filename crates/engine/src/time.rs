@@ -215,6 +215,31 @@ fn skip_zone(bytes: &[u8], at: usize) -> usize {
     }
 }
 
+/// Reads `Z`, `+hh`, `+hhmm` or `+hh:mm` at `at`, as minutes east of UTC.
+fn zone_at(bytes: &[u8], at: usize) -> Option<i32> {
+    let sign = match bytes.get(at)? {
+        b'Z' => return Some(0),
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let hours = digits(bytes, at + 1, 2)? as i32;
+    let minutes = if bytes.get(at + 3) == Some(&b':') {
+        digits(bytes, at + 4, 2)
+    } else {
+        digits(bytes, at + 3, 2)
+    }
+    .unwrap_or(0) as i32;
+    (hours <= 14 && minutes < 60).then_some(sign * (hours * 60 + minutes))
+}
+
+/// An offset from UTC as ISO 8601 writes it, such as `-06:00`.
+pub fn offset_text(minutes_east: i32) -> String {
+    let sign = if minutes_east < 0 { '-' } else { '+' };
+    let minutes = minutes_east.unsigned_abs();
+    format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
 /// What followed the date in a parsed timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParsedIso {
@@ -222,6 +247,8 @@ pub struct ParsedIso {
     /// Position just after the timestamp.
     pub end: usize,
     pub space_separated: bool,
+    /// The time zone written after the time, as minutes east of UTC.
+    pub zone: Option<i32>,
 }
 
 /// Reads `YYYY-MM-DD[T ]HH:MM:SS[.fff][zone]` at the start of `bytes`. Slashes
@@ -247,6 +274,7 @@ pub fn parse_iso(bytes: &[u8]) -> Option<ParsedIso> {
         stamp,
         end: skip_zone(bytes, end),
         space_separated,
+        zone: zone_at(bytes, end),
     })
 }
 
@@ -416,6 +444,24 @@ pub fn parse_user_time(text: &str) -> Option<Stamp> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso_times_keep_their_zone() {
+        let zone = |text: &str| parse_iso(text.as_bytes()).unwrap().zone;
+        assert_eq!(zone("2026-11-01T01:30:00Z"), Some(0));
+        assert_eq!(zone("2026-11-01T01:30:00.123-05:00 x"), Some(-300));
+        assert_eq!(zone("2026-11-01 01:30:00+0530"), Some(330));
+        assert_eq!(zone("2026-11-01 01:30:00+09"), Some(540));
+        assert_eq!(zone("2026-11-01 01:30:00, Info"), None);
+        assert_eq!(zone("2026-11-01 01:30:00+99:00"), None);
+    }
+
+    #[test]
+    fn offsets_are_written_as_iso_does() {
+        assert_eq!(offset_text(0), "+00:00");
+        assert_eq!(offset_text(-360), "-06:00");
+        assert_eq!(offset_text(330), "+05:30");
+    }
 
     #[test]
     fn stamps_round_trip_through_display() {

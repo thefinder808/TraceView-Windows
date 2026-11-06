@@ -17,6 +17,10 @@ const WRAPPED_NTSTATUS: u32 = 0x1000_0000;
 /// The largest Win32 code. Wrapping one in an HRESULT keeps only these 16 bits.
 const LARGEST_WIN32_CODE: u32 = 0xFFFF;
 
+/// COM interfaces' own codes. Many components share it, so only WMI's range
+/// is looked up in WMI's table.
+const FACILITY_ITF: u32 = 4;
+const WMI_CODES: RangeInclusive<u32> = 0x8004_1000..=0x8004_2FFF;
 const FACILITY_WIN32: u32 = 7;
 const FACILITY_HTTP: u32 = 25;
 const FACILITY_BACKGROUND_COPY: u32 = 32;
@@ -228,6 +232,9 @@ fn facility_readings(code: u32, readings: &mut Vec<Reading>) {
         number if CONFIGMGR_FACILITIES.contains(&number) => {
             readings.push(Reading::new(CodeKind::ConfigMgr, code, Table::ConfigMgr));
         }
+        FACILITY_ITF if WMI_CODES.contains(&code) => {
+            readings.push(Reading::new(CodeKind::Wmi, code, Table::Wmi));
+        }
         _ => {}
     }
 }
@@ -260,13 +267,44 @@ fn decode_value(code: u32) -> Vec<Decoded> {
             decoded.insert(0, describe(CodeKind::HResult, code, message, &source));
         }
     }
+    // A named code is explained by its name, even with no text: on its reading
+    // with text, or else on its most specific reading.
+    if let Some(name) = name_of(code) {
+        match decoded.iter_mut().find(|entry| entry.code == code) {
+            Some(entry) => entry.name = Some(name),
+            None => {
+                let all = readings(code);
+                let best = all
+                    .iter()
+                    .find(|reading| reading.kind == CodeKind::WindowsUpdate)
+                    .or(all.first());
+                if let Some(reading) = best {
+                    let mut named = describe(reading.kind, code, String::new(), "");
+                    named.name = Some(name);
+                    decoded.insert(0, named);
+                }
+            }
+        }
+    }
     decoded
+}
+
+/// The name of a Windows Update or Delivery Optimization code.
+fn name_of(code: u32) -> Option<&'static str> {
+    crate::names::NAMES
+        .binary_search_by_key(&code, |(known, _)| *known)
+        .ok()
+        .map(|index| crate::names::NAMES[index].1)
 }
 
 fn describe(kind: CodeKind, code: u32, message: String, source: &str) -> Decoded {
     let has_facility = matches!(
         kind,
-        CodeKind::HResult | CodeKind::WindowsUpdate | CodeKind::Bits | CodeKind::ConfigMgr
+        CodeKind::HResult
+            | CodeKind::WindowsUpdate
+            | CodeKind::Bits
+            | CodeKind::ConfigMgr
+            | CodeKind::Wmi
     );
     Decoded {
         kind,
@@ -277,6 +315,7 @@ fn describe(kind: CodeKind, code: u32, message: String, source: &str) -> Decoded
         facility: has_facility.then(|| facility_name(facility(code))),
         message,
         source: source.to_string(),
+        name: None,
     }
 }
 
@@ -355,6 +394,44 @@ mod tests {
         assert!(kinds(0x8019_0194).contains(&(CodeKind::Bits, 0x8019_0194, Table::Bits)));
         assert!(kinds(0x87D0_0324).contains(&(CodeKind::ConfigMgr, 0x87D0_0324, Table::ConfigMgr)));
         assert!(kinds(0x87D1_041C).contains(&(CodeKind::ConfigMgr, 0x87D1_041C, Table::ConfigMgr)));
+        assert!(kinds(0x8004_1010).contains(&(CodeKind::Wmi, 0x8004_1010, Table::Wmi)));
+        // Other components' codes in the same facility aren't WMI's.
+        assert!(!kinds(0x8004_0154)
+            .iter()
+            .any(|(kind, _, _)| *kind == CodeKind::Wmi));
+    }
+
+    #[test]
+    fn the_names_table_is_sorted_with_one_name_per_code() {
+        let names = crate::names::NAMES;
+        assert!(names.len() > 500);
+        assert!(names.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn codes_windows_has_no_text_for_are_named() {
+        for (code, kind, name) in [
+            (
+                "0x80240022",
+                CodeKind::WindowsUpdate,
+                "WU_E_ALL_UPDATES_FAILED",
+            ),
+            (
+                "0x8024402C",
+                CodeKind::WindowsUpdate,
+                "WU_E_PT_WINHTTP_NAME_NOT_RESOLVED",
+            ),
+            ("0x80D02002", CodeKind::HResult, "DO_E_DOWNLOAD_NO_PROGRESS"),
+        ] {
+            let found = lookup(code);
+            assert_eq!(found[0].kind, kind, "{code}");
+            assert_eq!(found[0].name, Some(name), "{code}");
+            assert!(found[0].message.is_empty());
+        }
+        // A code Windows explains has no name.
+        assert!(lookup("0x80070005")
+            .iter()
+            .all(|found| found.name.is_none()));
     }
 
     #[test]

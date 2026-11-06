@@ -52,6 +52,10 @@ pub struct RowRecord {
     pub offset: u64,
     /// Wall-clock time as the log wrote it, with no time zone applied.
     pub timestamp: Option<String>,
+    /// The offset from UTC the time was written in, such as `-06:00`, when the
+    /// row says, as SCCM rows do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utc_offset: Option<String>,
     pub level: Level,
     pub component: String,
     pub thread: String,
@@ -327,6 +331,10 @@ pub fn read_record(
             row: row as u64 + 1,
             offset: log.offset(row),
             timestamp: fields.stamp.map(|stamp| stamp.to_string()),
+            utc_offset: fields
+                .stamp
+                .and(parse::utc_offset(log.format(), text))
+                .map(time::offset_text),
             level: log.level(row),
             component: display_text(fields.component),
             thread: display_text(fields.thread),
