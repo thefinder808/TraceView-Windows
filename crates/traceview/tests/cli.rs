@@ -662,6 +662,57 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn matches_with_nothing_closing_them_are_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CcmExec.log");
+    let rows = [
+        ("Entering CS mode", 3),
+        ("Leaving CS mode", 1),
+        ("Entering CS mode", 3),
+        ("Entering CS mode", 3),
+        ("Leaving CS mode", 1),
+        ("Entering CS mode", 3),
+    ];
+    let text: String = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (message, kind))| sccm_row(message, 20 + index as u32, *kind))
+        .collect();
+    std::fs::write(&path, text).unwrap();
+    let path = path.to_str().unwrap();
+    let base = [
+        "query",
+        path,
+        "--text",
+        "entering cs mode",
+        "--unless-followed-by",
+        "leaving cs mode",
+        // The closing rows are info, but still close errors.
+        "--min-level",
+        "error",
+    ];
+
+    let json = stdout_json(&traceview(&base));
+    let found: Vec<u64> = json["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["row"].as_u64().unwrap())
+        .collect();
+    assert_eq!(found, [3, 6], "left by the next entry, or never left");
+    assert_eq!(json["result"]["unless_followed_by"], "leaving cs mode");
+
+    let lines = lines_of(&[&base[..], &["--format", "lines"]].concat());
+    assert!(
+        lines[0].contains("2 of 6 rows match, with no \"leaving cs mode\" after them"),
+        "{}",
+        lines[0]
+    );
+    let counted = stdout_json(&traceview(&[&base[..], &["--count-by", "level"]].concat()));
+    assert_eq!(counted["result"]["total_matches"], 2);
+}
+
+#[test]
 fn summaries_can_leave_out_examples() {
     let (_dir, path) = sample_log();
     let json = stdout_json(&traceview(&[
@@ -843,6 +894,8 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--count-by", "week"],
         &["query", path, "--count-by", "day", "--newest-first"],
         &["query", path, "--exclude"],
+        &["query", path, "--unless-followed-by", "done"],
+        &["summarize", path, "--unless-followed-by", "done"],
         &["summarize", path, "--format", "lines", "--fields", "time"],
         &["lookup"],
         &["lookup", "--nope"],

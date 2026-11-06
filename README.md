@@ -125,6 +125,12 @@ Lines can be trimmed further with `--fields time,message`, `--max-width 200` and
 .\traceview.exe summarize C:\Windows\CCM\Logs --exclude "ReadStringFromFile failed" --exclude "PeerDistribution" --format lines
 ```
 
+`--unless-followed-by` finds what started but never finished: each match with no row containing that text after it, before the next match, in the same log. It finds the closing rows whatever other filters say, so an info row still closes an error:
+
+```powershell
+.\traceview.exe query C:\Windows\CCM\Logs\CcmExec.log --text "Entering CS mode" --unless-followed-by "Leaving CS mode" --format lines
+```
+
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
 `lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`:

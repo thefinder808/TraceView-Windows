@@ -30,6 +30,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--recurse` reads subfolders too, labeling their logs by their path in the folder. Without it, the output names the subfolders it didn't read.
 - `summarize --from` and `--to` summarize only the rows in a time range.
 - `query --count-by day|hour|file|level|component|template` counts the matches in groups instead of listing them.
+- `query --unless-followed-by <text>` keeps only matches with no row containing that text after them before the next match, such as an `Entering CS mode` never followed by `Leaving CS mode`.
 - `--exclude <pattern>` leaves out rows matching a regular expression, such as known noise, in queries and summaries. It can be given more than once. A summary says how many rows, errors and warnings it left out.
 - Rows show their offset from UTC when the log writes one, as ConfigMgr and Intune logs do: `"utc_offset": "-06:00"` in JSON, and after the time in lines, as in `2026-11-01T01:30:00.000-05:00`.
 
