@@ -2,8 +2,13 @@ name: Fuzz
 
 # Coverage-guided fuzzing runs on Linux because libFuzzer doesn't link with the
 # MSVC toolchain. The parsing logic it exercises isn't platform-specific.
+#
+# Each target takes about eight minutes, so fuzzing runs once for each change
+# to the engine, when it reaches main, not again for every branch push. Run it
+# by hand to fuzz a branch first.
 on:
   push:
+    branches: [main]
     paths:
       - "crates/engine/**"
       - "fuzz/**"
