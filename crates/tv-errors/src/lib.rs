@@ -1,9 +1,11 @@
 //! Turns error codes found in Windows logs into readable explanations, for the
 //! Error Lookup feature.
 //!
-//! Every message comes from Windows itself at run time, through `FormatMessageW`.
-//! Nothing here stores message text, so messages are in the user's own language
-//! and match the Windows they're running on. The crate keeps two tables: short
+//! Every message is read at run time: from Windows through `FormatMessageW`, or,
+//! for ConfigMgr and Windows Update codes, from the `CMTrace.exe` that ConfigMgr
+//! installs. Nothing here stores message text, so Windows' messages are in the
+//! user's own language and match the Windows they're running on. CMTrace's are
+//! in English, the only language it has. The crate keeps two tables: short
 //! names for HRESULT facility numbers, and `names.rs`, the names of Windows
 //! Update and Delivery Optimization codes. Windows has no text for those, so a
 //! name is the best explanation there is. It's written by
@@ -19,13 +21,14 @@
 //! | NTSTATUS | `ntdll.dll` | Works |
 //! | WinHTTP, 12001-12199 | `winhttp.dll` | Works |
 //! | BITS, 0x8020xxxx, and the HTTP statuses it reports, 0x8019xxxx | `qmgr.dll` | Works |
-//! | Windows Update, 0x8024xxxx | `wuaueng.dll` | Tried, but its table only holds event messages, so these get their names from `names.rs` instead |
+//! | Windows Update, 0x8024xxxx | `wuaueng.dll`, then `CMTrace.exe` | `wuaueng.dll`'s table only holds event messages. CMTrace has text for 249 of these, so they get it where ConfigMgr is installed, and their names from `names.rs` everywhere |
 //! | Delivery Optimization, 0x80D0xxxx | none | No Windows file has text for these, so they get their names from `names.rs` |
 //! | WMI, 0x80041xxx and 0x80042xxx | `wbem\wmiutils.dll` | Works |
-//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console | Untested, as no console was installed. Never bundled |
+//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled |
 //!
 //! DLLs are loaded as data, so none of their code runs, and from full paths, so
-//! Windows never searches for them.
+//! Windows never searches for them. CMTrace isn't loaded at all: `resources.rs`
+//! reads its message table from the file's bytes.
 
 #![deny(unsafe_code)]
 
@@ -35,6 +38,7 @@ mod find;
 mod messages;
 mod names;
 mod parse;
+mod resources;
 
 pub use decode::{lookup, lookup_all};
 pub use find::find_codes;
@@ -91,12 +95,12 @@ pub struct Decoded {
     /// For HRESULT-shaped codes, the facility name and number, such as
     /// `WIN32 (7)`. Just the number when the facility isn't one this crate names.
     pub facility: Option<String>,
-    /// The text from Windows on one line, with runs of whitespace made single
-    /// spaces. Insert placeholders such as `%1` become `…`, since there's
-    /// nothing to fill them with.
+    /// The text on one line, with runs of whitespace made single spaces.
+    /// Insert placeholders such as `%1` become `…`, since there's nothing to
+    /// fill them with.
     pub message: String,
-    /// Where the text came from: `system`, or a DLL's file name such as
-    /// `ntdll.dll`.
+    /// Where the text came from: `system`, or a file's name such as
+    /// `ntdll.dll` or `CMTrace.exe`.
     pub source: String,
     /// The code's name, such as `WU_E_PT_WINHTTP_NAME_NOT_RESOLVED`, for the
     /// Windows Update and Delivery Optimization codes Windows has no text for.

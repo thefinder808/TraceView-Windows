@@ -1,13 +1,18 @@
 //! Reads message text from Windows: the system message table, and the message
-//! tables inside a few DLLs. This is the crate's only `unsafe` code.
+//! tables inside a few DLLs. This is the crate's only `unsafe` code. It also
+//! reads CMTrace's message table, which needs no `unsafe`.
 //!
 //! DLLs are loaded as data files and image resources, so none of their code runs,
 //! and only by full path, so Windows never searches for them and can't be tricked
 //! into loading a planted copy. Each is loaded at most once and then kept for the
 //! life of the process, which costs a little address space and saves reloading.
+//! CMTrace isn't loaded at all: its file is read as bytes, also by full path.
 
+use crate::resources;
 use regex::Regex;
 use std::ffi::OsString;
+use std::fs::File;
+use std::io::Read;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock};
@@ -15,7 +20,7 @@ use windows::core::{HSTRING, PWSTR};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Diagnostics::Debug::{
     FormatMessageW, FORMAT_MESSAGE_FROM_HMODULE, FORMAT_MESSAGE_FROM_SYSTEM,
-    FORMAT_MESSAGE_IGNORE_INSERTS,
+    FORMAT_MESSAGE_IGNORE_INSERTS, FORMAT_MESSAGE_OPTIONS,
 };
 use windows::Win32::System::LibraryLoader::{
     LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
@@ -33,6 +38,9 @@ pub(crate) enum Table {
     Bits,
     ConfigMgr,
     Wmi,
+    /// The table inside `CMTrace.exe`, which explains ConfigMgr and Windows
+    /// Update codes. It's in English only.
+    CmTrace,
 }
 
 /// The DLL tables, in the order of their slots in the handle cache.
@@ -60,6 +68,7 @@ impl Table {
             Self::Bits => Some("qmgr.dll"),
             Self::ConfigMgr => Some("srsresources.dll"),
             Self::Wmi => Some("wmiutils.dll"),
+            Self::CmTrace => Some("CMTrace.exe"),
         }
     }
 
@@ -70,6 +79,10 @@ impl Table {
         };
         match self {
             Self::ConfigMgr => configmgr_console_folders()
+                .into_iter()
+                .map(|folder| folder.join(file_name))
+                .collect(),
+            Self::CmTrace => cmtrace_folders()
                 .into_iter()
                 .map(|folder| folder.join(file_name))
                 .collect(),
@@ -88,15 +101,29 @@ impl Table {
 /// than 64 KB, and real messages are far shorter.
 const BUFFER_LENGTH: u32 = 16 * 1024;
 
-/// Looks a code up in one table, in the user's language. None if the table
-/// isn't available or has no readable message for the code.
+/// Looks a code up in one table, in the user's language, or in English for
+/// CMTrace's. None if the table isn't available or has no readable message for
+/// the code.
 pub(crate) fn message(table: Table, code: u32) -> Option<String> {
     let (flags, module) = match table {
         Table::System => (FORMAT_MESSAGE_FROM_SYSTEM, None),
+        Table::CmTrace => {
+            return clean_message(&resources::find_message(cmtrace_table()?, code)?);
+        }
         _ => (FORMAT_MESSAGE_FROM_HMODULE, Some(module(table)?)),
     };
-    let mut buffer = vec![0u16; BUFFER_LENGTH as usize];
     // Language 0 picks the user's language, falling back as Windows does.
+    format_message(flags, module, code, 0)
+}
+
+/// Asks Windows for a message's text in a language, cleaned up.
+fn format_message(
+    flags: FORMAT_MESSAGE_OPTIONS,
+    module: Option<HMODULE>,
+    code: u32,
+    language: u32,
+) -> Option<String> {
+    let mut buffer = vec![0u16; BUFFER_LENGTH as usize];
     // SAFETY: IGNORE_INSERTS means no arguments are read. The buffer's length
     // is passed with it, and a cached module handle is never freed.
     let length = unsafe {
@@ -104,7 +131,7 @@ pub(crate) fn message(table: Table, code: u32) -> Option<String> {
             flags | FORMAT_MESSAGE_IGNORE_INSERTS,
             module.map(|handle| handle.0.cast_const()),
             code,
-            0,
+            language,
             PWSTR(buffer.as_mut_ptr()),
             BUFFER_LENGTH,
             None,
@@ -132,7 +159,42 @@ fn module(table: Table) -> Option<HMODULE> {
 /// Says whether a table's DLL could be loaded, for tests and diagnostics.
 #[cfg(test)]
 pub(crate) fn is_available(table: Table) -> bool {
-    table == Table::System || module(table).is_some()
+    match table {
+        Table::System => true,
+        Table::CmTrace => cmtrace_table().is_some(),
+        _ => module(table).is_some(),
+    }
+}
+
+/// The largest `CMTrace.exe` read. Real ones are under 1 MB.
+const LARGEST_CMTRACE: u64 = 16 * 1024 * 1024;
+
+/// CMTrace's message table, read on first use from the first CMTrace found,
+/// then kept for the life of the process. It's about 100 KB.
+fn cmtrace_table() -> Option<&'static [u8]> {
+    static TABLE: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            Table::CmTrace.candidate_paths().iter().find_map(|path| {
+                let file = read_file(path, LARGEST_CMTRACE)?;
+                resources::cmtrace_messages(&file).map(<[u8]>::to_vec)
+            })
+        })
+        .as_deref()
+}
+
+/// Reads a whole file by full path, if it's no larger than `limit`.
+fn read_file(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
 }
 
 fn load_as_data(path: &Path) -> Option<usize> {
@@ -188,6 +250,20 @@ fn configmgr_console_folders() -> Vec<PathBuf> {
         ] {
             folders.push(root.join(product).join("AdminConsole").join("bin"));
         }
+    }
+    folders
+}
+
+/// Folders where ConfigMgr keeps `CMTrace.exe`: the client's folder in the
+/// Windows folder, on every managed PC, and a site server's `tools` folder.
+fn cmtrace_folders() -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+    // System32's parent is the Windows folder.
+    if let Some(windows) = system_directory().as_deref().and_then(Path::parent) {
+        folders.push(windows.join("CCM"));
+    }
+    if let Some(root) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
+        folders.push(root.join("Microsoft Configuration Manager").join("tools"));
     }
     folders
 }
@@ -284,6 +360,65 @@ mod tests {
         for code in [0x8004_1010, 0x8004_1013] {
             assert!(message(Table::Wmi, code).is_some(), "{code:#x}");
         }
+    }
+
+    #[test]
+    fn the_resource_reader_agrees_with_windows() {
+        // ntdll.dll carries its English message table itself, so reading the
+        // file and asking Windows must give the same text, in English.
+        const ENGLISH: u32 = 0x409;
+        let path = system_directory().unwrap().join("ntdll.dll");
+        let file = read_file(&path, 64 * 1024 * 1024).expect("ntdll.dll can be read");
+        let table = resources::cmtrace_messages(&file).expect("ntdll.dll has a message table");
+        let ntdll = module(Table::Ntdll).expect("ntdll.dll loads");
+        let mut compared = 0;
+        let codes = (0xC000_0000..0xC000_0400)
+            .chain(0x8000_0001..0x8000_0040)
+            .chain(0x4000_0000..0x4000_0040);
+        for code in codes {
+            // FormatMessageW stops at "%0", even within "%08lx", so do the same.
+            let ours = resources::find_message(table, code)
+                .and_then(|raw| clean_message(raw.split("%0").next().unwrap_or_default()));
+            let windows = format_message(FORMAT_MESSAGE_FROM_HMODULE, Some(ntdll), code, ENGLISH);
+            assert_eq!(ours, windows, "{code:#x}");
+            compared += usize::from(ours.is_some());
+        }
+        assert!(compared > 500, "only {compared} messages were compared");
+    }
+
+    #[test]
+    fn cmtrace_is_looked_for_where_configmgr_keeps_it() {
+        let windows = system_directory().unwrap().parent().unwrap().to_path_buf();
+        let paths = Table::CmTrace.candidate_paths();
+        assert_eq!(paths[0], windows.join("CCM").join("CMTrace.exe"));
+        assert!(paths
+            .iter()
+            .any(|path| path.ends_with(r"Microsoft Configuration Manager\tools\CMTrace.exe")));
+        // Never a relative path, which would be read from the current folder.
+        assert_eq!(read_file(Path::new("CMTrace.exe"), LARGEST_CMTRACE), None);
+    }
+
+    #[test]
+    fn a_real_cmtrace_has_configmgr_text() {
+        // ConfigMgr isn't on most PCs that run the tests, so this runs only
+        // when TRACEVIEW_TEST_CMTRACE is the full path to a CMTrace.exe.
+        let Some(path) = std::env::var_os("TRACEVIEW_TEST_CMTRACE") else {
+            return;
+        };
+        let file = read_file(Path::new(&path), LARGEST_CMTRACE)
+            .expect("TRACEVIEW_TEST_CMTRACE is the full path to a readable file");
+        let table = resources::cmtrace_messages(&file).expect("CMTrace has a message table");
+        let text = |code| resources::find_message(table, code).and_then(|raw| clean_message(&raw));
+        assert_eq!(text(0x87D0_0215).as_deref(), Some("Item not found"));
+        assert_eq!(
+            text(0x87D0_0324).as_deref(),
+            Some("The application was not detected after installation completed.")
+        );
+        assert_eq!(
+            text(0x8024_0022).as_deref(),
+            Some("Operation failed for all the updates.")
+        );
+        assert_eq!(text(0x8007_0002), None);
     }
 
     #[test]

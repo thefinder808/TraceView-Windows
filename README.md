@@ -133,7 +133,7 @@ Lines can be trimmed further with `--fields time,message`, `--max-width 200` and
 
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
-`lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`:
+`lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`. On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0…) and many Windows Update codes also get English text from the copy of CMTrace that ConfigMgr installs. TraceView only reads that file, and never runs it:
 
 ```powershell
 .\traceview.exe lookup 0x80070005
