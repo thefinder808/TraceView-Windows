@@ -4,6 +4,8 @@
 
 A fast, customizable Windows log viewer inspired by CMTrace, and the counterpart to the [macOS TraceView](https://github.com/thefinder808/TraceView).
 
+**It's built for AI agents too.** Its command line lets agents such as Claude Code and Codex investigate logs without reading them whole. A summary of a folder lists each problem once, with its error codes explained, and a query returns only the rows asked for, one short line each. So an agent spends far fewer tokens than it would opening or searching the logs itself, and that adds up when you're analyzing logs day after day. [With an AI agent](#with-an-ai-agent) says how to set it up in one step.
+
 ![TraceView in its Dark theme, with severity chips and the event histogram over an SCCM log](docs/images/dark.png)
 
 It's one signed EXE with nothing to install, so it can be copied to a USB stick or an admin share. It opens multi-gigabyte logs in seconds and follows them as they're written. It draws without needing a GPU, so it stays quick over RDP.
@@ -12,11 +14,11 @@ It's one signed EXE with nothing to install, so it can be copied to a USB stick 
 
 ## Features
 
+- **Built for AI agents:** a command line that summarizes and searches logs in short lines or JSON, so agents read only what matters, and `traceview setup` to get Claude Code, Codex and the ChatGPT app using it.
 - **CMTrace's habits:** severity colors, live tail, find, filter, Error Lookup on Ctrl+L, tabs, merging logs into one timeline, and the Classic theme.
 - **TraceView's own:** severity chips, the event histogram, a sidebar of nearby and Windows logs, bookmarks, filter presets, split view, a command palette and five themes.
 - **Yours to change:** highlight rules, columns, fonts, keyboard shortcuts, custom log formats, theme files and named layouts. All of it is plain text that loads as it's edited.
 - **Accessible:** screen readers get every control through UI Automation, everything works from the keyboard, and Windows contrast themes are followed.
-- **A command line** that searches and summarizes logs as JSON, for scripts and AI agents.
 
 ![The Classic theme, with Error Lookup explaining 0x80004005 in the details pane](docs/images/classic.png)
 
