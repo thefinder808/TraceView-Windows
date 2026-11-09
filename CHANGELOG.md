@@ -8,6 +8,10 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 - On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0… and 0x87D1…) get text, such as "Item not found" for 0x87D00215, and many Windows Update codes get text beside their names. It comes, in English, from the copy of CMTrace that ConfigMgr installs, which TraceView reads as a file but never runs. `lookup`, summaries and the Error Lookup window all use it.
 
+**Command line**
+
+- `--help` says that `--count-by` gives JSON unless `--format lines` is added.
+
 ## 0.10.0
 
 A start page and folder view, a command line built for AI agents to read logs with, and `traceview setup` to get Claude Code, Codex and the ChatGPT app using it. Still a beta, tested on Windows 11.

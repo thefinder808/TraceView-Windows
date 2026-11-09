@@ -67,7 +67,8 @@ Query options:
                        --regex is, in the same log, whatever other filters say
   --count-by <group>   Count the matches by day, hour, file, level, component
                        or template, the message with its numbers and codes
-                       taken out, instead of listing them
+                       taken out, instead of listing them. JSON by default:
+                       add --format lines for one line per group
   --format <form>      json (the default), or lines: one short line per row
 
 Summarize options:
