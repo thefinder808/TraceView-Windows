@@ -87,8 +87,9 @@ With --format lines:
                        time,message. They keep that order (query only)
   --max-width <n>      Cut lines to this many characters
 
-Lookup explains an error code with Windows' own text, given as hex, decimal or a
-negative number, such as 0x80070005, 1603 or -2147024891, or a line of a log.
+Lookup explains an error code with Windows' own text, or with CMTrace's where
+ConfigMgr is installed. Give the code as hex, decimal or a negative number, such
+as 0x80070005, 1603 or -2147024891, or give a line of a log.
 
 Setup gets TraceView ready for AI agents, for your Windows account only: it
 copies TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds that folder to your
@@ -548,7 +549,7 @@ fn excluded_in(logs: &[&LogFile], range: &Query) -> Result<Option<Excluded>, Que
     Ok(Some(excluded))
 }
 
-/// One meaning of an error code, from Windows' own message tables.
+/// One meaning of an error code, from Windows' own message tables or CMTrace's.
 #[derive(Serialize)]
 struct Reading {
     kind: &'static str,
@@ -556,7 +557,8 @@ struct Reading {
     signed: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     facility: Option<String>,
-    /// Empty when Windows has no text for it, as for Windows Update codes.
+    /// Empty when there's no text for it, as for Windows Update codes on a PC
+    /// without ConfigMgr.
     message: String,
     source: String,
     /// The code's name, for Windows Update and Delivery Optimization codes,

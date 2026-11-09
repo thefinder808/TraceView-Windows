@@ -140,6 +140,22 @@ fn windows_update_and_configmgr_codes_never_fail() {
 }
 
 #[test]
+fn configmgr_clients_explain_configmgr_codes() {
+    // Every ConfigMgr client has CMTrace, whose text explains these. Most PCs
+    // that run the tests aren't clients, so there's nothing to check there.
+    let windows = std::env::var_os("SystemRoot").expect("Windows sets SystemRoot");
+    if !std::path::Path::new(&windows)
+        .join(r"CCM\CMTrace.exe")
+        .is_file()
+    {
+        return;
+    }
+    for (text, code) in [("0x87D00215", 0x87D0_0215), ("0x87D00324", 0x87D0_0324)] {
+        assert_tidy(find(&lookup(text), CodeKind::ConfigMgr, code));
+    }
+}
+
+#[test]
 fn wmi_codes_decode_from_wmi_text() {
     let decoded = first("0x80041010");
     assert_eq!(decoded.kind, CodeKind::Wmi);

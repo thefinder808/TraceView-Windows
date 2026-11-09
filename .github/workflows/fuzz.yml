@@ -4,13 +4,14 @@ name: Fuzz
 # MSVC toolchain. The parsing logic it exercises isn't platform-specific.
 #
 # Each target takes about eight minutes, so fuzzing runs once for each change
-# to the engine, when it reaches main, not again for every branch push. Run it
-# by hand to fuzz a branch first.
+# to the engine or CMTrace's reader, when it reaches main, not again for every
+# branch push. Run it by hand to fuzz a branch first.
 on:
   push:
     branches: [main]
     paths:
       - "crates/engine/**"
+      - "crates/tv-errors/src/resources.rs"
       - "fuzz/**"
       - ".github/workflows/fuzz.yml"
   workflow_dispatch:
@@ -24,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [parse_row, open_file]
+        target: [parse_row, open_file, read_resources]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master

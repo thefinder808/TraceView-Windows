@@ -60,7 +60,10 @@ pub fn explain(text: &str) -> String {
                     format!("{name}. Windows has no text for this code, so this is its name.")
                 }
                 ("", None) => "Windows has no text for this code.".to_string(),
-                (message, _) => message.to_string(),
+                // A Windows Update code with CMTrace's text keeps its name,
+                // which is what people search for.
+                (message, Some(name)) => format!("{name}: {message}"),
+                (message, None) => message.to_string(),
             };
             format!("{}\n{message}", heading(decoded))
         })

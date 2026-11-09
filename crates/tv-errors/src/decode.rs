@@ -218,19 +218,24 @@ fn win32_readings(code: u32, readings: &mut Vec<Reading>) {
 fn facility_readings(code: u32, readings: &mut Vec<Reading>) {
     match facility(code) {
         FACILITY_WIN32 => win32_readings(code & LARGEST_WIN32_CODE, readings),
+        // Windows has no text for these, but CMTrace has some, in English.
         FACILITY_WINDOWS_UPDATE => {
             readings.push(Reading::new(
                 CodeKind::WindowsUpdate,
                 code,
                 Table::WindowsUpdate,
             ));
+            readings.push(Reading::new(CodeKind::WindowsUpdate, code, Table::CmTrace));
         }
         // BITS also reports the HTTP status codes it gets from servers.
         FACILITY_BACKGROUND_COPY | FACILITY_HTTP => {
             readings.push(Reading::new(CodeKind::Bits, code, Table::Bits));
         }
+        // A console's text first, as it may be in the user's language, then
+        // CMTrace's, which every ConfigMgr client has.
         number if CONFIGMGR_FACILITIES.contains(&number) => {
             readings.push(Reading::new(CodeKind::ConfigMgr, code, Table::ConfigMgr));
+            readings.push(Reading::new(CodeKind::ConfigMgr, code, Table::CmTrace));
         }
         FACILITY_ITF if WMI_CODES.contains(&code) => {
             readings.push(Reading::new(CodeKind::Wmi, code, Table::Wmi));
@@ -394,6 +399,21 @@ mod tests {
         assert!(kinds(0x8019_0194).contains(&(CodeKind::Bits, 0x8019_0194, Table::Bits)));
         assert!(kinds(0x87D0_0324).contains(&(CodeKind::ConfigMgr, 0x87D0_0324, Table::ConfigMgr)));
         assert!(kinds(0x87D1_041C).contains(&(CodeKind::ConfigMgr, 0x87D1_041C, Table::ConfigMgr)));
+        // CMTrace's text comes after a console's, and after Windows Update's own.
+        for (code, kind, first) in [
+            (0x87D0_0215, CodeKind::ConfigMgr, Table::ConfigMgr),
+            (0x8024_0022, CodeKind::WindowsUpdate, Table::WindowsUpdate),
+        ] {
+            let all = kinds(code);
+            let at = |table| {
+                all.iter()
+                    .position(|reading| *reading == (kind, code, table))
+            };
+            assert!(
+                at(first).unwrap() < at(Table::CmTrace).unwrap(),
+                "{code:#x}"
+            );
+        }
         assert!(kinds(0x8004_1010).contains(&(CodeKind::Wmi, 0x8004_1010, Table::Wmi)));
         // Other components' codes in the same facility aren't WMI's.
         assert!(!kinds(0x8004_0154)

@@ -233,7 +233,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 - **Ctrl+L is Error Lookup,** as in CMTrace, so Filter moved to Ctrl+Shift+F.
 - **Merge works on open tabs,** rather than through a checkbox in the Open dialog. You open several logs at once, then press Ctrl+Shift+M.
-- **Error Lookup has no Intune or Windows Update text,** because Windows has none. Those codes still show their hex, signed and facility forms. ConfigMgr text needs a console installed, and that hasn't been tested.
+- **Error Lookup has no Intune text,** because Windows has none, and has ConfigMgr and Windows Update text only where ConfigMgr is installed, from its copy of CMTrace. Codes without text still show their hex, signed and facility forms, and Windows Update codes show their names. Text from a ConfigMgr console's `srsresources.dll` hasn't been tested.
 - **Live tail checks each file every 250 ms** rather than waiting for change notifications. Windows reports changes late for files a writer holds open, and unreliably on network shares.
 - **Highlight rules in chosen colors** waited for milestone 5. Find covered one highlight until then.
 - **IME** is built: IMM32's composition window sits at the caret, and the IME is on only while a text box has focus. It hasn't been tried with a real IME, because none is installed here.

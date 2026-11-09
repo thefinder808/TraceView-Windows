@@ -26,4 +26,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "read_resources"
+path = "fuzz_targets/read_resources.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
