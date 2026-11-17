@@ -15,10 +15,14 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 **Error lookup**
 
 - On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0… and 0x87D1…) get text, such as "Item not found" for 0x87D00215, and many Windows Update codes get text beside their names. It comes, in English, from the copy of CMTrace that ConfigMgr installs, which TraceView reads as a file but never runs. `lookup`, summaries and the Error Lookup window all use it.
+- On other PCs, such as one logs are copied to, a copy of `CMTrace.exe` in the folder holding `traceview.exe` gives the same text.
 
 **Command line**
 
 - `--help` says that `--count-by` gives JSON unless `--format lines` is added.
+- `--from` and `--to` take times without seconds, such as `2026-10-15T10:06`. As a `--to`, that takes in the whole minute.
+- `--text` and `--regex` can be given together, or more than once, to find only the rows matching every one. Before, using both was an error.
+- The AI agent skill mentions `--fields` and `--max-width` for keeping lines short, and giving `--text` more than once. Run `traceview setup` again to update it.
 
 ## 0.10.0
 

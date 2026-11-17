@@ -256,6 +256,9 @@ fn configmgr_console_folders() -> Vec<PathBuf> {
 
 /// Folders where ConfigMgr keeps `CMTrace.exe`: the client's folder in the
 /// Windows folder, on every managed PC, and a site server's `tools` folder.
+/// Last is TraceView's own folder, for a copy put there on a PC without
+/// ConfigMgr. That folder is already trusted, as its DLLs and portable
+/// settings are loaded from it, and CMTrace is only ever read, never run.
 fn cmtrace_folders() -> Vec<PathBuf> {
     let mut folders = Vec::new();
     // System32's parent is the Windows folder.
@@ -264,6 +267,12 @@ fn cmtrace_folders() -> Vec<PathBuf> {
     }
     if let Some(root) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
         folders.push(root.join("Microsoft Configuration Manager").join("tools"));
+    }
+    if let Some(own) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        folders.push(own);
     }
     folders
 }
@@ -394,6 +403,11 @@ mod tests {
         assert!(paths
             .iter()
             .any(|path| path.ends_with(r"Microsoft Configuration Manager\tools\CMTrace.exe")));
+        // Then a copy beside the running EXE, after ConfigMgr's own.
+        let own = std::env::current_exe()
+            .unwrap()
+            .with_file_name("CMTrace.exe");
+        assert_eq!(paths.last(), Some(&own));
         // Never a relative path, which would be read from the current folder.
         assert_eq!(read_file(Path::new("CMTrace.exe"), LARGEST_CMTRACE), None);
     }

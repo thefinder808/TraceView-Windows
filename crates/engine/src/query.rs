@@ -25,6 +25,9 @@ pub struct Query {
     /// Text to find. Literal unless `regex` is set.
     pub text: Option<String>,
     pub regex: bool,
+    /// More regular expressions a matching row must also match, such as from
+    /// a second `--text`. [`literal`] turns plain text into one.
+    pub also: Vec<String>,
     pub case_sensitive: bool,
     pub min_level: Option<Level>,
     /// Only rows at exactly this level, as a severity chip filters.
@@ -34,9 +37,10 @@ pub struct Query {
     /// An exact thread, in any case. SCCM logs write thread IDs, while some
     /// other formats write names.
     pub thread: Option<String>,
-    /// Inclusive start, as `YYYY-MM-DD` or a full timestamp.
+    /// Inclusive start, as `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM` or a full timestamp.
     pub from: Option<String>,
-    /// Inclusive end. A bare date means the end of that day.
+    /// Inclusive end. A bare date means the end of that day, and a time
+    /// without seconds the end of that minute.
     pub to: Option<String>,
     /// Regular expressions for rows to leave out, such as known noise. A row
     /// matching any of them doesn't match the query.
@@ -106,7 +110,7 @@ impl fmt::Display for QueryError {
             QueryError::InvalidTime(text) => {
                 write!(
                     formatter,
-                    "couldn't read time \"{text}\", expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"
+                    "couldn't read time \"{text}\", expected YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS"
                 )
             }
             QueryError::Io(error) => write!(formatter, "read failed: {error}"),
@@ -130,6 +134,11 @@ pub struct Control {
     pub rows_done: AtomicUsize,
 }
 
+/// A regular expression matching `text` exactly as written.
+pub fn literal(text: &str) -> String {
+    regex::escape(text)
+}
+
 /// One regular expression matching any of `patterns`.
 pub fn any_of(patterns: &[String]) -> String {
     patterns
@@ -149,6 +158,7 @@ fn compile(source: &str, case_sensitive: bool) -> Result<Regex, QueryError> {
 /// A compiled query, ready to test rows.
 pub struct Matcher {
     pattern: Option<Regex>,
+    also: Vec<Regex>,
     exclude: Option<Regex>,
     min_level: Option<Level>,
     level: Option<Level>,
@@ -163,12 +173,18 @@ fn field_matches(wanted: Option<&[u8]>, found: &[u8]) -> bool {
     wanted.is_none_or(|wanted| found.eq_ignore_ascii_case(wanted))
 }
 
-fn parse_bound(text: &str, end_of_day: bool) -> Result<u32, QueryError> {
+/// Reads a `from` or `to` time. As an end, a bare date runs to the end of that
+/// day, and a time without seconds to the end of that minute.
+fn parse_bound(text: &str, is_end: bool) -> Result<u32, QueryError> {
     let stamp: Stamp =
         time::parse_user_time(text).ok_or_else(|| QueryError::InvalidTime(text.to_string()))?;
-    let date_only = text.trim().len() == 10;
-    Ok(if end_of_day && date_only {
-        stamp.seconds + 86_399
+    let rest_of_span = match text.trim().len() {
+        10 => 86_399,
+        16 => 59,
+        _ => 0,
+    };
+    Ok(if is_end {
+        stamp.seconds + rest_of_span
     } else {
         stamp.seconds
     })
@@ -187,6 +203,11 @@ impl Matcher {
             }
             None => None,
         };
+        let also = query
+            .also
+            .iter()
+            .map(|source| compile(source, query.case_sensitive))
+            .collect::<Result<_, _>>()?;
         let exclude = if query.exclude.is_empty() {
             None
         } else {
@@ -194,6 +215,7 @@ impl Matcher {
         };
         Ok(Self {
             pattern,
+            also,
             exclude,
             min_level: query.min_level,
             level: query.level,
@@ -219,7 +241,10 @@ impl Matcher {
     }
 
     pub(crate) fn needs_row_text(&self) -> bool {
-        self.pattern.is_some() || self.exclude.is_some() || self.needs_fields()
+        self.pattern.is_some()
+            || !self.also.is_empty()
+            || self.exclude.is_some()
+            || self.needs_fields()
     }
 
     fn needs_fields(&self) -> bool {
@@ -259,6 +284,7 @@ impl Matcher {
         self.pattern
             .as_ref()
             .is_none_or(|pattern| pattern.is_match(searchable))
+            && self.also.iter().all(|also| also.is_match(searchable))
             && !self
                 .exclude
                 .as_ref()
@@ -597,6 +623,41 @@ mod tests {
             ..Query::default()
         };
         assert_eq!(matched(&log, query), vec![3]);
+    }
+
+    #[test]
+    fn rows_must_match_the_text_and_every_other_pattern() {
+        let (_dir, log) = open(
+            "Installed KB5066835 (26100.9549)\nInstalled KB5066835 (26100.4000)\nDownloaded 26100.9549\nINSTALLED 26100.9549\n",
+        );
+        let query = Query {
+            text: Some(r"26100\.9549".to_string()),
+            regex: true,
+            also: vec![literal("Installed"), literal("(")],
+            ..Query::default()
+        };
+        assert_eq!(matched(&log, query), vec![1]);
+        let bad = Query {
+            also: vec!["(".to_string()],
+            ..Query::default()
+        };
+        assert_eq!(
+            run(&log, &bad, &Control::default()).unwrap_err().code(),
+            "invalid_pattern"
+        );
+    }
+
+    #[test]
+    fn a_time_without_seconds_covers_its_whole_minute_as_an_end() {
+        let (_dir, log) = open(
+            "2026-01-02 23:29:59 a\n2026-01-02 23:30:00 b\n2026-01-02 23:30:59 c\n2026-01-02 23:31:00 d\n",
+        );
+        let query = Query {
+            from: Some("2026-01-02T23:30".to_string()),
+            to: Some("2026-01-02T23:30".to_string()),
+            ..Query::default()
+        };
+        assert_eq!(matched(&log, query), vec![2, 3]);
     }
 
     #[test]

@@ -423,11 +423,17 @@ fn parse_year_last(bytes: &[u8], day_first: bool) -> Option<Stamp> {
     )
 }
 
-/// Reads a time typed by a person: a full timestamp or just `YYYY-MM-DD`.
+/// Reads a time typed by a person: a full timestamp, one without seconds
+/// (`YYYY-MM-DDTHH:MM`), or just `YYYY-MM-DD`.
 pub fn parse_user_time(text: &str) -> Option<Stamp> {
     let bytes = text.trim().as_bytes();
     if let Some(parsed) = parse_iso(bytes) {
         return (parsed.end == bytes.len()).then_some(parsed.stamp);
+    }
+    if bytes.len() == 16 {
+        let with_seconds = [bytes, b":00"].concat();
+        let parsed = parse_iso(&with_seconds)?;
+        return (parsed.end == with_seconds.len()).then_some(parsed.stamp);
     }
     if bytes.len() == 10 {
         let separators = bytes[4] == b'-' && bytes[7] == b'-';
@@ -587,6 +593,13 @@ mod tests {
             "2026-01-16T00:00:00.000"
         );
         assert!(parse_user_time("2026-01-16T13:40:00").is_some());
+        assert_eq!(
+            parse_user_time("2026-01-16T13:40").unwrap().to_string(),
+            "2026-01-16T13:40:00.000"
+        );
+        assert!(parse_user_time("2026-01-16 13:40").is_some());
+        assert!(parse_user_time("2026-01-16T13:4x").is_none());
+        assert!(parse_user_time("2026-01-16T25:40").is_none());
         assert!(parse_user_time("yesterday").is_none());
         assert!(parse_user_time("2026-01-16 13:40:00 junk").is_none());
     }

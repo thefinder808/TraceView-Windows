@@ -87,6 +87,21 @@ fn query_applies_filters() {
     assert_eq!(matches(&["--thread", "4128", "--min-level", "error"]), 0);
     assert_eq!(matches(&["--from", "2026-04-06T10:23:02"]), 2);
     assert_eq!(matches(&["--to", "2026-04-05"]), 0);
+    // A time without seconds; as an end it takes in the whole minute.
+    assert_eq!(matches(&["--from", "2026-04-06T10:23"]), 3);
+    assert_eq!(matches(&["--to", "2026-04-06T10:22"]), 0);
+    assert_eq!(matches(&["--to", "2026-04-06 10:23"]), 3);
+    // Several --text and --regex find rows matching every one.
+    assert_eq!(
+        matches(&["--text", "download", "--regex", r"0x[0-9a-f]{8}"]),
+        1
+    );
+    assert_eq!(matches(&["--regex", "fail|retry", "--text", "minutes"]), 1);
+    assert_eq!(matches(&["--text", "download", "--text", "retrying"]), 0);
+    assert_eq!(
+        matches(&["--text", "error", "--text", "(", "--regex", "x"]),
+        0
+    );
 }
 
 #[test]
@@ -879,8 +894,8 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--nope"],
         &["query", path, "--limit", "many"],
         &["query", path, "--min-level", "loud"],
-        &["query", path, "--text", "a", "--regex", "b"],
         &["query", path, "--text"],
+        &["query", path, "--text", "a", "--regex"],
         &["query", path, "--top", "5"],
         &["summarize", path, "--text", "a"],
         &["query", path, "--format", "xml"],
