@@ -43,7 +43,9 @@ crates/
     cli.rs        query, summarize, lookup and setup
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
     gui/          app (connects the window and renderer to the workspace)
-                  workspace (menus, tabs, focus, layout, input routing)
+                  workspace (menus, tabs, focus, layout, input routing, and the
+                  find and pause buttons, which run the same commands as F3,
+                  Shift+F3 and Ctrl+U)
                   tab (one log or a merged set: filter, find, details, live tail)
                   log_view (grid), row_cache (background row loading), details (pane under the grid)
                   search (filter syntax, and matches kept current as logs grow), watch (live tail)

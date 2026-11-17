@@ -53,20 +53,20 @@ The start page opens recent logs and folders, and this PC's usual log folders, s
 | Ctrl+O | Open logs, each in its own tab |
 | Ctrl+Shift+O | Open a folder, such as one of logs copied from another PC. Its logs are listed with their errors and warnings, and a click opens one. Dropping a folder does the same |
 | Ctrl+Tab, Ctrl+1-9, Ctrl+W | Switch tabs, close a tab |
-| Ctrl+F, F3, Shift+F3 | Find, and move between matches |
+| Ctrl+F, F3, Shift+F3 | Find, and move between matches, as the ▲ and ▼ buttons beside Find do |
 | Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/` |
 | Ctrl+E, Ctrl+Shift+E | Next and previous error |
 | Ctrl+L | Error Lookup |
 | Ctrl+H | Highlight rules: color or mark rows that match, as in `download failed level:error` |
 | Drag a header, or its edge | Move or resize a column. Right-click the header, or use View > Columns, to show and hide them |
-| Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Larger, smaller or default log text. View > Fonts picks fonts and row spacing |
+| Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Larger, smaller or default log text. View > Fonts and row spacing picks fonts and the space between rows |
 | Ctrl+K | Command palette: every command, open tab, recent log and preset |
 | Ctrl+G | Go to a row |
 | Ctrl+D, F2, Shift+F2 | Toggle a bookmark, then step through them |
 | Right-click a row, Shift+F10 | The row's menu: add or remove its bookmark, or copy the selected rows |
 | Ctrl+B | Sidebar |
 | Ctrl+\ | Split view, with Ctrl+Shift+S to sync the panes by time. With one log open, it asks for the log to show beside it |
-| Ctrl+U | Pause live updates |
+| Ctrl+U | Pause live updates, as the Pause button at the end of the status bar does. End goes back to following new rows, ending a pause |
 | Ctrl+Shift+M | Merge the open logs into one timeline |
 | Alt or F10 | The menus |
 

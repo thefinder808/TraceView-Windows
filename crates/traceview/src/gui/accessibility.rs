@@ -16,7 +16,7 @@ use super::rules::Style;
 use super::rules_panel::{self, Part, RulesPanel};
 use super::shortcut_panel::{self, ShortcutPanel};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel};
-use super::workspace::{Focus, RowMenu, Workspace};
+use super::workspace::{BarButton, Focus, RowMenu, Workspace};
 use accesskit::{
     Action, ActionRequest, Node, NodeId, Rect as AccessRect, Role, TreeId, TreeInfo, TreeUpdate,
 };
@@ -82,6 +82,8 @@ const ROW_MENU_ID: NodeId = NodeId(35);
 const FIRST_ROW_MENU_ITEM_ID: u64 = 760;
 const FIRST_SIDEBAR_ID: u64 = 10_000;
 const HOME_ID: NodeId = NodeId(36);
+/// The find buttons and the pause button, in [`BarButton::ALL`]'s order.
+const FIRST_BAR_BUTTON_ID: u64 = 38;
 const HOME_LIST_ID: NodeId = NodeId(37);
 const FIRST_HOME_BUTTON_ID: u64 = 780;
 /// The start page lists a folder's logs, up to 500, and a few more besides.
@@ -114,6 +116,19 @@ fn physical(rect: Rect, scale: f32) -> AccessRect {
         f64::from(rect.right * scale),
         f64::from(rect.bottom * scale),
     )
+}
+
+/// A find or pause button, which clicking runs the command of.
+fn bar_button_node(button: BarButton, rect: Rect, paused: bool, scale: f32) -> (NodeId, Node) {
+    let index = BarButton::ALL
+        .iter()
+        .position(|each| *each == button)
+        .unwrap_or_default();
+    let mut node = Node::new(Role::Button);
+    node.set_label(button.label(paused));
+    node.set_bounds(physical(rect, scale));
+    node.add_action(Action::Click);
+    (NodeId(FIRST_BAR_BUTTON_ID + index as u64), node)
 }
 
 /// A row as one sentence: its number and severity, then the columns on screen
@@ -304,7 +319,7 @@ fn fonts_nodes(panel: &FontsPanel, scale: f32, nodes: &mut Vec<(NodeId, Node)>) 
         nodes.push((id, node));
     }
     let mut list_node = Node::new(Role::ListBox);
-    list_node.set_label("Fonts and spacing");
+    list_node.set_label("Fonts and row spacing");
     list_node.set_children(options);
     nodes.push((FONTS_LIST_ID, list_node));
     let mut children = vec![FONTS_LIST_ID];
@@ -953,6 +968,15 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
                 window_children.push(id);
             }
         }
+        // The find buttons come after the find box, and the pause button
+        // after the status bar, where they're drawn.
+        for (button, rect) in workspace.bar_buttons() {
+            if button != BarButton::Pause {
+                let (id, node) = bar_button_node(button, rect, tab.is_paused(), scale);
+                nodes.push((id, node));
+                window_children.push(id);
+            }
+        }
         // Severity chips are toggle buttons, and the histogram a labelled picture.
         for (index, (chip, rect)) in workspace.chip_list().enumerate() {
             let Some(rect) = rect else { continue };
@@ -1140,6 +1164,15 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
     status.set_label(workspace.status());
     nodes.push((STATUS_ID, status));
     window_children.push(STATUS_ID);
+    let paused = workspace.active_tab().is_some_and(|tab| tab.is_paused());
+    if let Some((_, rect)) = workspace
+        .bar_buttons()
+        .find(|(button, _)| *button == BarButton::Pause)
+    {
+        let (id, node) = bar_button_node(BarButton::Pause, rect, paused, scale);
+        nodes.push((id, node));
+        window_children.push(id);
+    }
 
     let mut window = Node::new(Role::Window);
     window.set_label(workspace.title());
@@ -1246,6 +1279,9 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 workspace.run_command(super::workspace::command::FILTER, commands);
             } else if target == FIND_ID {
                 workspace.run_command(super::workspace::command::FIND, commands);
+            } else if let Some(index) = in_range(target, FIRST_BAR_BUTTON_ID, BarButton::ALL.len())
+            {
+                workspace.run_command(BarButton::ALL[index].command(), commands);
             } else if let Some(open) = workspace.menu().open_menu() {
                 let items = workspace.menu().menus[open].items.len();
                 if let Some(item) = in_range(target, FIRST_MENU_ITEM_ID, items) {
@@ -1573,6 +1609,34 @@ mod tests {
             Some(true)
         );
         assert_eq!(node(&update, NodeId(FIRST_MENU_ID)).label(), Some("File"));
+    }
+
+    #[test]
+    fn the_find_and_pause_buttons_are_buttons_that_work() {
+        let (_dir, mut workspace) = opened();
+        let update = build(&workspace, 1.0);
+        let previous = node(&update, NodeId(FIRST_BAR_BUTTON_ID));
+        assert_eq!(previous.role(), Role::Button);
+        assert_eq!(previous.label(), Some("Previous match"));
+        assert_eq!(
+            node(&update, NodeId(FIRST_BAR_BUTTON_ID + 1)).label(),
+            Some("Next match")
+        );
+        let pause = NodeId(FIRST_BAR_BUTTON_ID + 2);
+        assert_eq!(node(&update, pause).label(), Some("Pause live updates"));
+        act(
+            &mut workspace,
+            &ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: pause,
+                data: None,
+            },
+            &mut Commands::default(),
+        );
+        assert!(workspace.tabs[0].is_paused());
+        let update = build(&workspace, 1.0);
+        assert_eq!(node(&update, pause).label(), Some("Resume live updates"));
     }
 
     #[test]

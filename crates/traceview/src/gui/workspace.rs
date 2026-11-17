@@ -49,6 +49,10 @@ use tv_ui::{
 const TOOLBAR_HEIGHT: f32 = 34.0;
 const FIELD_HEIGHT: f32 = 24.0;
 const MARGIN: f32 = 8.0;
+/// The space between the find box and its buttons.
+const BUTTON_GAP: f32 = 2.0;
+/// The space either side of the pause button's word.
+const BUTTON_PADDING: f32 = 10.0;
 /// Each pane of a split view keeps at least this much width.
 const MIN_PANE: f32 = 240.0;
 const UI_LEFT: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
@@ -167,13 +171,93 @@ fn free_theme_name(base: &str, taken: &[String]) -> String {
         .unwrap_or_else(|| base.to_string())
 }
 
+/// The buttons beside the find box, and the one at the end of the status bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarButton {
+    FindPrevious,
+    FindNext,
+    Pause,
+}
+
+impl BarButton {
+    pub const ALL: [BarButton; 3] = [
+        BarButton::FindPrevious,
+        BarButton::FindNext,
+        BarButton::Pause,
+    ];
+
+    pub fn command(self) -> u32 {
+        match self {
+            BarButton::FindPrevious => command::FIND_PREVIOUS,
+            BarButton::FindNext => command::FIND_NEXT,
+            BarButton::Pause => command::PAUSE,
+        }
+    }
+
+    /// What the button shows. Pause shows what clicking it will do.
+    fn text(self, paused: bool) -> &'static str {
+        match self {
+            BarButton::FindPrevious => "▲",
+            BarButton::FindNext => "▼",
+            BarButton::Pause if paused => "Resume",
+            BarButton::Pause => "Pause",
+        }
+    }
+
+    /// What a screen reader says, which includes any word the button shows.
+    pub fn label(self, paused: bool) -> &'static str {
+        match self {
+            BarButton::FindPrevious => "Previous match",
+            BarButton::FindNext => "Next match",
+            BarButton::Pause if paused => "Resume live updates",
+            BarButton::Pause => "Pause live updates",
+        }
+    }
+}
+
+/// Draws a small button as chips are drawn, with its text in the middle.
+fn draw_button(canvas: &mut dyn Canvas, rect: Rect, text: &str, theme: &Theme, hovered: bool) {
+    if rect.width() <= 0.0 {
+        return;
+    }
+    canvas.fill_rect(rect, theme.border);
+    let (background, color) = if hovered {
+        (
+            theme.hover_background,
+            theme.on_highlight(theme.primary_text),
+        )
+    } else {
+        (theme.chip_background, theme.primary_text)
+    };
+    canvas.fill_rect(
+        Rect::new(
+            rect.left + 1.0,
+            rect.top + 1.0,
+            rect.right - 1.0,
+            rect.bottom - 1.0,
+        ),
+        background,
+    );
+    let left = rect.left + ((rect.width() - canvas.text_width(text, FontRole::Ui)) / 2.0).max(0.0);
+    canvas.text(
+        text,
+        Rect::new(left, rect.top, rect.right, rect.bottom),
+        UI_LEFT,
+        color,
+    );
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Layout {
     menu: Rect,
     tabs: Rect,
     filter: Rect,
     find: Rect,
+    find_previous: Rect,
+    find_next: Rect,
     find_count: Rect,
+    /// The pause button, at the end of the status bar.
+    pause: Rect,
     chips: Rect,
     histogram: Rect,
     grid: Rect,
@@ -190,6 +274,8 @@ struct PaneLayout {
     area: Rect,
     filter: Rect,
     find: Rect,
+    find_previous: Rect,
+    find_next: Rect,
     find_count: Rect,
     chips: Rect,
     histogram: Rect,
@@ -221,16 +307,32 @@ fn pane_layout(
             filter_right,
             field_top + FIELD_HEIGHT,
         );
-        let find_right =
-            (filter_right + MARGIN + (width * 0.28).max(120.0)).min(toolbar.right - MARGIN);
+        // The find box leaves room after it for its two square buttons.
+        let buttons = BUTTON_GAP + FIELD_HEIGHT + BUTTON_GAP + FIELD_HEIGHT;
+        let find_right = (filter_right + MARGIN + (width * 0.28).max(120.0))
+            .min(toolbar.right - MARGIN - buttons);
         pane.find = Rect::new(
             filter_right + MARGIN,
             field_top,
             find_right.max(filter_right + MARGIN),
             field_top + FIELD_HEIGHT,
         );
+        let square = |left: f32| {
+            Rect::new(
+                left,
+                field_top,
+                left + FIELD_HEIGHT,
+                field_top + FIELD_HEIGHT,
+            )
+        };
+        pane.find_previous = square(pane.find.right + BUTTON_GAP);
+        pane.find_next = square(pane.find_previous.right + BUTTON_GAP);
+        // A pane too narrow for them goes without, as F3 still works.
+        if pane.find_next.right > toolbar.right {
+            (pane.find_previous, pane.find_next) = (Rect::default(), Rect::default());
+        }
         pane.find_count = Rect::new(
-            find_right + MARGIN,
+            pane.find.right + buttons + MARGIN,
             toolbar.top,
             toolbar.right - MARGIN,
             toolbar.bottom,
@@ -257,7 +359,7 @@ fn draw_pane(
     theme: &Theme,
     focus: Option<Focus>,
     (chip_bar, chips): (&ChipBar, &[Chip]),
-    hover: Option<usize>,
+    (hover, button_hover): (Option<usize>, Option<BarButton>),
 ) -> Option<Point> {
     match tab.rows() {
         Some(rows) => tab.view.draw(canvas, &rows, theme),
@@ -288,6 +390,13 @@ fn draw_pane(
         focus == Some(Focus::Find),
         FIND_HINT,
     );
+    for (button, rect) in [
+        (BarButton::FindPrevious, pane.find_previous),
+        (BarButton::FindNext, pane.find_next),
+    ] {
+        let hovered = button_hover == Some(button);
+        draw_button(canvas, rect, button.text(false), theme, hovered);
+    }
     if let Some(summary) = tab.find_summary() {
         canvas.text(&summary, pane.find_count, UI_LEFT, theme.secondary_text);
     }
@@ -374,6 +483,7 @@ pub struct Workspace {
     /// The level each chip filters to.
     chip_filters: Vec<Option<Level>>,
     histogram_hover: Option<usize>,
+    button_hover: Option<BarButton>,
     /// Two logs side by side, when on.
     pub split: Option<Split>,
     other_chip_bar: ChipBar,
@@ -510,6 +620,7 @@ impl Workspace {
             chips: Vec::new(),
             chip_filters: Vec::new(),
             histogram_hover: None,
+            button_hover: None,
             split: None,
             other_chip_bar: ChipBar::default(),
             other_chips: Vec::new(),
@@ -980,7 +1091,7 @@ impl Workspace {
                         self.settings.highlighting,
                     ),
                     item("Columns...", command::COLUMNS),
-                    item("Fonts...", command::FONTS),
+                    item("Fonts and row spacing...", command::FONTS),
                     // Edits wouldn't show while a contrast theme is drawn instead.
                     enabled(item("Edit theme...", command::EDIT_THEME), self.contrast.is_none()),
                     item("Larger log text", command::LARGER_TEXT),
@@ -2777,6 +2888,15 @@ impl Workspace {
                 commands.accessibility_changed();
                 return;
             }
+            // The buttons leave focus where it was, so typing goes on in Find.
+            if let Some(pressed) = self.button_at(point) {
+                if button == MouseButton::Left {
+                    self.run_command(pressed.command(), commands);
+                }
+                commands.redraw();
+                commands.accessibility_changed();
+                return;
+            }
             let target = if layout.filter.contains(point) {
                 Some(Focus::Filter)
             } else if layout.find.contains(point) {
@@ -2814,6 +2934,11 @@ impl Workspace {
             if self.tab_bar.handle(event).redraw {
                 commands.redraw();
             }
+            let button_hover = self.button_at(point);
+            if button_hover != self.button_hover {
+                self.button_hover = button_hover;
+                commands.redraw();
+            }
             // Whatever has focus, a column's edge shows the resize pointer.
             self.update_cursor(commands);
         }
@@ -2838,6 +2963,12 @@ impl Workspace {
         }
         let response = tab.view.handle(event);
         tab.following = tab.view.at_bottom();
+        // End goes to the newest row and follows it live, ending a pause.
+        if matches!(event, Event::KeyDown(Key::End, modifiers) if !modifiers.shift && !modifiers.alt)
+            && tab.is_paused()
+        {
+            tab.set_paused(false);
+        }
         // A right-click opens the menu where it was, and the keyboard below the row.
         let row_menu = response.row_menu.map(|row| match event {
             Event::MouseDown(point, ..) => (row, point, false),
@@ -2966,6 +3097,22 @@ impl Workspace {
             .status_height
             .max(canvas.line_height(FontRole::Ui) + 6.0);
         let status = area.take_bottom(snap(status_height, scale));
+        // The pause button fits its longer word, so it keeps its size when clicked.
+        let pause = if ready(self.active_tab()) {
+            let width = [false, true]
+                .map(|paused| canvas.text_width(BarButton::Pause.text(paused), FontRole::Ui))
+                .into_iter()
+                .fold(0.0, f32::max)
+                + 2.0 * BUTTON_PADDING;
+            Rect::new(
+                status.right - MARGIN - width,
+                status.top + 3.0,
+                status.right - MARGIN,
+                status.bottom - 2.0,
+            )
+        } else {
+            Rect::default()
+        };
         let mut details = Rect::default();
         if self.show_details && ready(self.active_tab()) {
             details = area.take_bottom(snap(PANE_HEIGHT, scale));
@@ -3032,7 +3179,10 @@ impl Workspace {
             tabs,
             filter: focused.filter,
             find: focused.find,
+            find_previous: focused.find_previous,
+            find_next: focused.find_next,
             find_count: focused.find_count,
+            pause,
             chips: focused.chips,
             histogram: focused.histogram,
             grid: focused.grid,
@@ -3196,6 +3346,8 @@ impl Workspace {
                     area: layout.focused_area,
                     filter: layout.filter,
                     find: layout.find,
+                    find_previous: layout.find_previous,
+                    find_next: layout.find_next,
                     find_count: layout.find_count,
                     chips: layout.chips,
                     histogram: layout.histogram,
@@ -3209,7 +3361,7 @@ impl Workspace {
                     theme,
                     Some(focus),
                     chips,
-                    self.histogram_hover,
+                    (self.histogram_hover, self.button_hover),
                 );
                 if self.show_details && tab.document().is_some() {
                     tab.details.draw(canvas, layout.details, theme);
@@ -3220,7 +3372,7 @@ impl Workspace {
             if let Some(tab) = self.tabs.get_mut(split.other) {
                 tab.request_rows(&waker);
                 let chips = (&self.other_chip_bar, self.other_chips.as_slice());
-                draw_pane(canvas, tab, &other, theme, None, chips, None);
+                draw_pane(canvas, tab, &other, theme, None, chips, (None, None));
             }
             split.splitter.draw(canvas, theme, false);
             // The focused pane is marked, as in the Mac app.
@@ -3242,12 +3394,25 @@ impl Workspace {
             ),
             theme.border,
         );
+        let paused = self.active_tab().is_some_and(Tab::is_paused);
+        draw_button(
+            canvas,
+            layout.pause,
+            BarButton::Pause.text(paused),
+            theme,
+            self.button_hover == Some(BarButton::Pause),
+        );
+        let status_right = if layout.pause.width() > 0.0 {
+            layout.pause.left
+        } else {
+            layout.status.right
+        };
         canvas.text(
             &status,
             Rect::new(
                 layout.status.left + MARGIN,
                 layout.status.top,
-                layout.status.right - MARGIN,
+                status_right - MARGIN,
                 layout.status.bottom,
             ),
             UI_LEFT,
@@ -3325,6 +3490,24 @@ impl Workspace {
 
     pub fn find_rect(&self) -> Rect {
         self.layout.find
+    }
+
+    /// The buttons showing for the active tab, with where each one is.
+    pub fn bar_buttons(&self) -> impl Iterator<Item = (BarButton, Rect)> {
+        let layout = &self.layout;
+        [
+            (BarButton::FindPrevious, layout.find_previous),
+            (BarButton::FindNext, layout.find_next),
+            (BarButton::Pause, layout.pause),
+        ]
+        .into_iter()
+        .filter(|(_, rect)| rect.width() > 0.0)
+    }
+
+    fn button_at(&self, point: Point) -> Option<BarButton> {
+        self.bar_buttons()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(button, _)| button)
     }
 
     pub fn tab_titles(&self) -> Vec<String> {
@@ -3786,6 +3969,75 @@ mod tests {
             workspace.tabs[0].following,
             "going to the end follows again"
         );
+    }
+
+    fn click_button(workspace: &mut Workspace, wanted: BarButton) {
+        let (_, rect) = workspace
+            .bar_buttons()
+            .find(|(button, _)| *button == wanted)
+            .unwrap_or_else(|| panic!("{wanted:?} should show"));
+        let middle = Point::new(
+            (rect.left + rect.right) / 2.0,
+            (rect.top + rect.bottom) / 2.0,
+        );
+        send(workspace, Event::MouseDown(middle, MouseButton::Left, NONE));
+        send(workspace, Event::MouseUp(middle, MouseButton::Left));
+    }
+
+    #[test]
+    fn the_find_buttons_step_through_matches_and_leave_focus_in_find() {
+        let (_dir, mut workspace) = opened(100);
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+        type_text(&mut workspace, "message 1");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        let summary = |workspace: &Workspace| workspace.tabs[0].find_summary().unwrap_or_default();
+        settle(&mut workspace, |workspace| {
+            summary(workspace).contains(" of ")
+        });
+        let first = summary(&workspace);
+
+        click_button(&mut workspace, BarButton::FindNext);
+        settle(&mut workspace, |workspace| summary(workspace) != first);
+        assert_eq!(workspace.focus, Focus::Find, "typing can go on");
+        click_button(&mut workspace, BarButton::FindPrevious);
+        settle(&mut workspace, |workspace| summary(workspace) == first);
+        assert_eq!(workspace.focus, Focus::Find);
+    }
+
+    #[test]
+    fn the_pause_button_pauses_and_end_follows_live_again() {
+        let (_dir, mut workspace) = opened(100);
+        click_button(&mut workspace, BarButton::Pause);
+        assert!(workspace.tabs[0].is_paused());
+        assert!(workspace.status().contains("Paused"));
+        send(&mut workspace, Event::KeyDown(Key::Home, CTRL));
+        assert!(!workspace.tabs[0].following);
+
+        send(&mut workspace, Event::KeyDown(Key::End, SHIFT));
+        assert!(
+            workspace.tabs[0].is_paused(),
+            "Shift+End only selects to the end"
+        );
+        send(&mut workspace, Event::KeyDown(Key::End, NONE));
+        assert!(!workspace.tabs[0].is_paused());
+        assert!(workspace.tabs[0].following);
+        assert!(workspace.status().contains("Following"));
+
+        click_button(&mut workspace, BarButton::Pause);
+        click_button(&mut workspace, BarButton::Pause);
+        assert!(!workspace.tabs[0].is_paused(), "the button resumes too");
+    }
+
+    #[test]
+    fn the_start_page_has_no_bar_buttons() {
+        let mut workspace = workspace();
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            SIZE,
+            1.0,
+            &mut Commands::default(),
+        );
+        assert_eq!(workspace.bar_buttons().count(), 0);
     }
 
     #[test]

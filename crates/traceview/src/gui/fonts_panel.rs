@@ -1,7 +1,8 @@
-//! The fonts editor, opened by View > Fonts. It lists the log font, the row
-//! spacing and the window font, and its buttons change whichever is selected.
-//! Choosing a font hands over to a searchable list of installed fonts, which
-//! comes back here when it closes. Every change applies at once.
+//! The fonts editor, opened by View > Fonts and row spacing. It lists the log
+//! font, the row spacing and the window font, and its buttons change whichever
+//! is selected, with labels to match. Choosing a font hands over to a
+//! searchable list of installed fonts, which comes back here when it closes.
+//! Every change applies at once.
 
 use super::fonts::{self, Spacing, Target, LOG_SIZES, WINDOW_SIZES};
 use super::settings::FontSettings;
@@ -17,17 +18,38 @@ const PADDING: f32 = 14.0;
 const LINE_HEIGHT: f32 = 22.0;
 const GAP: f32 = 6.0;
 const LABEL: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
-pub const TITLE: &str = "Fonts";
+pub const TITLE: &str = "Fonts and row spacing";
 const NOTE: &str = "For larger everything, change Windows' display scale";
-const HINT: &str =
+const FONT_HINT: &str =
     "Enter chooses a font     - and + resize     Ctrl+Plus and Ctrl+Minus work anywhere";
+const ROWS_HINT: &str = "- and + change the space between rows";
 
-/// The buttons under the list, in order.
-pub const BUTTONS: [&str; 4] = ["Choose font", "Smaller", "Larger", "Reset"];
-const CHOOSE: usize = 0;
-const SMALLER: usize = 1;
-const LARGER: usize = 2;
-const RESET: usize = 3;
+/// What a button under the list does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    Choose,
+    Smaller,
+    Larger,
+    Reset,
+}
+
+/// The buttons for the selected item, in order. Row spacing has no font to
+/// choose, and its smaller and larger are less and more space.
+fn buttons_for(item: Item) -> &'static [(Press, &'static str)] {
+    match item {
+        Item::Rows => &[
+            (Press::Smaller, "Less space"),
+            (Press::Larger, "More space"),
+            (Press::Reset, "Reset"),
+        ],
+        Item::LogFont | Item::WindowFont => &[
+            (Press::Choose, "Choose font"),
+            (Press::Smaller, "Smaller"),
+            (Press::Larger, "Larger"),
+            (Press::Reset, "Reset"),
+        ],
+    }
+}
 
 /// What the list's rows stand for, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,55 +211,72 @@ impl FontsPanel {
         self.rect
     }
 
-    /// Whether a button does anything for the selected item.
+    /// What the button at `index` does for the selected item.
+    fn button(&self, index: usize) -> Option<Press> {
+        buttons_for(self.selected())
+            .get(index)
+            .map(|(press, _)| *press)
+    }
+
+    /// Whether the button at `index` does anything for the selected item.
     pub fn button_applies(&self, index: usize) -> bool {
+        self.button(index).is_some_and(|press| self.applies(press))
+    }
+
+    fn applies(&self, press: Press) -> bool {
         let shown = fonts::render_fonts(&self.fonts);
         let spacing = Spacing::from_name(&self.fonts.row_spacing);
-        match (index, self.selected()) {
-            (CHOOSE, item) => item != Item::Rows,
-            (SMALLER, Item::LogFont) => shown.grid_size > *LOG_SIZES.start(),
-            (LARGER, Item::LogFont) => shown.grid_size < *LOG_SIZES.end(),
-            (SMALLER, Item::WindowFont) => shown.ui_size > *WINDOW_SIZES.start(),
-            (LARGER, Item::WindowFont) => shown.ui_size < *WINDOW_SIZES.end(),
-            (SMALLER, Item::Rows) => spacing != Spacing::Compact,
-            (LARGER, Item::Rows) => spacing != Spacing::Roomy,
-            (RESET, _) => self.fonts != FontSettings::default(),
-            _ => false,
+        match (press, self.selected()) {
+            (Press::Choose, item) => item != Item::Rows,
+            (Press::Smaller, Item::LogFont) => shown.grid_size > *LOG_SIZES.start(),
+            (Press::Larger, Item::LogFont) => shown.grid_size < *LOG_SIZES.end(),
+            (Press::Smaller, Item::WindowFont) => shown.ui_size > *WINDOW_SIZES.start(),
+            (Press::Larger, Item::WindowFont) => shown.ui_size < *WINDOW_SIZES.end(),
+            (Press::Smaller, Item::Rows) => spacing != Spacing::Compact,
+            (Press::Larger, Item::Rows) => spacing != Spacing::Roomy,
+            (Press::Reset, _) => self.fonts != FontSettings::default(),
         }
     }
 
-    /// Presses one of the [`BUTTONS`].
+    /// Presses the button at `index`.
     pub fn press(&mut self, index: usize) -> FontsResponse {
-        if !self.button_applies(index) {
+        match self.button(index) {
+            Some(press) => self.act(press),
+            None => FontsResponse::redraw(false),
+        }
+    }
+
+    fn act(&mut self, press: Press) -> FontsResponse {
+        if !self.applies(press) {
             return FontsResponse::redraw(false);
         }
         let shown = fonts::render_fonts(&self.fonts);
-        let larger = index == LARGER;
-        match (index, self.selected()) {
-            (CHOOSE, Item::LogFont) => {
+        let larger = press == Press::Larger;
+        match (press, self.selected()) {
+            (Press::Choose, Item::LogFont) => {
                 return FontsResponse {
                     choose: Some(Target::Log),
                     ..FontsResponse::default()
                 };
             }
-            (CHOOSE, Item::WindowFont) => {
+            (Press::Choose, Item::WindowFont) => {
                 return FontsResponse {
                     choose: Some(Target::Window),
                     ..FontsResponse::default()
                 };
             }
-            (SMALLER | LARGER, Item::LogFont) => {
+            (Press::Smaller | Press::Larger, Item::LogFont) => {
                 self.fonts.log_size = fonts::step_size(shown.grid_size, &LOG_SIZES, larger);
             }
-            (SMALLER | LARGER, Item::WindowFont) => {
+            (Press::Smaller | Press::Larger, Item::WindowFont) => {
                 self.fonts.window_size = fonts::step_size(shown.ui_size, &WINDOW_SIZES, larger);
             }
-            (SMALLER | LARGER, Item::Rows) => {
+            (Press::Smaller | Press::Larger, Item::Rows) => {
                 let spacing = Spacing::from_name(&self.fonts.row_spacing).step(larger);
                 self.fonts.row_spacing = spacing.name().to_string();
             }
-            (RESET, _) => self.fonts = FontSettings::default(),
-            _ => return FontsResponse::redraw(false),
+            (Press::Reset, _) => self.fonts = FontSettings::default(),
+            (Press::Choose, Item::Rows) => return FontsResponse::redraw(false),
         }
         self.check_fonts();
         self.fill_list();
@@ -267,9 +306,9 @@ impl FontsPanel {
         inner.take_bottom(GAP);
         self.fill_list();
         self.list.arrange(inner);
-        self.button_chips = BUTTONS
+        self.button_chips = buttons_for(self.selected())
             .iter()
-            .map(|label| Chip {
+            .map(|(_, label)| Chip {
                 label: (*label).to_string(),
                 count: None,
                 color: theme.primary_text,
@@ -335,9 +374,9 @@ impl FontsPanel {
                 }
             }
             Part::List => match event {
-                Event::KeyDown(Key::Enter, _) => self.press(CHOOSE),
-                Event::Char('-') => self.press(SMALLER),
-                Event::Char('+' | '=') => self.press(LARGER),
+                Event::KeyDown(Key::Enter, _) => self.act(Press::Choose),
+                Event::Char('-') => self.act(Press::Smaller),
+                Event::Char('+' | '=') => self.act(Press::Larger),
                 _ => FontsResponse {
                     redraw: self.list.handle(event).redraw,
                     ..FontsResponse::default()
@@ -375,7 +414,11 @@ impl FontsPanel {
             self.focus == Part::Buttons,
         );
         canvas.text(NOTE, self.note_rect, LABEL, theme.secondary_text);
-        canvas.text(HINT, self.hint_rect, LABEL, theme.secondary_text);
+        let hint = match self.selected() {
+            Item::Rows => ROWS_HINT,
+            Item::LogFont | Item::WindowFont => FONT_HINT,
+        };
+        canvas.text(hint, self.hint_rect, LABEL, theme.secondary_text);
         canvas.pop_clip();
     }
 }
@@ -411,7 +454,37 @@ mod tests {
         assert_eq!(panel.describe(Item::LogFont), "Consolas, 13");
         assert_eq!(panel.describe(Item::Rows), "normal spacing");
         assert_eq!(panel.describe(Item::WindowFont), "Segoe UI, 12");
-        assert!(!panel.button_applies(RESET), "nothing to reset yet");
+        assert!(!panel.applies(Press::Reset), "nothing to reset yet");
+    }
+
+    #[test]
+    fn row_spacing_has_buttons_and_a_hint_of_its_own() {
+        let labels = |panel: &FontsPanel| -> Vec<String> {
+            panel
+                .button_chips()
+                .iter()
+                .map(|chip| chip.label.clone())
+                .collect()
+        };
+        let mut panel = panel(Item::LogFont);
+        assert_eq!(
+            labels(&panel),
+            ["Choose font", "Smaller", "Larger", "Reset"]
+        );
+        send(&mut panel, Event::KeyDown(Key::Down, NONE));
+        assert_eq!(panel.selected(), Item::Rows);
+        assert_eq!(labels(&panel), ["Less space", "More space", "Reset"]);
+        let mut canvas = RecordingCanvas::new();
+        panel.draw(&mut canvas, &Theme::CLASSIC);
+        assert!(canvas.texts().contains(&ROWS_HINT));
+        assert!(!canvas.texts().contains(&FONT_HINT));
+
+        // The second button means more space here, not a larger font.
+        assert!(panel.press(1).changed);
+        assert_eq!(panel.fonts.row_spacing, "roomy");
+        assert_eq!(panel.fonts.log_size, FontSettings::default().log_size);
+        assert!(!panel.button_applies(1), "already roomy");
+        assert!(!panel.button_applies(3), "there's no fourth button");
     }
 
     #[test]
@@ -432,7 +505,7 @@ mod tests {
             send(&mut panel, Event::Char('+'));
         }
         assert_eq!(panel.fonts.window_size, *WINDOW_SIZES.end());
-        assert!(panel.press(RESET).changed);
+        assert!(panel.act(Press::Reset).changed);
         assert_eq!(panel.fonts, FontSettings::default());
     }
 
@@ -466,7 +539,8 @@ mod tests {
     #[test]
     fn buttons_work_by_mouse_and_clicking_outside_closes() {
         let mut panel = panel(Item::LogFont);
-        let larger = panel.buttons.chip_rect(LARGER).unwrap();
+        // Choose font, Smaller, then Larger.
+        let larger = panel.buttons.chip_rect(2).unwrap();
         let point = Point::new(larger.left + 3.0, larger.top + 3.0);
         assert!(send(&mut panel, Event::MouseDown(point, MouseButton::Left, NONE)).changed);
         assert_eq!(panel.focus, Part::Buttons);
