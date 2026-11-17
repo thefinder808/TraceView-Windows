@@ -10,6 +10,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - A Pause button at the end of the status bar pauses live updates, as Ctrl+U does, and shows Resume while paused.
 - End in the log goes back to following new rows, and now ends a pause too.
 - View > Fonts is now View > Fonts and row spacing. With row spacing selected, its buttons say Less space and More space, rather than the font buttons, which read as if they changed the font.
+- Double-clicking in the Find, Filter or any other text box selects the word under the pointer, as in Windows' own text boxes.
 
 **Error lookup**
 

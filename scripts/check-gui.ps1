@@ -22,6 +22,15 @@ using System;
 using System.Runtime.InteropServices;
 public static class Input {
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr window, int index);
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr window, ref POINT point);
+    /// A mouse message's position, from screen pixels to the window's client area.
+    public static IntPtr ClientPoint(IntPtr window, double x, double y) {
+        var point = new POINT { X = (int)x, Y = (int)y };
+        ScreenToClient(window, ref point);
+        return (IntPtr)((point.Y << 16) | (point.X & 0xFFFF));
+    }
 }
 '@
 $WM_KEYDOWN = 0x0100
@@ -144,6 +153,37 @@ foreach ($i in 1..50) {
 }
 Start-Sleep -Milliseconds 200
 Check 'the window keeps responding during input' $process.Responding
+
+'--- double-clicking in the find box'
+$GCL_STYLE = -26
+$CS_DBLCLKS = 0x8
+$style = [Input]::GetClassLongPtrW($window, $GCL_STYLE).ToInt64()
+Check 'the window asks Windows for double-clicks' (($style -band $CS_DBLCLKS) -ne 0) ('style 0x{0:X}' -f $style)
+$WM_LBUTTONDOWN = 0x0201
+$WM_LBUTTONUP = 0x0202
+$WM_LBUTTONDBLCLK = 0x0203
+$WM_CHAR = 0x0102
+$find = Find-All (Get-Element $window) ([System.Windows.Automation.ControlType]::Edit) |
+    Where-Object { $_.Current.Name -eq 'Find' } | Select-Object -First 1
+$box = $find.Current.BoundingRectangle
+# Over the first word, a few pixels into the box.
+$point = [Input]::ClientPoint($window, $box.Left + 10, $box.Top + $box.Height / 2)
+[Input]::PostMessageW($window, $WM_LBUTTONDOWN, [IntPtr]1, $point) | Out-Null
+[Input]::PostMessageW($window, $WM_LBUTTONUP, [IntPtr]0, $point) | Out-Null
+foreach ($character in 'upload here'.ToCharArray()) {
+    [Input]::PostMessageW($window, $WM_CHAR, [IntPtr][int]$character, [IntPtr]0) | Out-Null
+}
+# Windows sends a double-click's second press as WM_LBUTTONDBLCLK.
+[Input]::PostMessageW($window, $WM_LBUTTONDOWN, [IntPtr]1, $point) | Out-Null
+[Input]::PostMessageW($window, $WM_LBUTTONUP, [IntPtr]0, $point) | Out-Null
+[Input]::PostMessageW($window, $WM_LBUTTONDBLCLK, [IntPtr]1, $point) | Out-Null
+[Input]::PostMessageW($window, $WM_LBUTTONUP, [IntPtr]0, $point) | Out-Null
+[Input]::PostMessageW($window, $WM_CHAR, [IntPtr][int][char]'X', [IntPtr]0) | Out-Null
+$value = Wait-Until 5 {
+    $text = $find.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    if ($text -eq 'X here') { $text }
+}
+Check 'double-clicking a word selects it, so typing replaces it' ($null -ne $value) "$($find.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value)"
 
 '--- idle cost'
 Start-Sleep -Seconds 1

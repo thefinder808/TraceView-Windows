@@ -44,6 +44,10 @@ pub enum Key {
 pub enum Event {
     KeyDown(Key, Modifiers),
     MouseDown(Point, MouseButton, Modifiers),
+    /// The left button pressed again soon after and close to the last press,
+    /// by Windows' double-click settings. Its `MouseDown` comes just before it,
+    /// so anything that only wants clicks can ignore this.
+    DoubleClick(Point, Modifiers),
     MouseUp(Point, MouseButton),
     MouseMove(Point),
     /// Wheel movement in rows, positive when scrolling toward the file's start.

@@ -30,12 +30,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, PostMessageW,
     PostQuitMessage, RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-    ShowWindow, TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW,
-    IDC_SIZENS, IDC_SIZEWE, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW,
-    WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
-    WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
+    ShowWindow, TranslateMessage, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, GWLP_USERDATA,
+    HTCLIENT, IDC_ARROW, IDC_SIZENS, IDC_SIZEWE, MSG, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOZORDER, SW_SHOW, WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED,
+    WM_DROPFILES, WM_ERASEBKGND, WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
     WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
 };
 
@@ -488,6 +489,14 @@ impl State {
         });
     }
 
+    fn double_click(&self, lparam: LPARAM) {
+        let point = self.point_from(lparam);
+        let modifiers = input::modifiers();
+        self.with_handler(|handler, commands| {
+            handler.event(Event::DoubleClick(point, modifiers), commands);
+        });
+    }
+
     fn mouse_up(&self, lparam: LPARAM, button: MouseButton) {
         let point = self.point_from(lparam);
         // SAFETY: takes no arguments, and only releases this thread's capture.
@@ -604,15 +613,20 @@ unsafe extern "system" fn window_proc(
             show_cursor(state.cursor.get());
             return LRESULT(1);
         }
-        WM_LBUTTONDOWN => {
+        // The class asks for double-clicks, so Windows sends a DBLCLK message in
+        // place of a quick second press. It's still a press, for every button.
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             state.mouse_down(lparam, MouseButton::Left);
+            if message == WM_LBUTTONDBLCLK {
+                state.double_click(lparam);
+            }
             return LRESULT(0);
         }
-        WM_RBUTTONDOWN => {
+        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => {
             state.mouse_down(lparam, MouseButton::Right);
             return LRESULT(0);
         }
-        WM_MBUTTONDOWN => {
+        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
             state.mouse_down(lparam, MouseButton::Middle);
             return LRESULT(0);
         }
@@ -711,6 +725,8 @@ pub fn run(
     let instance = unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
+            // Double-clicks select a word in text boxes, by Windows' own timing.
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(window_proc),
             hInstance: instance.into(),
             lpszClassName: class_name,
