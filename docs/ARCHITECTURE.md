@@ -36,7 +36,9 @@ crates/
                 command palette with fuzzy matching. No unsafe, no Windows
   tv-render/    Canvas on Direct2D and DirectWrite, through a flip-model swap chain on WARP
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
-                contrast themes, per-user file type registration, the user's PATH (user_path.rs)
+                contrast themes, per-user file type registration, the user's PATH (user_path.rs).
+                The window class asks for double-clicks, which reach the app as a press and then a
+                DoubleClick event, so code that only wants presses sees every one
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs.
                 names.rs holds Windows Update and Delivery Optimization code names, written by scripts/code-names.ps1
   traceview/    the EXE. No unsafe

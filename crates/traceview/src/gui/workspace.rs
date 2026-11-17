@@ -2071,7 +2071,9 @@ impl Workspace {
     /// drag ends wherever the mouse goes.
     fn sidebar_event(&mut self, event: Event, commands: &mut Commands) -> bool {
         let consumed = match event {
-            Event::MouseDown(point, ..) => self.sidebar.contains(point),
+            Event::MouseDown(point, ..) | Event::DoubleClick(point, _) => {
+                self.sidebar.contains(point)
+            }
             Event::MouseMove(_) | Event::MouseUp(..) => self.sidebar.is_dragging(),
             Event::Wheel(_) => self.sidebar.contains(self.pointer),
             Event::KeyDown(Key::Escape, _) if self.focus == Focus::Sidebar => {
@@ -2736,7 +2738,9 @@ impl Workspace {
             Event::KeyDown(key, modifiers) => {
                 self.menu.is_active() || modifiers.alt || (*key == Key::F(10) && !modifiers.shift)
             }
-            Event::MouseDown(point, ..) => open || self.menu.contains(*point),
+            Event::MouseDown(point, ..) | Event::DoubleClick(point, _) => {
+                open || self.menu.contains(*point)
+            }
             Event::MouseMove(_)
             | Event::MouseUp(..)
             | Event::Wheel(_)
@@ -4038,6 +4042,34 @@ mod tests {
             &mut Commands::default(),
         );
         assert_eq!(workspace.bar_buttons().count(), 0);
+    }
+
+    #[test]
+    fn double_clicking_in_find_or_filter_selects_a_word() {
+        let (_dir, mut workspace) = opened(100);
+        // The recording canvas makes each character 7 wide, after the box's
+        // 6 of padding, so this is over the third character.
+        let double_click = |workspace: &mut Workspace, rect: Rect| {
+            let point = Point::new(rect.left + 6.0 + 7.0 * 2.0 + 3.0, rect.top + 10.0);
+            send(workspace, Event::MouseDown(point, MouseButton::Left, NONE));
+            send(workspace, Event::MouseUp(point, MouseButton::Left));
+            send(workspace, Event::DoubleClick(point, NONE));
+            send(workspace, Event::MouseUp(point, MouseButton::Left));
+        };
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+        type_text(&mut workspace, "message 1");
+        let find = workspace.find_rect();
+        double_click(&mut workspace, find);
+        type_text(&mut workspace, "row");
+        assert_eq!(workspace.tabs[0].find_field.text(), "row 1");
+
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL_SHIFT));
+        type_text(&mut workspace, "level:error");
+        let filter = workspace.filter_rect();
+        double_click(&mut workspace, filter);
+        assert_eq!(workspace.focus, Focus::Filter);
+        type_text(&mut workspace, "kind");
+        assert_eq!(workspace.tabs[0].filter_field.text(), "kind:error");
     }
 
     #[test]

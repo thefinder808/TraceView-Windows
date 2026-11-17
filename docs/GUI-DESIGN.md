@@ -238,6 +238,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Live tail checks each file every 250 ms** rather than waiting for change notifications. Windows reports changes late for files a writer holds open, and unreliably on network shares.
 - **Highlight rules in chosen colors** waited for milestone 5. Find covered one highlight until then.
 - **IME** is built: IMM32's composition window sits at the caret, and the IME is on only while a text box has focus. It hasn't been tried with a real IME, because none is installed here.
+- **Double-clicking in a text box** selects the word under the pointer, or the run of spaces or punctuation it's on, as Windows' own text boxes do. That came later: until then the window didn't ask Windows for double-clicks, so a double-click only placed the caret twice. Windows' double-click speed and distance settings decide what counts.
 
 **Not covered by automation, so these need a person:** choosing several files in the Open dialog, drag and drop, an IME, Narrator, and a day of real use alongside CMTrace.
 

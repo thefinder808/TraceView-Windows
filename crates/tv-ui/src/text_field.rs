@@ -41,6 +41,25 @@ fn is_word_char(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
+/// What a double-click selects a run of: word characters, spaces, or anything
+/// else, such as `--` or `/`.
+#[derive(PartialEq)]
+enum CharKind {
+    Word,
+    Space,
+    Other,
+}
+
+fn char_kind(character: char) -> CharKind {
+    if is_word_char(character) {
+        CharKind::Word
+    } else if character.is_whitespace() {
+        CharKind::Space
+    } else {
+        CharKind::Other
+    }
+}
+
 impl TextField {
     pub fn text(&self) -> &str {
         &self.text
@@ -261,6 +280,35 @@ impl TextField {
         best.0
     }
 
+    /// Where the character under `x` starts. Past the end, that's the last one.
+    fn char_under(&self, x: f32, canvas: &mut dyn Canvas, rect: Rect) -> usize {
+        let target = x - rect.left - PADDING + self.scroll;
+        let mut under = 0;
+        for (index, _) in self.text.char_indices() {
+            if canvas.text_width(&self.text[..index], FontRole::Ui) > target {
+                break;
+            }
+            under = index;
+        }
+        under
+    }
+
+    /// The run of characters of one kind that the character at `index` is in.
+    fn run_around(&self, index: usize) -> std::ops::Range<usize> {
+        let Some(kind) = self.char_at(index).map(char_kind) else {
+            return index..index;
+        };
+        let mut start = index;
+        while self.char_before(start).map(char_kind).as_ref() == Some(&kind) {
+            start = self.previous_boundary(start);
+        }
+        let mut end = index;
+        while self.char_at(end).map(char_kind).as_ref() == Some(&kind) {
+            end = self.next_boundary(end);
+        }
+        start..end
+    }
+
     /// Handles input. Mouse events need the canvas to measure text and the
     /// field's rectangle to know where it is.
     pub fn handle(&mut self, event: Event, canvas: &mut dyn Canvas, rect: Rect) -> FieldResponse {
@@ -281,6 +329,19 @@ impl TextField {
                 let position = self.position_at(point.x, canvas, rect);
                 self.move_to(position, modifiers.shift);
                 self.dragging = true;
+                FieldResponse {
+                    redraw: true,
+                    ..FieldResponse::default()
+                }
+            }
+            // As in Windows' own text boxes, a double-click selects the word
+            // under the pointer, or the spaces or punctuation it's on.
+            Event::DoubleClick(point, _) if rect.contains(point) => {
+                let range = self.run_around(self.char_under(point.x, canvas, rect));
+                self.anchor = range.start;
+                self.cursor = range.end;
+                // A hand that moves a little while the button is down keeps it.
+                self.dragging = false;
                 FieldResponse {
                     redraw: true,
                     ..FieldResponse::default()
@@ -568,6 +629,67 @@ mod tests {
             ),
         );
         assert_eq!(field.cursor, 2);
+    }
+
+    /// A double-click, with its press first as Windows sends them, over the
+    /// character at `index`. The recording canvas makes each character 7 wide.
+    fn double_click(field: &mut TextField, index: usize) -> FieldResponse {
+        let point = Point::new(PADDING + 7.0 * index as f32 + 3.0, 10.0);
+        send(field, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(field, Event::MouseUp(point, MouseButton::Left));
+        let response = send(field, Event::DoubleClick(point, NONE));
+        send(field, Event::MouseUp(point, MouseButton::Left));
+        response
+    }
+
+    #[test]
+    fn double_clicking_selects_the_word_under_the_pointer() {
+        let mut field = typed("error 0x80070005 here");
+        assert!(double_click(&mut field, 8).redraw);
+        assert_eq!(field.selected_text(), "0x80070005");
+        double_click(&mut field, 0);
+        assert_eq!(field.selected_text(), "error");
+        // Past the end is the last word, as in Windows' text boxes.
+        double_click(&mut field, 40);
+        assert_eq!(field.selected_text(), "here");
+        // Typing replaces it.
+        send(&mut field, Event::Char('X'));
+        assert_eq!(field.text(), "error 0x80070005 X");
+    }
+
+    #[test]
+    fn double_clicking_spaces_or_punctuation_selects_that_run() {
+        let mut field = typed("a  --regex b");
+        double_click(&mut field, 1);
+        assert_eq!(field.selected_text(), "  ");
+        double_click(&mut field, 3);
+        assert_eq!(field.selected_text(), "--");
+        let mut empty = TextField::default();
+        double_click(&mut empty, 0);
+        assert_eq!(empty.selected_text(), "");
+    }
+
+    #[test]
+    fn moving_after_a_double_click_keeps_the_word() {
+        let mut field = typed("one two three");
+        let point = Point::new(PADDING + 7.0 * 5.0 + 3.0, 10.0);
+        send(&mut field, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(&mut field, Event::DoubleClick(point, NONE));
+        send(
+            &mut field,
+            Event::MouseMove(Point::new(point.x + 9.0, 10.0)),
+        );
+        assert_eq!(field.selected_text(), "two");
+    }
+
+    #[test]
+    fn a_double_click_elsewhere_is_ignored() {
+        let mut field = typed("one two");
+        let outside = Point::new(RECT.right + 20.0, 10.0);
+        assert_eq!(
+            send(&mut field, Event::DoubleClick(outside, NONE)),
+            FieldResponse::default()
+        );
     }
 
     #[test]
