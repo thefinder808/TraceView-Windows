@@ -204,13 +204,14 @@ The launch figure has no log open. A log with a cached index adds about 50-110 m
 - **Tabs.** Logs open from the Open dialog, which takes several files at once, from drag and drop, or from the command line. Ctrl+Tab and Ctrl+1-9 switch tabs. Ctrl+W or a middle-click closes one.
 - **Menu bar.** File, Edit, View and Tools, all usable from the keyboard with Alt or F10.
 - **Filter** (Ctrl+Shift+F). Takes words, "quoted phrases", `/regex/`, `level:`, `component:`, `thread:`, `from:` and `to:`. The old filter stays on screen until a new one finishes.
-- **Find** (Ctrl+F, F3, Shift+F3). Matching rows are highlighted and counted, as in "3 of 120", which also covers CMTrace's Highlight. Ctrl+E and Ctrl+Shift+E jump between errors.
+- **Find** (Ctrl+F, F3, Shift+F3). Matching rows are highlighted and counted, as in "3 of 120", which also covers CMTrace's Highlight. Ctrl+E and Ctrl+Shift+E jump between errors. Later, ▲ and ▼ buttons beside the box did what Shift+F3 and F3 do, leaving focus in the box.
 - **Details pane.** Shows the selected row's fields and whole message, and what Windows says its error codes mean.
 - **Error Lookup** (Ctrl+L). Takes a code or a pasted log line, and opens with the selected row's first code.
 - **Live tail.**
   - New rows appear within about a quarter of a second, and log rotation is followed.
   - A tab follows new rows while it's at the bottom, which is where logs open, as in CMTrace.
-  - Ctrl+U pauses.
+  - Ctrl+U pauses. Later, a Pause button at the end of the status bar did too, showing Resume while paused, as CMTrace has a pause button on its toolbar.
+  - End, or Ctrl+End, in the log goes to the newest row and follows it again, and ends a pause. Shift+End only selects to the end.
 - **Merge** (Ctrl+Shift+M). Merges the open logs into one timeline in a new tab, which keeps updating.
 - **Themes.** Classic and Console, or follow Windows.
 
@@ -321,10 +322,11 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Fonts and row spacing:**
 
-- **View > Fonts** lists the log font, the row spacing and the window font. Smaller and Larger, or minus and plus, change whichever is selected, and Reset goes back to Consolas 13 and Segoe UI 12.
+- **View > Fonts and row spacing** lists the log font, the row spacing and the window font. Smaller and Larger, or minus and plus, change whichever is selected, and Reset goes back to Consolas 13 and Segoe UI 12. With row spacing selected, the buttons are Less space and More space, as there's no font to choose. An earlier version showed the font buttons for it too, which read as if they changed the font.
 - **Choose font** opens the command palette's list of installed fonts. Typing narrows it, fixed-width fonts say so, and the one in use comes first. Choosing one, or pressing Esc, goes back to the editor.
 - **Ctrl+Plus, Ctrl+Minus and Ctrl+0** make log text larger, smaller or the default size, anywhere, and so does Ctrl with the mouse wheel. The status bar says the new size.
 - **Row spacing** is compact, normal or roomy, added to the font's measured line height. Normal with Consolas 13 is the 18-pixel row from before.
+- **CMTrace's look:** CMTrace 5.00 draws rows in Segoe UI 9 point, which is 12 pixels at 100%, in 19-pixel rows, and the details pane in Tahoma 8 point. Its rows look airier than Consolas 13 because the text is smaller in about the same height. A log font of Segoe UI 12 with normal spacing matches it.
 - **A font this PC doesn't have** draws in the default, and the editor says so, which matters for a portable copy carried between PCs.
 
 **Differences from this design:**

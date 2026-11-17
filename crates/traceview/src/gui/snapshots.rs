@@ -658,6 +658,17 @@ fn rows_fit_their_font_at_every_size() {
         frame.at(rect.right - 4.0, rect.top + 4.0),
         theme.panel_background
     );
+
+    // Row spacing's buttons say what they do to it.
+    send(&mut workspace, Event::KeyDown(Key::Down, NONE));
+    render(&mut workspace, "fonts-rows", 96.0, |_| true);
+    let panel = workspace.fonts_panel.as_ref().unwrap();
+    let labels: Vec<&str> = panel
+        .button_chips()
+        .iter()
+        .map(|chip| chip.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Less space", "More space", "Reset"]);
 }
 
 #[test]

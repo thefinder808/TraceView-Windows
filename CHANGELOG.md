@@ -4,6 +4,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Viewer**
+
+- ▲ and ▼ buttons beside the Find box move to the previous and next match, as Shift+F3 and F3 do, and leave the cursor in the box.
+- A Pause button at the end of the status bar pauses live updates, as Ctrl+U does, and shows Resume while paused.
+- End in the log goes back to following new rows, and now ends a pause too.
+- View > Fonts is now View > Fonts and row spacing. With row spacing selected, its buttons say Less space and More space, rather than the font buttons, which read as if they changed the font.
+
 **Error lookup**
 
 - On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0… and 0x87D1…) get text, such as "Item not found" for 0x87D00215, and many Windows Update codes get text beside their names. It comes, in English, from the copy of CMTrace that ConfigMgr installs, which TraceView reads as a file but never runs. `lookup`, summaries and the Error Lookup window all use it.
