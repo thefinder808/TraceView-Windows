@@ -24,7 +24,7 @@
 //! | Windows Update, 0x8024xxxx | `wuaueng.dll`, then `CMTrace.exe` | `wuaueng.dll`'s table only holds event messages. CMTrace has text for 249 of these, so they get it where ConfigMgr is installed, and their names from `names.rs` everywhere |
 //! | Delivery Optimization, 0x80D0xxxx | none | No Windows file has text for these, so they get their names from `names.rs` |
 //! | WMI, 0x80041xxx and 0x80042xxx | `wbem\wmiutils.dll` | Works |
-//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled |
+//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server, or from TraceView's own folder | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled |
 //!
 //! DLLs are loaded as data, so none of their code runs, and from full paths, so
 //! Windows never searches for them. CMTrace isn't loaded at all: `resources.rs`

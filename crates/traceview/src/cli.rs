@@ -47,14 +47,18 @@ Choosing logs:
 
 Query options:
   --text <text>        Find this text, ignoring case
-  --regex <pattern>    Find this regular expression, ignoring case
+  --regex <pattern>    Find this regular expression, ignoring case. Given more
+                       than once, or together, --text and --regex find rows
+                       matching every one
   --case-sensitive     Match case exactly
   --min-level <level>  debug, info, notice, warning, error or critical
   --level <level>      Only rows at exactly this level
   --component <name>   Only this component
   --thread <id>        Only this thread
-  --from <time>        Start time: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
-  --to <time>          End time. A bare date includes that whole day
+  --from <time>        Start time: YYYY-MM-DD, YYYY-MM-DDTHH:MM or
+                       YYYY-MM-DDTHH:MM:SS
+  --to <time>          End time. A bare date includes that whole day, and a
+                       time without seconds that whole minute
   --offset <n>         Skip this many matches
   --limit <n>          Matches per page (default 100, maximum 1000)
   --newest-first       Newest matches first, so --limit 10 gives the last ten
@@ -63,8 +67,9 @@ Query options:
   --unless-followed-by <text>
                        Keep only matches with no row containing this after them
                        before the next match, such as an \"Entering CS mode\"
-                       never followed by \"Leaving CS mode\". Read as --text or
-                       --regex is, in the same log, whatever other filters say
+                       never followed by \"Leaving CS mode\". Read as the first
+                       --text or --regex is, in the same log, whatever other
+                       filters say
   --count-by <group>   Count the matches by day, hour, file, level, component
                        or template, the message with its numbers and codes
                        taken out, instead of listing them. JSON by default:
@@ -89,8 +94,9 @@ With --format lines:
   --max-width <n>      Cut lines to this many characters
 
 Lookup explains an error code with Windows' own text, or with CMTrace's where
-ConfigMgr is installed. Give the code as hex, decimal or a negative number, such
-as 0x80070005, 1603 or -2147024891, or give a line of a log.
+ConfigMgr is installed or a CMTrace.exe is in TraceView's own folder. Give the
+code as hex, decimal or a negative number, such as 0x80070005, 1603 or
+-2147024891, or give a line of a log.
 
 Setup gets TraceView ready for AI agents, for your Windows account only: it
 copies TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds that folder to your
@@ -339,7 +345,6 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut no_cache = false;
     let mut pretty = false;
     let mut query = Query::default();
-    let mut text_given = false;
     let mut top = summary::DEFAULT_TOP;
     let mut shape = Shape::default();
     let mut scope = Scope::default();
@@ -373,12 +378,17 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--no-header" if is_query => shape.header = false,
             "--fields" if is_query => shape.fields = Some(parse_fields(&value(&arg)?)?),
             "--text" | "--regex" if is_query => {
-                if text_given {
-                    return Err("use only one of --text and --regex".to_string());
+                let given = value(&arg)?;
+                let regex = arg == "--regex";
+                if query.text.is_none() {
+                    query.regex = regex;
+                    query.text = Some(given);
+                } else {
+                    // Each one after the first narrows it: rows must match all.
+                    query
+                        .also
+                        .push(if regex { given } else { query::literal(&given) });
                 }
-                text_given = true;
-                query.regex = arg == "--regex";
-                query.text = Some(value(&arg)?);
             }
             "--unless-followed-by" if is_query => unless_followed_by = Some(value(&arg)?),
             "--case-sensitive" if is_query => query.case_sensitive = true,
@@ -408,7 +418,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 .to_string(),
         );
     }
-    if unless_followed_by.is_some() && !text_given {
+    if unless_followed_by.is_some() && query.text.is_none() {
         return Err(
             "--unless-followed-by needs --text or --regex to say what to look for".to_string(),
         );

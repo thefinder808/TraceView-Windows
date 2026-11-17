@@ -102,8 +102,10 @@ Both take several logs, or a folder, which means the logs directly in it, or in 
 ```
 
 ```powershell
-.\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10:00 --to 2026-11-05T10:20:00 --format lines
+.\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10 --to 2026-11-05T10:20 --format lines
 ```
+
+Times can leave out the seconds, and as a `--to`, a time without seconds takes in that whole minute, as a bare date takes in that whole day.
 
 `--format lines` gives one short line per row instead of JSON, at under half the size, and each row starts with its log and row number, as in `CBS.log:11503`. For a summary, it gives a line per log with problems and per problem pattern, at about a third of the JSON's size.
 
@@ -121,6 +123,8 @@ Lines can be trimmed further with `--fields time,message`, `--max-width 200` and
 .\traceview.exe query C:\Windows\CCM\Logs --text "upload" --count-by day --format lines
 ```
 
+Give `--text` or `--regex` more than once, or both, to find only the rows matching every one, such as `--regex "26100\.9549" --text "Installed"`.
+
 `--exclude` leaves out rows matching a regular expression, such as errors that are routine where you work. Give it more than once to leave out more. A summary says how many rows, errors and warnings it left out, so nothing goes missing silently:
 
 ```powershell
@@ -135,7 +139,7 @@ Lines can be trimmed further with `--fields time,message`, `--max-width 200` and
 
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
-`lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`. On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0…) and many Windows Update codes also get English text from the copy of CMTrace that ConfigMgr installs. TraceView only reads that file, and never runs it:
+`lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`. On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0…) and many Windows Update codes also get English text from the copy of CMTrace that ConfigMgr installs. On another PC, such as one you copy logs to, put a copy of `CMTrace.exe` in the folder holding `traceview.exe` for the same text. After `traceview setup`, that's `%LOCALAPPDATA%\Programs\TraceView`. TraceView only reads that file, and never runs it:
 
 ```powershell
 .\traceview.exe lookup 0x80070005
