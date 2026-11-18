@@ -6,7 +6,7 @@ use crate::encoding::{self, Encoding};
 use crate::index::{self, Layout, RowArrays};
 use crate::level::Level;
 use crate::parse::{self, Fields, Format, ParseContext};
-use crate::reader;
+use crate::reader::{self, Source};
 use crate::time::YearHint;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -20,6 +20,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Small files index so quickly that a cache entry isn't worth writing.
 const CACHE_MIN_LEN: u64 = 64 * 1024 * 1024;
 const HEAD_LEN: usize = 64 * 1024;
+/// Logs up to this size are read whole when opened, in one read, rather than
+/// separately for their format, index and fingerprint. Nearly every
+/// ConfigMgr log is, and a slow network share then answers once.
+const READ_WHOLE_LEN: u64 = 16 * 1024 * 1024;
 /// The most contiguous row data read at once.
 const READ_BLOCK: u64 = 4 * 1024 * 1024;
 /// Rows longer than this are cut off when read, so one enormous row can't
@@ -129,13 +133,13 @@ fn modified_nanos(time: SystemTime) -> u64 {
 /// format meant for the file's name comes first, then SCCM, then a custom
 /// format that matches most of the first lines, and plain text otherwise.
 fn detect_layout(
-    file: &File,
+    source: Source<'_>,
     len: u64,
     path: &Path,
     formats: &[Arc<CustomFormat>],
 ) -> io::Result<(Layout, Option<Arc<CustomFormat>>)> {
     let mut head = vec![0u8; HEAD_LEN.min(len as usize)];
-    let filled = reader::read_at(file, 0, &mut head)?;
+    let filled = source.read_at(0, &mut head)?;
     head.truncate(filled);
     let (encoding, body_offset) = encoding::detect(&head);
     let body = head.get(body_offset as usize..).unwrap_or(&[]);
@@ -218,7 +222,18 @@ impl LogFile {
         let len = metadata.len();
         check_size(len)?;
         let modified = metadata.modified()?;
-        let (layout, custom) = detect_layout(&file, len, &path, formats)?;
+        let whole = if len <= READ_WHOLE_LEN {
+            let mut bytes = vec![0u8; len as usize];
+            let filled = reader::read_at(&file, 0, &mut bytes)?;
+            bytes.truncate(filled);
+            Some(bytes)
+        } else {
+            None
+        };
+        // A file that shrank since its size was read is indexed as read.
+        let len = whole.as_ref().map_or(len, |bytes| bytes.len() as u64);
+        let source = whole.as_deref().map_or(Source::File(&file), Source::Bytes);
+        let (layout, custom) = detect_layout(source, len, &path, formats)?;
         let context = ParseContext {
             year_hint: YearHint::from_system_time(modified),
             custom,
@@ -234,24 +249,25 @@ impl LogFile {
             }
             Some(mut entry)
                 if len > entry.stamp.indexed_len
-                    && reader::fingerprint(&file, entry.stamp.indexed_len)?
+                    && reader::fingerprint(source, entry.stamp.indexed_len)?
                         == entry.stamp.fingerprint =>
             {
                 let (keep, from) = resume_point(&entry.rows, layout.body_offset);
                 entry.rows.truncate(keep);
                 entry
                     .rows
-                    .extend(index::scan(&file, len, layout, &context, from, progress)?);
+                    .extend(index::scan(source, len, layout, &context, from, progress)?);
                 (entry.rows, CacheUse::Extended)
             }
             _ => (
-                index::scan(&file, len, layout, &context, layout.body_offset, progress)?,
+                index::scan(source, len, layout, &context, layout.body_offset, progress)?,
                 CacheUse::Miss,
             ),
         };
         check_rows(rows.rows())?;
 
-        let fingerprint = reader::fingerprint(&file, len)?;
+        let fingerprint = reader::fingerprint(source, len)?;
+        drop(whole);
         if cache_use != CacheUse::Hit {
             if let Some(dir) = use_cache {
                 let stamp = CacheStamp {
@@ -449,10 +465,17 @@ impl LogFile {
         // Reopen by path, because rotation leaves the old handle on the old file.
         let file = File::open(&self.path)?;
         let grew_in_place = len >= self.indexed_len
-            && reader::fingerprint(&file, self.indexed_len)? == self.fingerprint;
+            && reader::fingerprint(Source::File(&file), self.indexed_len)? == self.fingerprint;
         let (layout, context, rows, change) = if grew_in_place {
             let (keep, from) = resume_point(&self.rows, self.layout.body_offset);
-            let added = index::scan(&file, len, self.layout, &self.context, from, progress)?;
+            let added = index::scan(
+                Source::File(&file),
+                len,
+                self.layout,
+                &self.context,
+                from,
+                progress,
+            )?;
             let total = keep + added.rows();
             check_rows(total)?;
             // Growing the arrays copies every row, so do it here rather than
@@ -467,16 +490,17 @@ impl LogFile {
             };
             (self.layout, self.context.clone(), rows, change)
         } else {
-            let (layout, custom) = detect_layout(&file, len, &self.path, &self.formats)?;
+            let source = Source::File(&file);
+            let (layout, custom) = detect_layout(source, len, &self.path, &self.formats)?;
             let context = ParseContext {
                 year_hint: YearHint::from_system_time(modified),
                 custom,
             };
-            let rows = index::scan(&file, len, layout, &context, layout.body_offset, progress)?;
+            let rows = index::scan(source, len, layout, &context, layout.body_offset, progress)?;
             check_rows(rows.rows())?;
             (layout, context, NewRows::Replace(rows), Change::Reset)
         };
-        let fingerprint = reader::fingerprint(&file, len)?;
+        let fingerprint = reader::fingerprint(Source::File(&file), len)?;
         Ok(Some(RefreshPlan {
             base,
             change,

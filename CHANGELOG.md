@@ -7,6 +7,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 **Reading logs**
 
 - Windows Update's `ReportingEvents.log` is read as rows, in the viewer and the command line. Each row's time, with its milliseconds and offset from UTC, is in the Time column, and a `Failure` is an error. The operation, such as `Content Install`, is the component, the program that asked, such as `wa_3rd_party_host_32.exe`, the thread, and the event's name the source. Before, each whole row was the message, with no time. Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
+- Logs on network shares open with fewer round trips. A log of 16 MB or less, as nearly every ConfigMgr log is, is read in one go, rather than in four reads that fetched its start twice: an 845 KB log takes 1 read where it took 5, and 14% fewer bytes. Following a log live reads 12 KB per change to check it wasn't replaced, rather than 68 KB.
 
 **Viewer**
 

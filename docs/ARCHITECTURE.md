@@ -81,6 +81,7 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 ## How a log is opened
 
+0. A log of 16 MiB or less, as nearly every ConfigMgr log is, is read whole in one read, and every step below works from that copy (`reader::Source::Bytes`). A slow network share then answers once: opening an 845 KB log on a share took 1 read, where it took 5 reads and 16% more bytes. The copy is dropped once the log is open.
 1. Read the start of the file to find its encoding and format.
 2. Look for a cached index:
    - **Hit:** path, size and modified time all match, so it's used as is.
@@ -92,7 +93,7 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 ## Key rules
 
-**File access.** The engine uses positional reads, never memory maps. While a file is mapped, a writer can't truncate or shrink it (OS error 1224), and a viewer must not break the app writing a log. A test enforces this. Reads were also about 40% faster than mapping on a cold disk, though warm text searches are about twice as slow because bytes get copied.
+**File access.** The engine uses positional reads, never memory maps. While a file is mapped, a writer can't truncate or shrink it (OS error 1224), and a viewer must not break the app writing a log. A test enforces this. Reads were also about 40% faster than mapping on a cold disk, though warm text searches are about twice as slow because bytes get copied. A log's fingerprint, which tells one that grew from one that was replaced, hashes its first 8 KiB and the 4 KiB before its old end. Live tail reads it on every refresh, so it's kept small for logs on slow network shares.
 
 **Rows.** A row is a line in plain logs and a whole `<![LOG[...]LOG]!>` entry in SCCM logs, because SCCM messages can span lines. An SCCM row number can therefore differ from a text editor's line number, so results also report the byte offset.
 

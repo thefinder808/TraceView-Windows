@@ -41,17 +41,42 @@ pub(crate) fn read_at(file: &File, offset: u64, buffer: &mut [u8]) -> io::Result
     Ok(filled)
 }
 
-/// A hash of a file's first 64 KiB and last 4 KiB up to `len`. It tells a log
-/// that grew from one that was replaced, without reading the whole file.
-pub(crate) fn fingerprint(file: &File, len: u64) -> io::Result<u64> {
-    const HEAD: u64 = 64 * 1024;
+/// Where a log's bytes come from: its file, or all of it, already read. A
+/// small log is read whole when it's opened, so a slow network share is asked
+/// once rather than for each part.
+#[derive(Clone, Copy)]
+pub(crate) enum Source<'a> {
+    File(&'a File),
+    Bytes(&'a [u8]),
+}
+
+impl Source<'_> {
+    /// As [`read_at`], from whichever the source is.
+    pub(crate) fn read_at(self, offset: u64, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Source::File(file) => read_at(file, offset, buffer),
+            Source::Bytes(bytes) => {
+                let start = usize::try_from(offset).map_or(bytes.len(), |at| at.min(bytes.len()));
+                let count = buffer.len().min(bytes.len() - start);
+                buffer[..count].copy_from_slice(&bytes[start..start + count]);
+                Ok(count)
+            }
+        }
+    }
+}
+
+/// A hash of a file's first 8 KiB and last 4 KiB up to `len`. It tells a log
+/// that grew from one that was replaced, without reading the whole file. Live
+/// tail reads it on every refresh, so it's kept small for slow network shares.
+pub(crate) fn fingerprint(source: Source<'_>, len: u64) -> io::Result<u64> {
+    const HEAD: u64 = 8 * 1024;
     const TAIL: u64 = 4 * 1024;
     let mut buffer = vec![0u8; HEAD.min(len) as usize];
-    let filled = read_at(file, 0, &mut buffer)?;
+    let filled = source.read_at(0, &mut buffer)?;
     let mut hash = fnv1a(0xcbf2_9ce4_8422_2325, &buffer[..filled]);
     let tail_len = TAIL.min(len);
     buffer.resize(tail_len as usize, 0);
-    let filled = read_at(file, len - tail_len, &mut buffer)?;
+    let filled = source.read_at(len - tail_len, &mut buffer)?;
     hash = fnv1a(hash, &buffer[..filled]);
     Ok(fnv1a(hash, &len.to_le_bytes()))
 }
