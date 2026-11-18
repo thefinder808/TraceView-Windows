@@ -44,7 +44,8 @@ crates/
                 names.rs holds Windows Update and Delivery Optimization code names, written by scripts/code-names.ps1
                 cbs_names.rs holds servicing (CBS and PSFX) code names, from Microsoft Learn
   traceview/    the EXE. No unsafe
-    cli.rs        query, summarize, lookup and setup
+    cli.rs        query, summarize, trace, lookup and setup
+    symptoms.rs   summarize --symptoms: signs of trouble ConfigMgr logs at info level
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
     gui/          app (connects the window and renderer to the workspace)
                   workspace (menus, tabs, focus, layout, input routing, and the
@@ -318,3 +319,4 @@ The goal is one engine with several front ends in the same EXE:
 - **ConfigMgr and Windows Update error text away from ConfigMgr.** CMTrace's text covers clients and site servers. A PC with neither, such as one that logs were copied to, gets it only from a copy of `CMTrace.exe` put in TraceView's folder, and a console's `srsresources.dll` hasn't been tested.
 - **Time zones,** which merging files from different zones will need.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.
+- **Auto-updates,** planned for the next release. TraceView never connects to the internet today, as the README promises, so this needs: a clear way to turn it off, including for managed and offline PCs, and the README's privacy section changed to say so; a download used only once it's signed by the same publisher as the running EXE and matches `SHA256SUMS.txt`; only full releases, and never a downgrade; only the copy `traceview setup` installed updated, swapped in by renaming, as Windows locks a running EXE; and never an update in the middle of a command an agent is running.
