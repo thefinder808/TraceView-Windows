@@ -101,6 +101,8 @@ Both take several logs, or a folder, which means the logs directly in it, or in 
 .\traceview.exe summarize C:\Windows\CCM\Logs
 ```
 
+A summary also lists the longest gaps of a day or more with no rows, which for a folder means no rows in any log, as when a PC was off or asleep for weeks. Rows that `--exclude` leaves out still count, since any row shows the PC was on.
+
 ```powershell
 .\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10 --to 2026-11-05T10:20 --format lines
 ```

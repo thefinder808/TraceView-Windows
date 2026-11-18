@@ -23,7 +23,8 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--from` and `--to` take times without seconds, such as `2026-10-15T10:06`. As a `--to`, that takes in the whole minute.
 - `--text` and `--regex` can be given together, or more than once, to find only the rows matching every one. Before, using both was an error.
 - `query --context N` shows the N rows before and after each match, from its own log, so there's no need to open the file to see what led up to an error. In lines, they're indented, `--` separates the groups, and matches close together share one. In JSON, each match gets `before` and `after` lists.
-- The AI agent skill mentions `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
+- Summaries list the longest gaps of a day or more with no rows, five at most, in time order. For a folder, that's no rows in any log, as when a PC was off or asleep for weeks, which before could only be found with `--count-by day`. In JSON, they're `gaps`, each with `from`, `to` and `days`.
+- The AI agent skill mentions gaps, `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
 
 ## 0.10.0
 

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use tv_engine::activity::{Activity, Gap};
 use tv_engine::encoding;
 use tv_engine::query::{self, Matcher, Query};
 use tv_engine::summary::{self, LevelCounts, Pattern, Spike, Summary};
@@ -39,7 +40,8 @@ A folder means the logs directly in it: .log, .lo_ and .txt files, the newest
 500 at most. Given several logs, query merges them into one timeline by time,
 and summarize lists the logs with problems and the worst problems across them.
 A summary counts a log's rotated copies, such as AppEnforce.lo_ and
-AppEnforce-20261020-123456.log, as part of AppEnforce.log.
+AppEnforce-20261020-123456.log, as part of AppEnforce.log. It lists the longest
+gaps of a day or more with no rows in any log, as when a PC was off.
 
 Choosing logs:
   --recurse            Read the logs in subfolders too
@@ -706,6 +708,13 @@ struct LogsSummary {
     codes: Vec<CodeInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     excluded: Option<Excluded>,
+    /// Gaps of a day or more with no rows in any log, such as a PC that was
+    /// off, the longest few, in time order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    gaps: Vec<Gap>,
+    /// Gaps of a day or more not listed.
+    #[serde(skip_serializing_if = "is_zero")]
+    other_gaps: usize,
 }
 
 #[derive(Serialize)]
@@ -1294,6 +1303,10 @@ struct SummaryView<'a> {
     /// Empty for one log.
     logs: &'a [LogOverview],
     other_logs: usize,
+    /// Whether this sums up several logs, so a gap has no rows in any of them.
+    several: bool,
+    gaps: &'a [Gap],
+    other_gaps: usize,
     patterns: Vec<(&'a str, &'a Pattern)>,
     spikes: &'a [Spike],
     codes: &'a [CodeInfo],
@@ -1336,6 +1349,22 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
         0 => {}
         1 => lines.push("# 1 other log has no warnings or errors.".to_string()),
         other => lines.push(format!("# {other} other logs have no warnings or errors.")),
+    }
+    if !view.gaps.is_empty() {
+        lines.push(format!(
+            "# Gaps of a day or more with no rows{}: from to days",
+            if view.several { " in any log" } else { "" }
+        ));
+        lines.extend(
+            view.gaps
+                .iter()
+                .map(|gap| format!("{} {} {:.1}", gap.from, gap.to, gap.days)),
+        );
+        match view.other_gaps {
+            0 => {}
+            1 => lines.push("# And 1 shorter gap of a day or more.".to_string()),
+            more => lines.push(format!("# And {more} shorter gaps of a day or more.")),
+        }
     }
     if !view.patterns.is_empty() {
         lines.push("# Problem patterns: count level last_seen file | template".to_string());
@@ -1888,6 +1917,9 @@ fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> E
             last: result.last_timestamp.as_deref(),
             logs: &result.logs_with_problems,
             other_logs: result.other_logs.len(),
+            several: true,
+            gaps: &result.gaps,
+            other_gaps: result.other_gaps,
             patterns: result
                 .problem_patterns
                 .iter()
@@ -1947,6 +1979,9 @@ fn summarize_one(
                     last: result.last_timestamp.as_deref(),
                     logs: &[],
                     other_logs: 0,
+                    several: false,
+                    gaps: &result.gaps,
+                    other_gaps: result.other_gaps,
                     patterns: result
                         .problem_patterns
                         .iter()
@@ -2052,6 +2087,7 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
     let mut with_problems = Vec::new();
     let mut other_logs = Vec::new();
     let mut patterns: Vec<LogPattern> = Vec::new();
+    let mut activity = Activity::default();
     for (_, files) in families {
         // The current log names the whole, or else its newest copy, as the
         // first listed.
@@ -2071,6 +2107,7 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
         let mut found: Vec<LogPattern> = Vec::new();
         for file in &files {
             let summary = summary::summarize_matching(&file.log, top, range, &control)?;
+            activity.absorb(&summary.activity);
             levels.absorb(&summary.levels);
             overview.rows += summary.total_rows;
             overview.errors += summary.levels.error + summary.levels.critical;
@@ -2127,7 +2164,10 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
             .map(|pattern| pattern.pattern.example.as_str()),
     );
     let logs: Vec<&LogFile> = opened.iter().map(|file| &file.log).collect();
+    let (gaps, other_gaps) = activity.gaps();
     Ok(LogsSummary {
+        gaps,
+        other_gaps,
         excluded: excluded_in(&logs, range)?,
         total_rows,
         levels,

@@ -28,7 +28,8 @@ crates/
     query.rs      search, with serializable query and result types
     merge.rs      the merged timeline of several logs
     overview.rs   counts by level and over time, for the severity chips and histogram
-    summary.rs    severity counts, repeated message patterns, error spikes
+    summary.rs    severity counts, repeated message patterns, error spikes, gaps
+    activity.rs   when logs had rows, and the gaps of a day or more between, such as a PC that was off
     examples/     gen_log (test data), evict_cache (cold-disk testing)
     tests/        robustness (random input), perf_budgets (speed limits)
   tv-ui/        our toolkit: geometry, the Canvas interface, theme tokens and five themes, input,
@@ -274,6 +275,7 @@ The goal is one engine with several front ends in the same EXE:
    - `--newest-first` reverses the matches before paging, so `--offset` pages back in time. It's done in the CLI, so the engine's `Query` is unchanged.
    - `--context N` is also done in the CLI, after paging: `merged_query` reads the N rows either side of each match on the page with `query::read_record`, unfiltered, as its JSON `before` and `after`. Lines output (`row_lines`) puts consecutive matches from one log whose rows touch or overlap into one group, keyed by row number, so no row prints twice, and indents the rows that aren't matches. It's capped at 50 rows a side.
    - `summarize --format lines` turns either kind of summary into `#`-headed sections: logs with problems, problem patterns as `count level last_seen file | template`, error spikes and error codes. A code's readings with the same text, such as an HRESULT and the Win32 code it wraps, show once. `--no-examples` empties each pattern's `example`, which the engine then leaves out of the JSON. Codes are looked up from the examples first.
+   - Summaries list gaps of a day or more with no rows, the five longest in time order, for a PC that was off or asleep. `activity::Activity` keeps stretches of time with rows, where rows less than a day apart are one stretch, and only sorts and joins them when asked for gaps, when another log's are added, or past 4096 stretches. So a row written out of time order adds a stretch rather than a false gap, and memory stays small. The summary's row loop feeds it every row in the time range, even rows `--exclude` leaves out, since any row shows the log was written. A summary of several logs absorbs each log's `Activity`, kept in `Summary` but not serialized, so a gap there means no log wrote anything.
    - **Setup** (`traceview setup`, or Tools > Set up for AI agents...) gets agents using the CLI with no editing by hand. It's in `crates/traceview/src/setup.rs`, and works for this Windows user only, with no administrator rights:
      - It copies the EXE to `%LOCALAPPDATA%\Programs\TraceView`, through a `.new` file swapped in, so a failed copy never leaves half an EXE.
      - It adds that folder to the end of the user's PATH, through `tv_platform::UserPath`. That reads and writes `HKEY_CURRENT_USER\Environment` as stored, so `%USERPROFILE%` entries keep their variables and the value keeps its type, then broadcasts `WM_SETTINGCHANGE` so new programs see it. Tests use a scratch key instead.

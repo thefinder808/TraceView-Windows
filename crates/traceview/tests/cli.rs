@@ -604,6 +604,54 @@ fn rotated_folder() -> tempfile::TempDir {
 }
 
 #[test]
+fn summaries_list_days_with_no_rows_in_any_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: String| std::fs::write(dir.path().join(name), text).unwrap();
+    // CcmExec.log is quiet from the 21st to the 30th, but PolicyAgent.log
+    // has a row on the 25th, so the PC was on then.
+    write(
+        "CcmExec.log",
+        sccm_row("Tick", 20, 1) + &sccm_row("Tick", 21, 1) + &sccm_row("Tick", 30, 1),
+    );
+    write("PolicyAgent.log", sccm_row("Policy", 25, 1));
+    let folder = dir.path().to_str().unwrap();
+    let lines = lines_of(&["summarize", folder, "--format", "lines"]);
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with("# Gaps"))
+        .expect("a gaps section");
+    assert_eq!(
+        lines[at..at + 4],
+        [
+            "# Gaps of a day or more with no rows in any log: from to days",
+            "2026-10-20T10:00:00.000 2026-10-21T10:00:00.000 1.0",
+            "2026-10-21T10:00:00.000 2026-10-25T10:00:00.000 4.0",
+            "2026-10-25T10:00:00.000 2026-10-30T10:00:00.000 5.0",
+        ]
+    );
+    let json = stdout_json(&traceview(&["summarize", folder]));
+    assert_eq!(json["result"]["gaps"][2]["days"], 5.0);
+    assert!(json["result"].get("other_gaps").is_none());
+
+    // One log has its own gaps.
+    let one = dir.path().join("CcmExec.log");
+    let json = stdout_json(&traceview(&["summarize", one.to_str().unwrap()]));
+    let gaps = json["result"]["gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 2);
+    assert_eq!(gaps[1]["from"], "2026-10-21T10:00:00.000");
+    assert_eq!(gaps[1]["days"], 9.0);
+    let lines = lines_of(&["summarize", one.to_str().unwrap(), "--format", "lines"]);
+    assert!(lines.contains(&"# Gaps of a day or more with no rows: from to days".to_string()));
+
+    // A log with no gaps says nothing about them.
+    let busy = dir.path().join("PolicyAgent.log");
+    let json = stdout_json(&traceview(&["summarize", busy.to_str().unwrap()]));
+    assert!(json["result"].get("gaps").is_none());
+    let lines = lines_of(&["summarize", busy.to_str().unwrap(), "--format", "lines"]);
+    assert!(!lines.iter().any(|line| line.starts_with("# Gaps")));
+}
+
+#[test]
 fn a_summary_counts_rotated_copies_as_their_log() {
     let dir = rotated_folder();
     let json = stdout_json(&traceview(&["summarize", dir.path().to_str().unwrap()]));
