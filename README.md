@@ -31,7 +31,7 @@ Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a
 3. **Check the download** against `SHA256SUMS.txt`, if you like:
 
    ```powershell
-   Get-FileHash TraceView-0.10.0-x64.zip
+   Get-FileHash TraceView-0.11.0-x64.zip
    ```
 
    The hash it prints should match that zip's line in `SHA256SUMS.txt`. PowerShell prints it in capitals, but the letters are the same.

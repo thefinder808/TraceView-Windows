@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.11.0
+
+Following one ID through every log, the rows around each match, gaps where a PC logged nothing, ConfigMgr's warning signs that are only logged as info, Windows Update's `ReportingEvents.log` read as rows, and faster opens on network shares. Still a beta, tested on Windows 11.
 
 **Reading logs**
 
@@ -17,25 +19,25 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - View > Fonts is now View > Fonts and row spacing. With row spacing selected, its buttons say Less space and More space, rather than the font buttons, which read as if they changed the font.
 - Double-clicking in the Find, Filter or any other text box selects the word under the pointer, as in Windows' own text boxes.
 
-**Error lookup**
+**Command line**
+
+- `traceview trace <id> <logs or folders>` follows one ID, such as a deployment, update or job GUID, through every log. It lists each row with that ID as one timeline, each with its log, and folds runs of the same message from one log into one line that says how many, as in `[2 more like it, to row 6 (08:53:18)]`. A header names the logs it's in. Before, this took `query --recurse --text <id>` and reading every repeat.
+- `query --context N` shows the N rows before and after each match, from its own log, so there's no need to open the file to see what led up to an error. In lines, they're indented, `--` separates the groups, and matches close together share one. In JSON, each match gets `before` and `after` lists.
+- Summaries list the longest gaps of a day or more with no rows, five at most, in time order. For a folder, that's no rows in any log, as when a PC was off or asleep for weeks, which before could only be found with `--count-by day`. In JSON, they're `gaps`, each with `from`, `to` and `days`.
+- `summarize --symptoms` also looks for signs of trouble that ConfigMgr logs at info level, which problem patterns leave out, such as an update assignment `already in progress state`, a job `waiting for execution`, or a download `reconnected to the existing job`, and says what each can mean. Each was the clue to a real failure.
+- `--unless-followed-by` says why nothing closed each match it finds. Either the same thing started again first, and whether that one finished, or it's still open at the end of its log. Before, an attempt that was abandoned and then retried successfully looked the same as one that hung. In lines, a label in brackets says which, and the header counts each. In JSON, it's `unclosed` and `next_match`, with the counts as `started_again` and `still_open`.
+- `query --count-by template` gives each template its first row as an example, with its log and row number, so the versions, KB numbers and codes a template takes out can still be read. `7-Zip 26.04 (MSI-x64)` used to show only as `<n>-Zip <n>.<n> (MSI-x<n>)`. `--no-examples` leaves them out.
+- `query --first-line` matches and shows only each row's first line, for SCCM entries that span many lines, such as WMI dumps, which used to match deep inside and flood results. Lines say how many were left out, as in `[+14 lines]`, and JSON has `more_lines`. It's off unless asked for.
+- `--text` and `--regex` can be given together, or more than once, to find only the rows matching every one. Before, using both was an error.
+- `--from` and `--to` take times without seconds, such as `2026-10-15T10:06`. As a `--to`, that takes in the whole minute.
+- `--help` says that `--count-by` gives JSON unless `--format lines` is added.
+- The AI agent skill mentions `--symptoms`, `trace`, `--first-line`, gaps, `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
+
+**Error Lookup**
 
 - On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0… and 0x87D1…) get text, such as "Item not found" for 0x87D00215, and many Windows Update codes get text beside their names. It comes, in English, from the copy of CMTrace that ConfigMgr installs, which TraceView reads as a file but never runs. `lookup`, summaries and the Error Lookup window all use it.
 - On other PCs, such as one logs are copied to, a copy of `CMTrace.exe` in the folder holding `traceview.exe` gives the same text.
 - 21 common servicing codes, 0x800F08xx and 0x800F09xx, get their names, such as `PSFX_E_MISSING_PAYLOAD_FILE` for 0x800F0991 and `CBS_E_SOURCE_MISSING` for 0x800F081F. Windows has no text for them, and they weren't explained at all before. The names come from Microsoft Learn.
-
-**Command line**
-
-- `--help` says that `--count-by` gives JSON unless `--format lines` is added.
-- `--from` and `--to` take times without seconds, such as `2026-10-15T10:06`. As a `--to`, that takes in the whole minute.
-- `--text` and `--regex` can be given together, or more than once, to find only the rows matching every one. Before, using both was an error.
-- `query --context N` shows the N rows before and after each match, from its own log, so there's no need to open the file to see what led up to an error. In lines, they're indented, `--` separates the groups, and matches close together share one. In JSON, each match gets `before` and `after` lists.
-- Summaries list the longest gaps of a day or more with no rows, five at most, in time order. For a folder, that's no rows in any log, as when a PC was off or asleep for weeks, which before could only be found with `--count-by day`. In JSON, they're `gaps`, each with `from`, `to` and `days`.
-- `--unless-followed-by` says why nothing closed each match it finds. Either the same thing started again first, and whether that one finished, or it's still open at the end of its log. Before, an attempt that was abandoned and then retried successfully looked the same as one that hung. In lines, a label in brackets says which, and the header counts each. In JSON, it's `unclosed` and `next_match`, with the counts as `started_again` and `still_open`.
-- `query --count-by template` gives each template its first row as an example, with its log and row number, so the versions, KB numbers and codes a template takes out can still be read. `7-Zip 26.04 (MSI-x64)` used to show only as `<n>-Zip <n>.<n> (MSI-x<n>)`. `--no-examples` leaves them out.
-- `query --first-line` matches and shows only each row's first line, for SCCM entries that span many lines, such as WMI dumps, which used to match deep inside and flood results. Lines say how many were left out, as in `[+14 lines]`, and JSON has `more_lines`. It's off unless asked for.
-- `traceview trace <id> <logs or folders>` follows one ID, such as a deployment, update or job GUID, through every log. It lists each row with that ID as one timeline, each with its log, and folds runs of the same message from one log into one line that says how many, as in `[2 more like it, to row 6 (08:53:18)]`. A header names the logs it's in. Before, this took `query --recurse --text <id>` and reading every repeat.
-- `summarize --symptoms` also looks for signs of trouble that ConfigMgr logs at info level, which problem patterns leave out, such as an update assignment `already in progress state`, a job `waiting for execution`, or a download `reconnected to the existing job`, and says what each can mean. Each was the clue to a real failure.
-- The AI agent skill mentions `--symptoms`, `trace`, `--first-line`, gaps, `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
 
 ## 0.10.0
 
