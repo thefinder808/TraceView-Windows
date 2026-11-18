@@ -888,6 +888,37 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn windows_update_reporting_events_are_read_as_rows() {
+    // Windows writes ReportingEvents.log in UTF-16, with a byte order mark.
+    let text = concat!(
+        "{14F2D8C9-B388-4400-9692-5CE782CD2491}\t2026-11-02 15:27:06:405-0500\t1\t147 [AGENT_DETECTION_FINISHED]\t101\t{3DA21691-E39D-4DA6-8A4B-B43877BCB1B7}\t0\t0\t<<PROCESS>>: powershell.exe\tSuccess\tSoftware Synchronization\tWindows Update Client successfully detected 0 updates.\tZ3IZV.1.0\r\n",
+        "{43AC0C6A-4C48-4E8F-81A7-6F3E8838BAFC}\t2026-11-02 15:37:25:598-0500\t1\t148 [AGENT_DETECTION_FAILED]\t101\t{3DA21691-E39D-4DA6-8A4B-B43877BCB1B7}\t0\t80240438\t<<PROCESS>>: wa_3rd_party_host_32.exe\tFailure\tSoftware Synchronization\tWindows Update Client failed to detect with error 0x80240438.\tINxXT.1.2\r\n",
+    );
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ReportingEvents.log");
+    std::fs::write(&path, bytes).unwrap();
+    let path = path.to_str().unwrap();
+
+    let lines = lines_of(&["query", path, "--format", "lines", "--no-header"]);
+    assert_eq!(
+        lines,
+        [
+            "ReportingEvents.log:1 2026-11-02T15:27:06.405-05:00 INFO Software Synchronization powershell.exe | Windows Update Client successfully detected 0 updates.",
+            "ReportingEvents.log:2 2026-11-02T15:37:25.598-05:00 ERR Software Synchronization wa_3rd_party_host_32.exe | Windows Update Client failed to detect with error 0x80240438.",
+        ]
+    );
+    let json = stdout_json(&traceview(&["query", path, "--min-level", "error"]));
+    let row = &json["result"]["rows"][0];
+    assert_eq!(row["source"], "AGENT_DETECTION_FAILED");
+    assert_eq!(row["utc_offset"], "-05:00");
+    // Every field can still be found, such as the update's ID.
+    let found = stdout_json(&traceview(&["query", path, "--text", "3DA21691-E39D"]));
+    assert_eq!(found["result"]["total_matches"], 2);
+}
+
+#[test]
 fn templates_come_with_a_real_row_as_an_example() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Updates.log");
