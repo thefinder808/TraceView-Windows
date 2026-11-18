@@ -5,12 +5,14 @@
 //! for ConfigMgr and Windows Update codes, from the `CMTrace.exe` that ConfigMgr
 //! installs. Nothing here stores message text, so Windows' messages are in the
 //! user's own language and match the Windows they're running on. CMTrace's are
-//! in English, the only language it has. The crate keeps two tables: short
-//! names for HRESULT facility numbers, and `names.rs`, the names of Windows
-//! Update and Delivery Optimization codes. Windows has no text for those, so a
-//! name is the best explanation there is. It's written by
-//! `scripts/code-names.ps1` from the Windows SDK's headers, keeping only the
-//! names, not Microsoft's descriptions.
+//! in English, the only language it has. The crate keeps three tables: short
+//! names for HRESULT facility numbers; `names.rs`, the names of Windows Update
+//! and Delivery Optimization codes; and `cbs_names.rs`, the names of servicing
+//! codes. Windows has no text for those, so a name is the best explanation
+//! there is. `names.rs` is written by `scripts/code-names.ps1` from the Windows
+//! SDK's headers, and `cbs_names.rs`, as the SDK doesn't have them, from two
+//! Microsoft Learn pages it names. Both keep only the names, not Microsoft's
+//! descriptions.
 //!
 //! Where the text comes from, and what was proven on Windows 11 build 26300:
 //!
@@ -23,6 +25,7 @@
 //! | BITS, 0x8020xxxx, and the HTTP statuses it reports, 0x8019xxxx | `qmgr.dll` | Works |
 //! | Windows Update, 0x8024xxxx | `wuaueng.dll`, then `CMTrace.exe` | `wuaueng.dll`'s table only holds event messages. CMTrace has text for 249 of these, so they get it where ConfigMgr is installed, and their names from `names.rs` everywhere |
 //! | Delivery Optimization, 0x80D0xxxx | none | No Windows file has text for these, so they get their names from `names.rs` |
+//! | Servicing (CBS and PSFX), 0x800F08xx and 0x800F09xx | none | `servicing\CbsMsg.dll` has no text for them, so 21 get their names from `cbs_names.rs`. CBS.log writes the name itself |
 //! | WMI, 0x80041xxx and 0x80042xxx | `wbem\wmiutils.dll` | Works |
 //! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server, or from TraceView's own folder | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled |
 //!
@@ -32,6 +35,7 @@
 
 #![deny(unsafe_code)]
 
+mod cbs_names;
 mod decode;
 mod find;
 #[allow(unsafe_code)]

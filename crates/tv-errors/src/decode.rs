@@ -294,12 +294,16 @@ fn decode_value(code: u32) -> Vec<Decoded> {
     decoded
 }
 
-/// The name of a Windows Update or Delivery Optimization code.
+/// The name of a Windows Update, Delivery Optimization or servicing code.
 fn name_of(code: u32) -> Option<&'static str> {
-    crate::names::NAMES
-        .binary_search_by_key(&code, |(known, _)| *known)
-        .ok()
-        .map(|index| crate::names::NAMES[index].1)
+    [crate::names::NAMES, crate::cbs_names::CBS_NAMES]
+        .into_iter()
+        .find_map(|table| {
+            table
+                .binary_search_by_key(&code, |(known, _)| *known)
+                .ok()
+                .map(|index| table[index].1)
+        })
 }
 
 fn describe(kind: CodeKind, code: u32, message: String, source: &str) -> Decoded {
@@ -426,6 +430,17 @@ mod tests {
         let names = crate::names::NAMES;
         assert!(names.len() > 500);
         assert!(names.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        // Servicing codes, sorted too, in their own facility, and not in the
+        // generated table.
+        let servicing = crate::cbs_names::CBS_NAMES;
+        assert!(servicing.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(servicing.iter().all(|(code, name)| {
+            facility(*code) == 15
+                && (name.starts_with("CBS_E_") || name.starts_with("PSFX_E_"))
+                && names
+                    .binary_search_by_key(code, |(known, _)| *known)
+                    .is_err()
+        }));
     }
 
     #[test]
@@ -442,6 +457,13 @@ mod tests {
                 "WU_E_PT_WINHTTP_NAME_NOT_RESOLVED",
             ),
             ("0x80D02002", CodeKind::HResult, "DO_E_DOWNLOAD_NO_PROGRESS"),
+            // An agent found this servicing code had no explanation at all.
+            (
+                "0x800f0991",
+                CodeKind::HResult,
+                "PSFX_E_MISSING_PAYLOAD_FILE",
+            ),
+            ("0x800F081F", CodeKind::HResult, "CBS_E_SOURCE_MISSING"),
         ] {
             let found = lookup(code);
             assert_eq!(found[0].kind, kind, "{code}");
