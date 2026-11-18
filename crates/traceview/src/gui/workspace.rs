@@ -3249,8 +3249,14 @@ impl Workspace {
             let columns = self.columns_for(self.tabs.get(index).and_then(Tab::kind));
             if let Some(tab) = self.tabs.get_mut(index) {
                 let count = tab.rows().map_or(0, |rows| rows.row_count());
+                // A selected last row moves to the newest one as rows arrive,
+                // so the details pane shows each new row.
+                let on_last = tab.following && tab.view.selects_last_row();
                 tab.view.arrange(pane.grid, count, metrics, &columns);
                 if tab.following {
+                    if on_last && count > 0 {
+                        tab.view.select(count - 1, false);
+                    }
                     tab.view.scroll_to_end();
                 }
             }
@@ -3973,6 +3979,62 @@ mod tests {
             workspace.tabs[0].following,
             "going to the end follows again"
         );
+    }
+
+    fn click_row(workspace: &mut Workspace, row: usize) {
+        let point = row_point(workspace, row);
+        send(workspace, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(workspace, Event::MouseUp(point, MouseButton::Left));
+    }
+
+    #[test]
+    fn a_selected_last_row_follows_new_rows() {
+        let (dir, mut workspace) = opened(100);
+        click_row(&mut workspace, 99);
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(99));
+        assert!(workspace.tabs[0].following);
+        append(&dir, 100, 150);
+        settle(&mut workspace, |workspace| row_count(workspace) == 150);
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(149));
+        assert!(workspace.tabs[0].view.visible_rows().any(|row| row == 149));
+    }
+
+    #[test]
+    fn other_selections_stay_put_as_rows_arrive() {
+        let (dir, mut workspace) = opened(100);
+        click_row(&mut workspace, 98);
+        append(&dir, 100, 120);
+        settle(&mut workspace, |workspace| row_count(workspace) == 120);
+        assert_eq!(workspace.tabs[0].cursor_file_row(), Some(98));
+
+        // A range ending on the last row is kept as it is too.
+        send(&mut workspace, Event::KeyDown(Key::End, SHIFT));
+        append(&dir, 120, 140);
+        settle(&mut workspace, |workspace| row_count(workspace) == 140);
+        assert_eq!(workspace.tabs[0].view.selection(), Some(98..=119));
+    }
+
+    #[test]
+    fn a_selected_last_row_follows_new_rows_in_a_merged_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut workspace = merged(&dir);
+        send(&mut workspace, Event::KeyDown(Key::End, NONE));
+        assert_eq!(workspace.tabs[2].cursor_file_row(), Some(4));
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("b.log"))
+            .unwrap()
+            .write_all(b"2026-01-01 10:00:05 host app[1]: INFO: b2\n")
+            .unwrap();
+        settle(&mut workspace, |workspace| row_count_of(workspace, 2) == 6);
+        assert_eq!(workspace.tabs[2].cursor_file_row(), Some(5));
+    }
+
+    fn row_count_of(workspace: &Workspace, tab: usize) -> usize {
+        workspace.tabs[tab]
+            .rows()
+            .map_or(0, |rows| rows.row_count())
     }
 
     fn click_button(workspace: &mut Workspace, wanted: BarButton) {

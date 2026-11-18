@@ -670,6 +670,8 @@ impl Tab {
         let kept = self
             .cursor_file_row()
             .and_then(|row| self.document().and_then(|document| document.locate(row)));
+        // A selected last row stays on the newest row, as in one log.
+        let on_last = self.following && self.view.selects_last_row();
         match self
             .document_mut()
             .and_then(|document| document.poll_merge(waker))
@@ -699,7 +701,9 @@ impl Tab {
         }
         let count = self.rows().map_or(0, |rows| rows.row_count());
         self.view.set_row_count(count);
-        if let Some(position) = position {
+        if on_last && count > 0 {
+            self.view.select(count - 1, false);
+        } else if let Some(position) = position {
             let position = search::view_position(self.filter_rows(), position);
             self.view.select(position, false);
         }

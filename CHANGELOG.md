@@ -4,6 +4,10 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Viewer**
+
+- Selecting the last row of a log that's following new rows, by clicking it or with End, keeps the newest row selected as rows arrive, so the details pane shows each one. Before, the selection stayed on that row as it scrolled away. Any other selection stays where it is.
+
 **Error Lookup**
 
 - On a PC without CMTrace, such as one logs are copied to, 27 common ConfigMgr codes, such as 0x87D00324, get a short explanation in TraceView's own words, with `TraceView` as its source, rather than no text. The 21 named servicing codes, such as 0x800F0991, get one too. Any other ConfigMgr code says that a copy of `CMTrace.exe` beside `traceview.exe` gives its text, in `lookup`, summaries and the Error Lookup window. Windows' and CMTrace's own text still comes first wherever they have it.
