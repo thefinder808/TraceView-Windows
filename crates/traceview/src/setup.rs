@@ -1,9 +1,10 @@
 //! Sets TraceView up for AI agents, for this Windows user only, and takes that
 //! back. Setting up copies this EXE to a folder of its own, puts that folder on
 //! the user's PATH, and writes a skill for each agent found. Claude Code reads
-//! skills from `%USERPROFILE%\.claude\skills`, and Codex and the ChatGPT app
-//! from `%USERPROFILE%\.agents\skills`. Both follow the Agent Skills standard,
-//! so the same file serves both.
+//! skills from `%USERPROFILE%\.claude\skills`, Codex and the ChatGPT app from
+//! `%USERPROFILE%\.agents\skills`, and GitHub Copilot from
+//! `%USERPROFILE%\.copilot\skills`. All follow the Agent Skills standard, so the
+//! same file serves each.
 //!
 //! Nothing here runs unless asked, by `traceview setup` or the Tools menu, and
 //! both say what will change first. No administrator rights are needed.
@@ -73,7 +74,7 @@ impl Places {
     }
 
     /// Where each agent reads TraceView's skill, found or not.
-    fn skill_files(&self) -> [(&'static str, PathBuf); 2] {
+    fn skill_files(&self) -> [(&'static str, PathBuf); 3] {
         let in_skills = |folder: PathBuf| folder.join("skills").join(SKILL_NAME).join("SKILL.md");
         [
             ("Claude Code", in_skills(self.home.join(".claude"))),
@@ -81,6 +82,7 @@ impl Places {
                 "Codex and the ChatGPT app",
                 in_skills(self.home.join(".agents")),
             ),
+            ("GitHub Copilot", in_skills(self.home.join(".copilot"))),
         ]
     }
 
@@ -92,11 +94,16 @@ impl Places {
                 .codex_home
                 .as_ref()
                 .is_some_and(|folder| folder.is_dir());
-        let [claude_skill, codex_skill] = self.skill_files();
-        [(claude, claude_skill), (codex, codex_skill)]
-            .into_iter()
-            .filter_map(|(found, skill)| found.then_some(skill))
-            .collect()
+        let copilot = self.home.join(".copilot").is_dir();
+        let [claude_skill, codex_skill, copilot_skill] = self.skill_files();
+        [
+            (claude, claude_skill),
+            (codex, codex_skill),
+            (copilot, copilot_skill),
+        ]
+        .into_iter()
+        .filter_map(|(found, skill)| found.then_some(skill))
+        .collect()
     }
 }
 
@@ -242,7 +249,7 @@ impl Plan {
         }
         if self.skills.is_empty() {
             lines.push(
-                "- No Claude Code, Codex or ChatGPT app settings were found, so no skills are \
+                "- No Claude Code, Codex, ChatGPT app or GitHub Copilot settings were found, so no skills are \
                  added. For another agent, copy its instructions with Tools > Copy instructions \
                  for AI agents, or `traceview setup --print`"
                     .to_string(),
@@ -482,7 +489,7 @@ mod tests {
 
     #[test]
     fn setting_up_installs_adds_to_path_and_writes_each_skill() {
-        let Fixture { places, exe, _dir } = fixture("set up", &[".claude", ".codex"]);
+        let Fixture { places, exe, _dir } = fixture("set up", &[".claude", ".codex", ".copilot"]);
         let plan = plan(&places, &exe);
         assert!(!plan.is_done());
         let described = plan.describe();
@@ -490,6 +497,7 @@ mod tests {
         assert!(described.contains("Add that folder to your PATH"));
         assert!(described.contains("skill for Claude Code"));
         assert!(described.contains("skill for Codex and the ChatGPT app"));
+        assert!(described.contains("skill for GitHub Copilot"));
 
         let report = plan.apply(&places).unwrap();
         assert!(report.contains("- Copied TraceView to"), "{report}");
@@ -499,7 +507,7 @@ mod tests {
         );
         assert_eq!(fs::read(places.installed_exe()).unwrap(), b"the program");
         assert!(places.path.contains(&places.folder()));
-        for agent in 0..2 {
+        for agent in 0..3 {
             let text = fs::read_to_string(skill_at(&places, agent)).unwrap();
             assert!(text.starts_with("---\nname: traceview\ndescription: "));
             assert!(text.contains(&places.installed_exe().display().to_string()));
@@ -510,6 +518,13 @@ mod tests {
                 .join(r".agents\skills\traceview\SKILL.md")
                 .is_file(),
             "Codex reads user skills from .agents"
+        );
+        assert!(
+            places
+                .home
+                .join(r".copilot\skills\traceview\SKILL.md")
+                .is_file(),
+            "GitHub Copilot reads user skills from .copilot"
         );
 
         let again = super::plan(&places, &exe);
@@ -523,6 +538,12 @@ mod tests {
         plan(&places, &exe).apply(&places).unwrap();
         assert!(skill_at(&places, 0).is_file());
         assert!(!skill_at(&places, 1).exists());
+        assert!(!skill_at(&places, 2).exists());
+
+        let Fixture { places, exe, _dir } = fixture("copilot only", &[".copilot"]);
+        plan(&places, &exe).apply(&places).unwrap();
+        assert!(skill_at(&places, 2).is_file());
+        assert!(!skill_at(&places, 0).exists());
 
         let Fixture { places, exe, _dir } = fixture("no agents", &[]);
         let plan = plan(&places, &exe);
@@ -588,7 +609,7 @@ mod tests {
 
     #[test]
     fn removing_takes_back_everything_setup_did() {
-        let Fixture { places, exe, _dir } = fixture("remove", &[".claude", ".codex"]);
+        let Fixture { places, exe, _dir } = fixture("remove", &[".claude", ".codex", ".copilot"]);
         plan(&places, &exe).apply(&places).unwrap();
         let removal = removal(&places, &exe);
         let described = removal.describe();
@@ -601,6 +622,7 @@ mod tests {
         assert!(!skill_at(&places, 0).exists());
         assert!(!skill_at(&places, 0).parent().unwrap().exists());
         assert!(!skill_at(&places, 1).exists());
+        assert!(!skill_at(&places, 2).exists());
         assert!(exe.is_file(), "the EXE setup was run from stays");
         assert!(super::removal(&places, &exe).is_empty());
     }
