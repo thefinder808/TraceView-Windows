@@ -107,7 +107,8 @@ pub fn instructions(exe: &Path) -> String {
 It's on PATH as `traceview`. If that isn't found, run it by its full path: {exe}
 
 1. Run `traceview summarize <folder> --format lines` first, to see which logs have problems. \
-It counts rotated copies, such as AppEnforce.lo_, as part of their log. Add --recurse to include \
+It counts rotated copies, such as AppEnforce.lo_, as part of their log, and lists gaps of a day or \
+more with no rows in any log, as when the PC was off. Add --recurse to include \
 subfolders, and --from and --to to cover only a time range.
 2. Then run `traceview query <folder or log> --format lines` with --min-level, --text, \
 --component, or --from and --to, to read only the rows that matter. Add --newest-first to see \

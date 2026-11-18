@@ -2,6 +2,7 @@
 //! when errors spiked. It answers "what's going on in this file?" without
 //! requiring anyone to read the whole thing.
 
+use crate::activity::{Activity, Gap};
 use crate::encoding::{self, Encoding};
 use crate::file::LogFile;
 use crate::level::Level;
@@ -125,6 +126,21 @@ pub struct Summary {
     pub problem_patterns: Vec<Pattern>,
     /// Minutes with unusually many errors, busiest first.
     pub error_spikes: Vec<Spike>,
+    /// Gaps of a day or more with no rows, the longest few, in time order.
+    /// Every row in the time range counts, even one the filter leaves out, as
+    /// any row shows the log was being written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
+    /// Gaps of a day or more not listed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub other_gaps: usize,
+    /// When the log had rows, to join with other logs' for their gaps.
+    #[serde(skip)]
+    pub activity: Activity,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 #[derive(Clone, Copy)]
@@ -340,14 +356,28 @@ pub fn summarize_matching(
     let (mut earliest, mut latest) = (u32::MAX, 0);
     let mut minutes: HashMap<u32, (u64, u64)> = HashMap::new();
     let mut current_minute = (u32::MAX, 0u64, 0u64);
+    let mut activity = Activity::default();
     for row in 0..rows {
-        if !keep(row) {
+        let in_range = matcher.passes_index(log, row);
+        let stamp = log.stamp_seconds(row);
+        // Any row in the time range shows the log was being written, even one
+        // left out as noise, so gaps count them all.
+        if let Some(seconds) = stamp.filter(|_| in_range) {
+            activity.add(seconds);
+        }
+        // Rows a text filter keeps are always in range, so this is `keep(row)`
+        // without asking the index twice.
+        let kept_row = match &matched {
+            Some(matched) => matched.binary_search(&(row as u32)).is_ok(),
+            None => in_range,
+        };
+        if !kept_row {
             continue;
         }
         kept += 1;
         let level = log.level(row);
         levels.add(level);
-        if let Some(seconds) = log.stamp_seconds(row) {
+        if let Some(seconds) = stamp {
             rows_with_timestamps += 1;
             earliest = earliest.min(seconds);
             latest = latest.max(seconds);
@@ -452,6 +482,7 @@ pub fn summarize_matching(
         .collect::<io::Result<_>>()?;
 
     let has_times = rows_with_timestamps > 0;
+    let (gaps, other_gaps) = activity.gaps();
     Ok(Summary {
         format: log.format(),
         encoding: log.encoding(),
@@ -465,6 +496,9 @@ pub fn summarize_matching(
         top_patterns,
         problem_patterns,
         error_spikes: find_spikes(&minutes),
+        gaps,
+        other_gaps,
+        activity,
     })
 }
 
@@ -524,6 +558,42 @@ mod tests {
         for text in ["0x", "0", "deadbeef", "6F9619FF-8B86", "6F9619FF-", ""] {
             let _ = normalized(text);
         }
+    }
+
+    #[test]
+    fn gaps_count_every_row_in_the_range_even_excluded_ones() {
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00 host a[1]: tick\n2026-01-05 10:00:00 host a[1]: noise\n2026-01-09 10:00:00 host a[1]: tick\n2026-01-20 10:00:00 host a[1]: tick\n",
+        );
+        let days =
+            |summary: &Summary| -> Vec<f64> { summary.gaps.iter().map(|gap| gap.days).collect() };
+        let all = summarize(&log, 5, &Control::default()).unwrap();
+        assert_eq!(days(&all), [4.0, 4.0, 11.0]);
+        assert_eq!(all.gaps[2].from, "2026-01-09T10:00:00.000");
+        assert_eq!(all.gaps[2].to, "2026-01-20T10:00:00.000");
+        assert_eq!(all.other_gaps, 0);
+        // Leaving the noise out of the summary leaves the gaps as they were,
+        // as the row still shows the log was being written.
+        let quiet = query::Query {
+            exclude: vec!["noise".to_string()],
+            ..query::Query::default()
+        };
+        let excluded = summarize_matching(&log, 5, &quiet, &Control::default()).unwrap();
+        assert_eq!(excluded.total_rows, 3);
+        assert_eq!(excluded.gaps, all.gaps);
+        // A time range only looks within it.
+        let range = query::Query {
+            from: Some("2026-01-04".to_string()),
+            to: Some("2026-01-10".to_string()),
+            ..query::Query::default()
+        };
+        let within = summarize_matching(&log, 5, &range, &Control::default()).unwrap();
+        assert_eq!(days(&within), [4.0]);
+        // JSON leaves gaps out when there are none.
+        let json = serde_json::to_value(&within).unwrap();
+        assert!(json.get("gaps").is_some());
+        assert!(json.get("other_gaps").is_none());
+        assert!(json.get("activity").is_none());
     }
 
     #[test]

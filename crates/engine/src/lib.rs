@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activity;
 pub mod cache;
 pub mod custom;
 pub mod encoding;
