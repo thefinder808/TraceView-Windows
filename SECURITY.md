@@ -12,6 +12,7 @@ TraceView reads files that anyone able to write to them controls, so these matte
 
 - **A crafted log** that crashes TraceView, hangs it, makes it use far too much memory, or runs code.
 - **A shared settings, theme or log format file** that does any of those.
+- **A crafted `CMTrace.exe`** that does any of those. Error Lookup reads one as data, never running it, from ConfigMgr's folders or from beside `traceview.exe`.
 - **The command line's JSON** carrying log text that could be mistaken for something other than data. It's marked as untrusted.
 - **The signed release:** anything that would let someone else's code be signed as TraceView, or a release that doesn't match its checksums.
 

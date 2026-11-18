@@ -85,7 +85,7 @@ For a portable copy, put a `traceview.toml` beside the EXE, even an empty one. T
 
 ## The command line
 
-The same EXE searches and summarizes logs, with results as JSON:
+The same EXE searches, summarizes and traces logs, with results as JSON or short lines:
 
 ```powershell
 .\traceview.exe query C:\Windows\Logs\CBS\CBS.log --text "failed" --min-level warning --limit 20 --pretty
@@ -101,15 +101,19 @@ Both take several logs, or a folder, which means the logs directly in it, or in 
 .\traceview.exe summarize C:\Windows\CCM\Logs
 ```
 
-A summary also lists the longest gaps of a day or more with no rows, which for a folder means no rows in any log, as when a PC was off or asleep for weeks. Rows that `--exclude` leaves out still count, since any row shows the PC was on.
-
-Some ConfigMgr problems are only ever logged as info, so a summary's problem patterns, which are warnings and errors, never show them. `summarize --symptoms` also looks for a few such signs seen in real troubleshooting, such as an update assignment `already in progress state`, and says what each can mean. It's off unless asked for, as some, such as `Total actionable updates = 0`, are common in healthy logs too.
-
 ```powershell
 .\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10 --to 2026-11-05T10:20 --format lines
 ```
 
 Times can leave out the seconds, and as a `--to`, a time without seconds takes in that whole minute, as a bare date takes in that whole day.
+
+A summary also lists the longest gaps of a day or more with no rows, which for a folder means no rows in any log, as when a PC was off or asleep for weeks. Rows that `--exclude` leaves out still count, since any row shows the PC was on.
+
+Some ConfigMgr problems are only ever logged as info, so a summary's problem patterns, which are warnings and errors, never show them. `summarize --symptoms` also looks for a few such signs seen in real troubleshooting, such as an update assignment `already in progress state`, and says what each can mean. It's off unless asked for, as some, such as `Total actionable updates = 0`, are common in healthy logs too.
+
+```powershell
+.\traceview.exe summarize C:\Windows\CCM\Logs --symptoms --format lines
+```
 
 `--format lines` gives one short line per row instead of JSON, at under half the size, and each row starts with its log and row number, as in `CBS.log:11503`. For a summary, it gives a line per log with problems and per problem pattern, at about a third of the JSON's size.
 
