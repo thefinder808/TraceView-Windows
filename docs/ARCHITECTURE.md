@@ -102,9 +102,11 @@ The design for the GUI, and how it was measured, is in [GUI-DESIGN.md](GUI-DESIG
 
 **Rows.** A row is a line in plain logs and a whole `<![LOG[...]LOG]!>` entry in SCCM logs, because SCCM messages can span lines. An SCCM row number can therefore differ from a text editor's line number, so results also report the byte offset.
 
+**Hints.** Each row is read on its own, so indexing can split a file into chunks and read them in parallel. A few plain formats only say how to read their rows in their first lines, so `parse::hint_for` looks at the start of the file once when it opens, and `ParseContext.hint` carries what it finds. A Windows Installer log's rows give only a time of day, so they take the date logging started, or the day after for a time before that. A PowerShell transcript's error records are marked as errors, which would be guesses in other logs. A `setupapi` log's `!!!` and `!` set the level rather than its words. A log made of several installs appended together still takes the first one's date.
+
 **Encodings.** UTF-8 and UTF-16 (both byte orders, with or without a BOM) are recognized. UTF-16 rows split only on real newlines, never on a stray `0x0A` byte. Text that isn't valid UTF-8 displays as Windows-1252, though searches on those files only match ASCII reliably.
 
-**Severity.** Structured levels win: SCCM's `type` attribute, or a stated `ERROR:` or `[WARN]`. Otherwise whole-word keywords decide, using the same lists as the Mac app. One deliberate exception: CBS and DISM lines can be raised above their stated level, because CBS writes real failures at `Info`. Severity comes from the first 64 KiB of a message, and from at most about 1 MiB of a row while indexing.
+**Severity.** Structured levels win: SCCM's `type` attribute, or a stated `ERROR:` or `[WARN]`. Otherwise whole-word keywords decide, using the same lists as the Mac app. Two deliberate exceptions: CBS and DISM lines can be raised above their stated level, because CBS writes real failures at `Info`, and `setupapi` logs go by their `!!!` and `!` markers alone, as their settings include words such as `Error Control`. Severity comes from the first 64 KiB of a message, and from at most about 1 MiB of a row while indexing.
 
 **Timestamps.** Stored as wall-clock time as the log wrote it. Time zones are read but not applied, so times only compare correctly within one zone. Formats with no year take it from the file's modified date. Merging relies on this, so files written in different time zones won't line up.
 
@@ -168,6 +170,9 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | ConfigMgr site server | `msg  $$<SMS_EXECUTIVE><11-18-2026 09:30:12.123+300><thread=5112 (0x13F8)>` | As CMTrace reads them. There's no level, so the words decide. The part from `$$<` on isn't searched, as SCCM's attributes aren't |
 | `WindowsUpdate.log` from `Get-WindowsUpdateLog` | `2026/11/11 14:24:21.1458910 47996 51540 Misc  msg` | The thread ID is the thread, and the process ID the source |
 | winget | `2026-11-11 15:40:09.381 <I> [CORE] msg` | `<V>`, `<I>`, `<W>`, `<E>` and `<C>` are levels, and the brackets hold the component |
+| Windows Installer verbose logs | `MSI (s) (A4:B8) [15:42:16:698]: msg`, `Action ended 9:43:25: InstallFinalize. Return value 3.` | The date comes from the `=== Logging started:` line, in the PC's own order. `MSI (s)` is the component and `A4:B8`, the process and thread, the thread. `Return value 3` is an error and 2 a warning. Properties have no time |
+| PowerShell transcripts | `Get-Item : Cannot find path…`, `+ CategoryInfo : …` | Windows PowerShell and PowerShell 7. Only `Start time:`, `End time:` and `Command start time:` give times. An error record's first line, which starts with a cmdlet named for an approved verb, `PS>TerminatingError(`, `+ CategoryInfo` and `+ FullyQualifiedErrorId` are errors |
+| `setupapi.dev.log` and `setupapi.setup.log` | `>>>  Section start 2026/10/14 09:59:16.183`, `!!!  dvi: msg` | `!!!` is an error, `!` a warning, and other rows information. A section's start and end give its time, `[Exit status: FAILURE(…)]` is an error, and the short name before a colon is the component |
 | Classic syslog | `Apr 23 14:25:00 host proc[1]: msg` | Year from the file's date |
 | Dated syslog | `2026-03-08 13:46:47-07 host proc[1]: msg` | |
 | Bracketed timestamp | `[2026-04-19 19:54:24.115] [info] msg` | |
@@ -177,7 +182,7 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | Custom | Defined by a pattern in `traceview.toml` or Tools > Log formats | One row per line |
 | Anything else | Bare text | Severity from keywords |
 
-Not yet supported, from testing against real logs and the Mac app's list: JSON lines, CSV, and `setupapi.dev.log`'s `!` and `!!!` severity markers and section timestamps. `Error Control = 1` in that log also reads as an error today. `DirectX.log`'s `MM/DD/YY` dates aren't parsed, so its rows have no time.
+Not yet supported, from testing against real logs and the Mac app's list: JSON lines, CSV, IIS and Windows Firewall logs, and `netlogon.log` and `gpsvc.log`, whose debug logging is off by default. In `setupapi` logs, rows inside a section have no time. `DirectX.log`'s `MM/DD/YY` dates aren't parsed, so its rows have no time.
 
 ## Command line
 

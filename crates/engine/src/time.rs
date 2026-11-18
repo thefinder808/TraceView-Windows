@@ -297,6 +297,53 @@ pub fn parse_iso(bytes: &[u8]) -> Option<ParsedIso> {
     })
 }
 
+/// Reads the date and time a Windows Installer log's `=== Logging started:`
+/// line gives, as in `11/18/2026  15:42:16`. The date is in the PC's own
+/// order, so a month that can't be one is read as the day, and a date with
+/// dots, as in `18.11.2026`, is read day first.
+pub fn parse_msi_date(bytes: &[u8]) -> Option<Stamp> {
+    let dotted = bytes.iter().take(6).any(|byte| *byte == b'.');
+    parse_year_last(bytes, dotted).or_else(|| parse_year_last(bytes, !dotted))
+}
+
+/// Reads PowerShell's `20261118154047`, which a transcript's `Start time:`
+/// gives.
+pub fn parse_compact(bytes: &[u8]) -> Option<Stamp> {
+    if bytes.len() != 14 {
+        return None;
+    }
+    Stamp::from_parts(
+        digits(bytes, 0, 4)? as i32,
+        digits(bytes, 4, 2)?,
+        digits(bytes, 6, 2)?,
+        digits(bytes, 8, 2)?,
+        digits(bytes, 10, 2)?,
+        digits(bytes, 12, 2)?,
+        0,
+    )
+}
+
+/// Reads a time of day at the start of `bytes`, `H:MM:SS` or `HH:MM:SS`, with
+/// any `:fff` or `.fff` milliseconds after it, as Windows Installer writes.
+/// Returns seconds after midnight and the milliseconds.
+pub fn parse_time_of_day(bytes: &[u8]) -> Option<(u32, u16)> {
+    let mut at = 0;
+    let (hour, _) = number(bytes, &mut at, 2)?;
+    if bytes.get(at) != Some(&b':') || bytes.get(at + 3) != Some(&b':') {
+        return None;
+    }
+    let minute = digits(bytes, at + 1, 2)?;
+    let second = digits(bytes, at + 4, 2)?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let millis = match digits(bytes, at + 7, 3) {
+        Some(millis) if bytes.get(at + 6) == Some(&b':') => millis as u16,
+        _ => fraction(bytes, at + 6).0,
+    };
+    Some((hour * 3600 + minute * 60 + second, millis))
+}
+
 /// Reads the separate SCCM date (`MM-DD-YYYY`) and time (`HH:MM:SS.fff+bias`) values.
 pub fn parse_sccm(date: &[u8], time: &[u8]) -> Option<Stamp> {
     let mut parts = date.split(|byte| *byte == b'-');

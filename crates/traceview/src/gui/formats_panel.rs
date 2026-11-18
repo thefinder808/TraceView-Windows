@@ -691,6 +691,7 @@ fn parts_of(format: &CustomFormat, line: &str) -> String {
     let context = ParseContext {
         year_hint: YearHint::from_system_time(SystemTime::now()),
         custom: None,
+        hint: tv_engine::parse::Hint::None,
     };
     let Some(fields) = format.fields(line.as_bytes(), &context) else {
         return String::new();

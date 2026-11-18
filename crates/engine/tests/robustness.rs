@@ -18,6 +18,7 @@ const CONTEXT: ParseContext = ParseContext {
         month: 6,
     },
     custom: None,
+    hint: tv_engine::parse::Hint::None,
 };
 
 /// Pieces of real log syntax, so generated input reaches deep into the parsers

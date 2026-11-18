@@ -196,6 +196,7 @@ mod tests {
             month: 6,
         },
         custom: None,
+        hint: crate::parse::Hint::None,
     };
     const IIS: &str = r"^(?P<time>\S+ \S+) (?P<component>\S+) (?P<level>\w+) (?P<message>.*)$";
 

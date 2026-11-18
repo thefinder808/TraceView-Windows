@@ -5,7 +5,7 @@ use crate::custom::{self, CustomFormat};
 use crate::encoding::{self, Encoding};
 use crate::index::{self, Layout, RowArrays};
 use crate::level::Level;
-use crate::parse::{self, Fields, Format, ParseContext};
+use crate::parse::{self, Fields, Format, Hint, ParseContext};
 use crate::reader::{self, Source};
 use crate::time::YearHint;
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,7 @@ fn detect_layout(
     len: u64,
     path: &Path,
     formats: &[Arc<CustomFormat>],
-) -> io::Result<(Layout, Option<Arc<CustomFormat>>)> {
+) -> io::Result<(Layout, Option<Arc<CustomFormat>>, Hint)> {
     let mut head = vec![0u8; HEAD_LEN.min(len as usize)];
     let filled = source.read_at(0, &mut head)?;
     head.truncate(filled);
@@ -166,7 +166,11 @@ fn detect_layout(
         body_offset,
         format_key: custom.as_ref().map_or(0, |custom| custom.key()),
     };
-    Ok((layout, custom))
+    let hint = match format {
+        Format::Plain => parse::hint_for(text),
+        Format::Sccm | Format::Custom => Hint::None,
+    };
+    Ok((layout, custom, hint))
 }
 
 fn check_size(len: u64) -> io::Result<()> {
@@ -233,10 +237,11 @@ impl LogFile {
         // A file that shrank since its size was read is indexed as read.
         let len = whole.as_ref().map_or(len, |bytes| bytes.len() as u64);
         let source = whole.as_deref().map_or(Source::File(&file), Source::Bytes);
-        let (layout, custom) = detect_layout(source, len, &path, formats)?;
+        let (layout, custom, hint) = detect_layout(source, len, &path, formats)?;
         let context = ParseContext {
             year_hint: YearHint::from_system_time(modified),
             custom,
+            hint,
         };
         let use_cache = cache_dir.filter(|_| len >= CACHE_MIN_LEN);
         let cached = use_cache
@@ -491,10 +496,11 @@ impl LogFile {
             (self.layout, self.context.clone(), rows, change)
         } else {
             let source = Source::File(&file);
-            let (layout, custom) = detect_layout(source, len, &self.path, &self.formats)?;
+            let (layout, custom, hint) = detect_layout(source, len, &self.path, &self.formats)?;
             let context = ParseContext {
                 year_hint: YearHint::from_system_time(modified),
                 custom,
+                hint,
             };
             let rows = index::scan(source, len, layout, &context, layout.body_offset, progress)?;
             check_rows(rows.rows())?;
@@ -644,6 +650,32 @@ mod tests {
         let fields = log.fields(text);
         assert_eq!(fields.component, b"app");
         assert_eq!(fields.message, "caf\u{e9} failed".as_bytes());
+    }
+
+    #[test]
+    fn an_installer_logs_first_line_dates_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("MSI1a2b3.LOG");
+        fs::write(
+            &path,
+            "=== Verbose logging started: 11/18/2026  23:59:58  Build type: SHIP UNICODE ===\r\n\
+             MSI (c) (50:E0) [23:59:59:500]: Resetting cached policy values\r\n\
+             Action ended 0:00:01: InstallFinalize. Return value 3.\r\n\
+             MSI (s) (A4:B8) [00:00:02:010]: Product: Foo -- Installation failed.\r\n",
+        )
+        .unwrap();
+        let log = open_uncached(&path);
+        let at = |day, hour, minute, second| {
+            crate::time::Stamp::from_parts(2026, 11, day, hour, minute, second, 0)
+                .unwrap()
+                .seconds
+        };
+        assert_eq!(log.stamp_seconds(1), Some(at(18, 23, 59, 59)));
+        // Past midnight is the next day, and actions' hours can be one digit.
+        assert_eq!(log.stamp_seconds(2), Some(at(19, 0, 0, 1)));
+        assert_eq!(log.level(2), Level::Error);
+        assert_eq!(log.stamp_seconds(3), Some(at(19, 0, 0, 2)));
+        assert_eq!(log.level(3), Level::Error);
     }
 
     #[test]
