@@ -103,6 +103,8 @@ Both take several logs, or a folder, which means the logs directly in it, or in 
 
 A summary also lists the longest gaps of a day or more with no rows, which for a folder means no rows in any log, as when a PC was off or asleep for weeks. Rows that `--exclude` leaves out still count, since any row shows the PC was on.
 
+Some ConfigMgr problems are only ever logged as info, so a summary's problem patterns, which are warnings and errors, never show them. `summarize --symptoms` also looks for a few such signs seen in real troubleshooting, such as an update assignment `already in progress state`, and says what each can mean. It's off unless asked for, as some, such as `Total actionable updates = 0`, are common in healthy logs too.
+
 ```powershell
 .\traceview.exe query C:\Windows\CCM\Logs --from 2026-11-05T10:10 --to 2026-11-05T10:20 --format lines
 ```

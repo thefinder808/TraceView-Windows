@@ -888,6 +888,57 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn summaries_can_look_for_signs_of_trouble_logged_as_info() {
+    let dir = tempfile::tempdir().unwrap();
+    let stuck = sccm_row(
+        "Assignment({8B24B027}) already in progress state (AssignmentStateDetecting). No need to evaluate",
+        21,
+        1,
+    );
+    std::fs::write(dir.path().join("UpdatesDeployment.log"), stuck.repeat(2)).unwrap();
+    // A rotated copy counts as part of its log.
+    std::fs::write(
+        dir.path().join("UpdatesDeployment-20261020-101010.log"),
+        stuck,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("Healthy.log"), sccm_row("All good", 21, 1)).unwrap();
+    let folder = dir.path().to_str().unwrap();
+
+    let lines = lines_of(&["summarize", folder, "--symptoms", "--format", "lines"]);
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with("# Signs of trouble logged as info:"))
+        .expect("a signs section");
+    assert!(
+        lines[at + 1].starts_with(
+            "3 2026-10-21T10:00:00.000 UpdatesDeployment.log | assignment already in progress: "
+        ),
+        "{}",
+        lines[at + 1]
+    );
+    let json = stdout_json(&traceview(&["summarize", folder, "--symptoms"]));
+    let found = &json["symptoms"][0];
+    assert_eq!(found["sign"], "assignment already in progress");
+    assert_eq!(found["count"], 3);
+    assert_eq!(found["file"], "UpdatesDeployment.log");
+
+    // Without the option, nothing is looked for.
+    let plain = stdout_json(&traceview(&["summarize", folder]));
+    assert!(plain.get("symptoms").is_none());
+    // One log with none says so.
+    let healthy = dir.path().join("Healthy.log");
+    let lines = lines_of(&[
+        "summarize",
+        healthy.to_str().unwrap(),
+        "--symptoms",
+        "--format",
+        "lines",
+    ]);
+    assert!(lines.contains(&"# Signs of trouble logged as info: none found.".to_string()));
+}
+
+#[test]
 fn trace_follows_an_id_through_logs_and_folds_repeats() {
     let dir = tempfile::tempdir().unwrap();
     let id = "3DA21691-E39D-4DA6-8A4B-B43877BCB1B7";
@@ -1471,6 +1522,7 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--context", "some"],
         &["summarize", path, "--context", "2"],
         &["summarize", path, "--first-line"],
+        &["query", path, "--symptoms"],
         &["trace"],
         &["trace", "some-id"],
         &["trace", "{}", path],
