@@ -60,6 +60,69 @@ pub enum Hint {
     /// A `setupapi` device install log, whose `!!!` and `!` mark errors and
     /// warnings, rather than its words.
     SetupApi,
+    /// A W3C extended log, as IIS and Windows Firewall write, whose `#Fields:`
+    /// line says which space-separated column is which.
+    W3c(W3cFields),
+}
+
+/// Where a W3C extended log's columns are, from its `#Fields:` line. Each is
+/// a column's number, if the log has it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W3cFields {
+    pub date: Option<u8>,
+    pub time: Option<u8>,
+    /// IIS's `sc-status`, the HTTP status, which sets the level.
+    pub status: Option<u8>,
+    /// Windows Firewall's `action`, such as `DROP`, which sets the level and
+    /// is the component.
+    pub action: Option<u8>,
+    /// IIS's `cs-uri-stem`, the page asked for, which is the component.
+    pub page: Option<u8>,
+    /// The client's address, `c-ip` or `src-ip`, which is the source.
+    pub client: Option<u8>,
+    /// Windows Firewall's `pid`, which is the thread.
+    pub process: Option<u8>,
+    /// W3C times are UTC unless `#Time Format: Local` says otherwise, as
+    /// Windows Firewall's does.
+    pub utc: bool,
+}
+
+impl W3cFields {
+    /// Reads the directives at the start of a log, or `None` if they don't
+    /// name a date and a time column.
+    fn from_directives(head: &[u8]) -> Option<Self> {
+        let mut fields = Self {
+            utc: true,
+            ..Self::default()
+        };
+        for line in head
+            .split(|byte| *byte == b'\n')
+            .map(|line| trim_spaces(trim_line_ending(line)))
+            .take_while(|line| line.first() == Some(&b'#'))
+        {
+            if let Some(names) = line.strip_prefix(b"#Fields:") {
+                let names = names
+                    .split(|byte| *byte == b' ')
+                    .filter(|name| !name.is_empty());
+                for (index, name) in names.take(usize::from(u8::MAX)).enumerate() {
+                    let index = Some(index as u8);
+                    match name {
+                        b"date" => fields.date = index,
+                        b"time" => fields.time = index,
+                        b"sc-status" => fields.status = index,
+                        b"action" => fields.action = index,
+                        b"cs-uri-stem" => fields.page = index,
+                        b"c-ip" | b"src-ip" => fields.client = index,
+                        b"pid" => fields.process = index,
+                        _ => {}
+                    }
+                }
+            } else if let Some(format) = line.strip_prefix(b"#Time Format:") {
+                fields.utc = !trim_spaces(format).eq_ignore_ascii_case(b"local");
+            }
+        }
+        (fields.date.is_some() && fields.time.is_some()).then_some(fields)
+    }
 }
 
 /// Finds a plain log's hint from its first lines, as UTF-8.
@@ -77,8 +140,15 @@ pub fn hint_for(head: &[u8]) -> Hint {
     .iter()
     .find_map(|prefix| first.strip_prefix(*prefix))
     .and_then(time::parse_msi_date);
+    let w3c = [&b"#Software:"[..], b"#Version:", b"#Date:"]
+        .iter()
+        .any(|directive| first.starts_with(directive))
+        .then(|| W3cFields::from_directives(head))
+        .flatten();
     if let Some(started) = msi_started {
         Hint::Msi { started }
+    } else if let Some(fields) = w3c {
+        Hint::W3c(fields)
     } else if first == b"[Device Install Log]" {
         Hint::SetupApi
     } else if memmem::find(&head[..head.len().min(512)], b"PowerShell transcript start").is_some() {
@@ -567,6 +637,77 @@ fn setupapi_fields(text: &[u8]) -> Fields<'_> {
     }
 }
 
+/// The most columns a W3C row is split into. IIS has 21 at most.
+const W3C_COLUMNS: usize = 48;
+
+/// A W3C extended log's rows, from IIS or Windows Firewall, read by the
+/// columns its `#Fields:` line names. The date and time give the time, and
+/// the rest of the row is the message. IIS's page is the component, and its
+/// status the level: 5xx is an error, and 4xx a warning, except 401, the
+/// challenge every Windows-authenticated request gets first. Windows
+/// Firewall's action is the component, `DROP` a warning, and its process ID
+/// the thread. The client's address is the source, and `-` is empty. Other
+/// rows aren't judged by their words, as pages and paths would mislead.
+fn w3c_fields(text: &[u8], columns: W3cFields) -> Fields<'_> {
+    if let Some(directive) = text.strip_prefix(b"#") {
+        let stamp = directive
+            .strip_prefix(b"Date:")
+            .and_then(|date| time::parse_iso(skip_spaces(date)))
+            .map(|parsed| parsed.stamp);
+        return Fields {
+            stamp,
+            ..Fields::message_only(text, Level::Info)
+        };
+    }
+    let mut parts: [&[u8]; W3C_COLUMNS] = [b""; W3C_COLUMNS];
+    let mut count = 0;
+    for part in text.split(|byte| *byte == b' ').take(W3C_COLUMNS) {
+        parts[count] = part;
+        count += 1;
+    }
+    let column = |index: Option<u8>| {
+        let part = parts[..count].get(usize::from(index?))?;
+        Some(if *part == b"-" { &b""[..] } else { *part })
+    };
+    let stamp = match (column(columns.date), column(columns.time)) {
+        (Some(date), Some(time)) if date.len() + time.len() < 63 => {
+            let mut joined = [0u8; 64];
+            joined[..date.len()].copy_from_slice(date);
+            joined[date.len()] = b' ';
+            joined[date.len() + 1..date.len() + 1 + time.len()].copy_from_slice(time);
+            time::parse_iso(&joined[..date.len() + 1 + time.len()]).map(|parsed| parsed.stamp)
+        }
+        _ => None,
+    };
+    let status = column(columns.status)
+        .and_then(|status| std::str::from_utf8(status).ok()?.parse::<u16>().ok());
+    let action = column(columns.action).unwrap_or_default();
+    let level = match status {
+        Some(500..=599) => Level::Error,
+        Some(400..=499) if status != Some(401) => Level::Warning,
+        _ if action == b"DROP" || action == b"INFO-EVENTS-LOST" => Level::Warning,
+        _ => Level::Info,
+    };
+    // When the date and time come first, as they do in both, the message is
+    // what follows them.
+    let message = match (columns.date, columns.time) {
+        (Some(0), Some(1)) | (Some(1), Some(0)) if count > 2 => {
+            &text[parts[0].len() + parts[1].len() + 2..]
+        }
+        _ => text,
+    };
+    Fields {
+        stamp,
+        level,
+        component: column(columns.page)
+            .or(column(columns.action))
+            .unwrap_or_default(),
+        thread: column(columns.process).unwrap_or_default(),
+        source: column(columns.client).unwrap_or_default(),
+        message,
+    }
+}
+
 /// A site server row has no level, so its words decide, as in CMTrace.
 fn server_fields(text: &[u8]) -> Option<Fields<'_>> {
     let server = server_parts(text)?;
@@ -591,6 +732,7 @@ fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
         Hint::Msi { started } => msi_fields(text, started),
         Hint::Transcript => transcript_fields(text),
         Hint::SetupApi => Some(setupapi_fields(text)),
+        Hint::W3c(columns) => Some(w3c_fields(text, columns)),
     };
     if let Some(fields) = hinted {
         return fields;
@@ -1395,6 +1537,89 @@ mod tests {
 
         assert_eq!(hint_for(b"2026-01-01 10:00:00 plain text\n"), Hint::None);
         assert_eq!(hint_for(b""), Hint::None);
+    }
+
+    const IIS_HEAD: &str = "#Software: Microsoft Internet Information Services 10.0\r\n#Version: 1.0\r\n#Date: 2026-11-18 00:00:01\r\n#Fields: date time s-ip cs-method cs-uri-stem cs-uri-query s-port cs-username c-ip cs(User-Agent) cs(Referer) sc-status sc-substatus sc-win32-status time-taken\r\n";
+    const FIREWALL_HEAD: &str = "#Version: 1.5\r\n#Software: Microsoft Windows Firewall\r\n#Time Format: Local\r\n#Fields: date time action protocol src-ip dst-ip src-port dst-port size tcpflags tcpsyn tcpack tcpwin icmptype icmpcode info path pid\r\n";
+
+    #[test]
+    fn iis_rows_are_read_by_their_fields_line() {
+        let hint = hint_for(IIS_HEAD.as_bytes());
+        let Hint::W3c(columns) = hint else {
+            panic!("not a W3C log: {hint:?}");
+        };
+        assert!(columns.utc);
+        let row = |status: &str| {
+            let text = format!("2026-11-18 14:05:09 10.0.0.5 GET /SMS_MP/.sms_aut MPLIST 80 - 10.0.0.9 SMS+CCM+5.0 - {status} 0 0 15\r\n");
+            let context = ParseContext { hint, ..CONTEXT };
+            let parsed = fields(Format::Plain, text.as_bytes(), &context);
+            (
+                parsed.stamp.map(|stamp| stamp.to_string()),
+                parsed.level,
+                display(parsed.component),
+                display(parsed.source),
+                display(parsed.message),
+            )
+        };
+        let (stamp, level, component, source, message) = row("200");
+        assert_eq!(stamp.as_deref(), Some("2026-11-18T14:05:09.000"));
+        assert_eq!(level, Level::Info);
+        assert_eq!(component, "/SMS_MP/.sms_aut");
+        assert_eq!(source, "10.0.0.9");
+        assert_eq!(
+            message,
+            "10.0.0.5 GET /SMS_MP/.sms_aut MPLIST 80 - 10.0.0.9 SMS+CCM+5.0 - 200 0 0 15"
+        );
+        assert_eq!(row("500").1, Level::Error);
+        assert_eq!(row("503").1, Level::Error);
+        assert_eq!(row("404").1, Level::Warning);
+        assert_eq!(row("403").1, Level::Warning);
+        // Every Windows-authenticated request is challenged first.
+        assert_eq!(row("401").1, Level::Info);
+        assert_eq!(row("304").1, Level::Info);
+
+        let directive = hinted(hint, "#Date: 2026-11-18 00:00:01");
+        assert_eq!(stamp_text(&directive), "2026-11-18T00:00:01.000");
+        // A cut-off row, or a directive, reads without panicking or guessing.
+        assert_eq!(hinted(hint, "2026-11-18").stamp, None);
+        assert_eq!(hinted(hint, "#Fields: date time").level, Level::Info);
+        assert_eq!(hinted(hint, "").level, Level::Info);
+    }
+
+    fn display(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[test]
+    fn firewall_drops_are_warnings() {
+        let hint = hint_for(FIREWALL_HEAD.as_bytes());
+        let Hint::W3c(columns) = hint else {
+            panic!("not a W3C log: {hint:?}");
+        };
+        assert!(!columns.utc, "it says its times are local");
+        let dropped = hinted(hint, "2026-11-18 09:30:12 DROP TCP 10.0.0.9 10.0.0.5 51234 445 52 S 123456 0 64240 - - - RECEIVE 4");
+        assert_eq!(stamp_text(&dropped), "2026-11-18T09:30:12.000");
+        assert_eq!(dropped.level, Level::Warning);
+        assert_eq!(dropped.component, b"DROP");
+        assert_eq!(dropped.source, b"10.0.0.9");
+        assert_eq!(dropped.thread, b"4");
+        let allowed = hinted(
+            hint,
+            "2026-11-18 09:30:13 ALLOW UDP 10.0.0.5 10.0.0.1 55000 53 0 - - - - - - - SEND 2888",
+        );
+        assert_eq!(allowed.level, Level::Info);
+        assert_eq!(allowed.component, b"ALLOW");
+
+        // Other logs starting with # aren't W3C logs.
+        assert_eq!(
+            hint_for(b"# a comment\n2026-01-01 10:00:00 x\n"),
+            Hint::None
+        );
+        assert_eq!(
+            hint_for(b"#Software: x\n#Version: 1.0\n"),
+            Hint::None,
+            "no #Fields"
+        );
     }
 
     #[test]

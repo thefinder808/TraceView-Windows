@@ -429,7 +429,7 @@ fn to_record(log: &LogFile, row: usize, raw: &[u8], cut: bool, scratch: &mut Vec
         timestamp: fields.stamp.map(|stamp| stamp.to_string()),
         utc_offset: fields
             .stamp
-            .and(parse::utc_offset(log.format(), text))
+            .and(log.utc_offset(text))
             .map(time::offset_text),
         level: log.level(row),
         component: display_text(fields.component),

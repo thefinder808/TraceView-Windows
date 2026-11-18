@@ -13,8 +13,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - PowerShell transcripts mark error records as errors, from Windows PowerShell and PowerShell 7, such as `Get-Item : Cannot find path…` and its `+ CategoryInfo` lines. Their `Start time:` and `Command start time:` lines have times. Before, only `WARNING:` and `VERBOSE:` had a level.
 - Office's Click-to-Run logs, such as `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's, in the ULS format, have their time, level, category, thread and process. `Unexpected` is an error, and `Monitorable` and `High` are notices. Before, each whole row was the message, with no time.
 - WiX Burn's logs, from the Visual C++ and .NET installers, and the Visual Studio installer's, such as `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg`, have their time and thread, and Burn's `i`, `w` and `e` codes are their levels. Before, they had no time.
+- IIS logs, such as `u_ex261118.log` from a ConfigMgr management or distribution point, and Windows Firewall's `pfirewall.log` are read by the columns their `#Fields:` line names. Each row has its time and the client's address. For IIS, the page asked for is the component, a 5xx status is an error and a 4xx a warning, except 401, which every Windows-authenticated request gets first, and times say they're UTC. For the firewall, the action is the component, and `DROP` is a warning. Before, rows had a time but nothing else.
 - `setupapi.dev.log` goes by its `!!!` and `!` markers, so `Error Control = 1` is no longer an error, and a failed `[Exit status: FAILURE(…)]` is. Sections' starts and ends have times, and the short name before a colon, such as `dvi`, is the component.
 - Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
+
+**Command line**
+
+- Summaries count a template at each level apart, so a pattern's count is how many rows it had at its level. Before, a template that was only sometimes an error, such as a CBS row raised by its HRESULT, was one pattern at its worst level that counted every row, information included. IIS requests, whose status sets the level, would otherwise all have counted as errors.
 
 **Viewer**
 

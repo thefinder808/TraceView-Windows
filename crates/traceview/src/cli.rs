@@ -2803,10 +2803,10 @@ fn summarize_logs(opened: &[Opened], top: usize, range: &Query) -> Result<LogsSu
                 summary.last_timestamp.as_ref(),
             );
             for pattern in summary.problem_patterns {
-                match found
-                    .iter_mut()
-                    .find(|known| known.pattern.template == pattern.template)
-                {
+                match found.iter_mut().find(|known| {
+                    known.pattern.template == pattern.template
+                        && known.pattern.level == pattern.level
+                }) {
                     Some(known) => known.absorb(&file.label, pattern),
                     None => found.push(LogPattern {
                         file: file.label.clone(),

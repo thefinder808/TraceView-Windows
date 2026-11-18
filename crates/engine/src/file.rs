@@ -427,6 +427,17 @@ impl LogFile {
         parse::fields(self.layout.format, text, &self.context)
     }
 
+    /// The offset from UTC a row's time was written in, as minutes east of
+    /// UTC, when the row or its log says. A W3C log, such as IIS's, writes
+    /// UTC unless it says otherwise.
+    pub fn utc_offset(&self, text: &[u8]) -> Option<i32> {
+        match self.context.hint {
+            Hint::W3c(columns) if columns.utc => Some(0),
+            Hint::W3c(_) => None,
+            _ => parse::utc_offset(self.layout.format, text),
+        }
+    }
+
     /// Checks the file for changes and updates the index. Only new data is
     /// read. Holding a log open never stops its writer from truncating,
     /// renaming or deleting it.
@@ -676,6 +687,34 @@ mod tests {
         assert_eq!(log.level(2), Level::Error);
         assert_eq!(log.stamp_seconds(3), Some(at(19, 0, 0, 2)));
         assert_eq!(log.level(3), Level::Error);
+    }
+
+    #[test]
+    fn iis_rows_are_utc_and_firewall_rows_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let offsets = |name: &str, text: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, text).unwrap();
+            let log = open_uncached(&path);
+            let rows = all_rows(&log);
+            let mut scratch = Vec::new();
+            let last = log.text(&rows[rows.len() - 1], &mut scratch).to_vec();
+            (log.level(rows.len() - 1), log.utc_offset(&last))
+        };
+        assert_eq!(
+            offsets(
+                "u_ex261118.log",
+                "#Software: Microsoft Internet Information Services 10.0\r\n#Fields: date time cs-uri-stem c-ip sc-status\r\n2026-11-18 14:05:09 /SMS_MP/.sms_aut 10.0.0.9 500\r\n",
+            ),
+            (Level::Error, Some(0))
+        );
+        assert_eq!(
+            offsets(
+                "pfirewall.log",
+                "#Version: 1.5\r\n#Software: Microsoft Windows Firewall\r\n#Time Format: Local\r\n#Fields: date time action protocol src-ip\r\n2026-11-18 09:30:12 DROP TCP 10.0.0.9\r\n",
+            ),
+            (Level::Warning, None)
+        );
     }
 
     #[test]
