@@ -4,7 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::{Arc, OnceLock};
-use tv_engine::parse::{self, Format, Hint, ParseContext};
+use tv_engine::parse::{self, Format, Hint, ParseContext, W3cFields};
 use tv_engine::summary::normalize;
 use tv_engine::time::{self, YearHint};
 use tv_engine::CustomFormat;
@@ -16,8 +16,9 @@ const PLAIN: ParseContext = ParseContext {
     hint: Hint::None,
 };
 /// Plain logs whose first lines change how rows are read. The installer log
-/// starts near the last time a stamp can hold, so the next day overflows.
-const HINTED: [ParseContext; 3] = [
+/// starts near the last time a stamp can hold, so the next day overflows,
+/// and the W3C log names a column as late as a row can have.
+const HINTED: [ParseContext; 4] = [
     ParseContext {
         year_hint: HINT,
         custom: None,
@@ -37,6 +38,20 @@ const HINTED: [ParseContext; 3] = [
         year_hint: HINT,
         custom: None,
         hint: Hint::SetupApi,
+    },
+    ParseContext {
+        year_hint: HINT,
+        custom: None,
+        hint: Hint::W3c(W3cFields {
+            date: Some(0),
+            time: Some(1),
+            status: Some(4),
+            action: Some(2),
+            page: Some(3),
+            client: Some(5),
+            process: Some(47),
+            utc: true,
+        }),
     },
 ];
 /// Names every part a custom format can, loosely, so most rows match and
@@ -60,6 +75,7 @@ fuzz_target!(|data: &[u8]| {
         (Format::Plain, &HINTED[0]),
         (Format::Plain, &HINTED[1]),
         (Format::Plain, &HINTED[2]),
+        (Format::Plain, &HINTED[3]),
     ] {
         let fields = parse::fields(format, data, context);
         let _ = parse::searchable(format, data);

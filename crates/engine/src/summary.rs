@@ -90,7 +90,8 @@ pub struct Pattern {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub example: String,
     pub count: u64,
-    /// The highest severity seen with this pattern.
+    /// The rows' severity. A template seen at several levels is a pattern at
+    /// each.
     pub level: Level,
     pub first_row: u64,
     pub last_row: u64,
@@ -256,12 +257,14 @@ fn stamp_text(log: &LogFile, row: u32) -> Option<String> {
         .map(|seconds| Stamp::from_seconds(seconds).to_string())
 }
 
+/// `template` ends with its level's byte, which is left out.
 fn to_pattern(
     log: &LogFile,
     template: &[u8],
     tally: &Tally,
     buffers: &mut (Vec<u8>, Vec<u8>),
 ) -> io::Result<Pattern> {
+    let template = template.split_last().map_or(template, |(_, text)| text);
     let first = query::read_record(
         log,
         tally.first_row as usize,
@@ -424,6 +427,10 @@ pub fn summarize_matching(
                     let text = log.text(raw, scratch);
                     normalize(log.fields(text).message, template);
                     let level = log.level(row);
+                    // A template is counted at each level apart, so one that's
+                    // sometimes an error, as an IIS request is by its status,
+                    // says how many times it was. The last byte is the level.
+                    template.push(level as u8);
                     let row = row as u32;
                     if let Some(tally) = counts.tallies.get_mut(template.as_slice()) {
                         tally.absorb(Tally {
@@ -693,6 +700,28 @@ mod tests {
             summary.first_timestamp.as_deref(),
             Some("2026-01-01T10:00:00.000")
         );
+    }
+
+    #[test]
+    fn a_template_is_counted_at_each_level_apart() {
+        // CBS raises a row to an error by its HRESULT, which the template
+        // leaves out, so the same template can be information or an error.
+        let (_dir, log) = open(
+            "2026-01-01 10:00:00, Info CBS Loaded package. [HRESULT = 0x00000000]\n\
+             2026-01-01 10:00:01, Info CBS Loaded package. [HRESULT = 0x800f0805]\n\
+             2026-01-01 10:00:02, Info CBS Loaded package. [HRESULT = 0x00000000]\n",
+        );
+        let summary = summarize(&log, 10, &Control::default()).unwrap();
+        assert_eq!(summary.distinct_patterns, 2);
+        let [problem] = summary.problem_patterns.as_slice() else {
+            panic!("{:?}", summary.problem_patterns);
+        };
+        assert_eq!(problem.template, "Loaded package. [HRESULT = <hex>]");
+        assert_eq!((problem.count, problem.level), (1, Level::Error));
+        assert_eq!(problem.example, "Loaded package. [HRESULT = 0x800f0805]");
+        let top = &summary.top_patterns[0];
+        assert_eq!((top.count, top.level), (2, Level::Info));
+        assert_eq!(top.template, problem.template);
     }
 
     #[test]
