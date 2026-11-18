@@ -66,7 +66,13 @@ fn collect(text: &str, keep_unexplained: bool) -> Vec<Decoded> {
     for value in values {
         let mut decoded = decode_value(value);
         if decoded.is_empty() && keep_unexplained {
-            if let Some(reading) = readings(value).first() {
+            // A ConfigMgr code is shown as one, even with no text for it.
+            let all = readings(value);
+            let best = all
+                .iter()
+                .find(|reading| reading.kind == CodeKind::ConfigMgr)
+                .or(all.first());
+            if let Some(reading) = best {
                 decoded.push(describe(reading.kind, reading.code, String::new(), ""));
             }
         }
@@ -291,7 +297,58 @@ fn decode_value(code: u32) -> Vec<Decoded> {
             }
         }
     }
+    // TraceView's own words, for some codes nothing else explains: on the
+    // code's reading with no text, or else a reading of its own.
+    if let Some(text) = explained_of(code) {
+        let has_text = decoded
+            .iter()
+            .any(|entry| entry.code == code && !entry.message.is_empty());
+        if !has_text {
+            match decoded.iter_mut().find(|entry| entry.code == code) {
+                Some(entry) => {
+                    entry.message = text.to_string();
+                    entry.source = crate::OWN_WORDS.to_string();
+                }
+                None => {
+                    let all = readings(code);
+                    let best = all
+                        .iter()
+                        .find(|reading| reading.kind == CodeKind::ConfigMgr)
+                        .or(all.first());
+                    if let Some(reading) = best {
+                        decoded.insert(
+                            0,
+                            describe(reading.kind, code, text.to_string(), crate::OWN_WORDS),
+                        );
+                    }
+                }
+            }
+        }
+    }
     decoded
+}
+
+/// TraceView's own explanation of a code, if it has one.
+fn explained_of(code: u32) -> Option<&'static str> {
+    let table = crate::explained::EXPLAINED;
+    table
+        .binary_search_by_key(&code, |(known, _)| *known)
+        .ok()
+        .map(|index| table[index].1)
+}
+
+/// What to tell someone looking up a ConfigMgr code on a PC without CMTrace,
+/// which has text for hundreds of them. `None` when there's nothing to say.
+pub fn configmgr_text_hint(decoded: &Decoded) -> Option<&'static str> {
+    let is_configmgr = matches!(decoded.kind, CodeKind::ConfigMgr | CodeKind::HResult)
+        && decoded.code >> 31 == 1
+        && CONFIGMGR_FACILITIES.contains(&facility(decoded.code));
+    let without_cmtrace = is_configmgr
+        && !messages::is_available(Table::CmTrace)
+        && !messages::is_available(Table::ConfigMgr);
+    without_cmtrace.then_some(
+        "ConfigMgr's own text for its codes comes from CMTrace.exe, which isn't on this PC. Put a copy in the folder holding traceview.exe to get it.",
+    )
 }
 
 /// The name of a Windows Update, Delivery Optimization or servicing code.
@@ -468,12 +525,56 @@ mod tests {
             let found = lookup(code);
             assert_eq!(found[0].kind, kind, "{code}");
             assert_eq!(found[0].name, Some(name), "{code}");
-            assert!(found[0].message.is_empty());
+            // Servicing codes also have TraceView's own explanation.
+            let explained = found[0].source == crate::OWN_WORDS;
+            assert_eq!(found[0].message.is_empty(), !explained, "{code}");
+            assert_eq!(
+                explained,
+                code.to_lowercase().starts_with("0x800f"),
+                "{code}"
+            );
         }
         // A code Windows explains has no name.
         assert!(lookup("0x80070005")
             .iter()
             .all(|found| found.name.is_none()));
+    }
+
+    #[test]
+    fn own_explanations_are_sorted_and_only_fill_in() {
+        let table = crate::explained::EXPLAINED;
+        assert!(table.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        // Every one is a sentence, short enough for a line, and a ConfigMgr or
+        // servicing code, and every named servicing code has one.
+        assert!(table.iter().all(|(code, text)| {
+            let configmgr = code >> 31 == 1 && CONFIGMGR_FACILITIES.contains(&facility(*code));
+            (configmgr || facility(*code) == 15) && text.ends_with('.') && text.len() < 160
+        }));
+        assert!(crate::cbs_names::CBS_NAMES
+            .iter()
+            .all(|(code, _)| explained_of(*code).is_some()));
+        // Windows' own text always wins.
+        assert!(lookup("0x80070005")
+            .iter()
+            .all(|found| found.source != crate::OWN_WORDS));
+        // Where there's no CMTrace, a ConfigMgr code is explained in its own
+        // words, and either way it reads as a ConfigMgr code.
+        let found = lookup_all("0x87D00324");
+        assert_eq!(found[0].kind, CodeKind::ConfigMgr);
+        if !messages::is_available(Table::CmTrace) && !messages::is_available(Table::ConfigMgr) {
+            assert_eq!(found[0].source, crate::OWN_WORDS);
+            assert!(found[0].message.contains("detection method"));
+            assert!(configmgr_text_hint(&found[0]).is_some());
+            let unlisted = lookup_all("0x87D00314");
+            assert_eq!(unlisted[0].kind, CodeKind::ConfigMgr);
+            assert!(unlisted[0].message.is_empty());
+            assert!(configmgr_text_hint(&unlisted[0]).is_some());
+        }
+        // Nothing else gets the hint.
+        assert!(lookup_all("0x80240438")
+            .iter()
+            .chain(&lookup_all("0x800F0991"))
+            .all(|found| configmgr_text_hint(found).is_none()));
     }
 
     #[test]

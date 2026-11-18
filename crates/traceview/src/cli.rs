@@ -663,14 +663,19 @@ struct Reading {
     signed: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     facility: Option<String>,
-    /// Empty when there's no text for it, as for Windows Update codes on a PC
-    /// without ConfigMgr.
+    /// Empty when there's no text for it, as for most ConfigMgr codes on a PC
+    /// without CMTrace.
     message: String,
+    /// Where the text came from: `system`, a file such as `CMTrace.exe`, or
+    /// `TraceView` for TraceView's own short explanation of a common code.
     source: String,
-    /// The code's name, for Windows Update and Delivery Optimization codes,
-    /// which Windows has no text for.
+    /// The code's name, for Windows Update, Delivery Optimization and
+    /// servicing codes, which Windows has no text for.
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<&'static str>,
+    /// Shown once for the code, not with each reading.
+    #[serde(skip)]
+    hint: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -679,12 +684,18 @@ struct CodeInfo {
     code: String,
     /// Most likely first.
     readings: Vec<Reading>,
+    /// For a ConfigMgr code on a PC without CMTrace, where to get its text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'static str>,
 }
 
 #[derive(Serialize)]
 struct LookupOutput<'a> {
     input: &'a str,
     readings: Vec<Reading>,
+    /// For a ConfigMgr code on a PC without CMTrace, where to get its text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'static str>,
 }
 
 /// A log listed in a folder that couldn't be read. The others still are.
@@ -1166,6 +1177,7 @@ fn readings(text: &str) -> Vec<Reading> {
     decoded
         .into_iter()
         .map(|decoded| Reading {
+            hint: tv_errors::configmgr_text_hint(&decoded),
             kind: decoded.kind.name(),
             hex: decoded.hex,
             signed: decoded.signed,
@@ -1193,6 +1205,7 @@ fn codes_in<'a>(messages: impl Iterator<Item = &'a str>) -> Vec<CodeInfo> {
         if !readings.is_empty() {
             codes.push(CodeInfo {
                 code: found.text,
+                hint: readings.iter().find_map(|reading| reading.hint),
                 readings,
             });
         }
@@ -1581,6 +1594,9 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
                 };
                 lines.push(shape.fit(format!("{} {} | {meaning}", code.code, reading.kind)));
             }
+        }
+        if let Some(hint) = view.codes.iter().find_map(|code| code.hint) {
+            lines.push(format!("# Note: {hint}"));
         }
     }
     lines
@@ -2854,6 +2870,7 @@ fn run_lookup(text: &str, pretty: bool) -> ExitCode {
     finish(write_json(
         &LookupOutput {
             input: text,
+            hint: readings.iter().find_map(|reading| reading.hint),
             readings,
         },
         pretty,

@@ -65,7 +65,15 @@ pub fn explain(text: &str) -> String {
                 (message, Some(name)) => format!("{name}: {message}"),
                 (message, None) => message.to_string(),
             };
-            format!("{}\n{message}", heading(decoded))
+            // TraceView's own explanation says so, as it isn't Windows' text.
+            let message = if decoded.source == tv_errors::OWN_WORDS {
+                format!("{message} (In TraceView's words.)")
+            } else {
+                message
+            };
+            let hint = tv_errors::configmgr_text_hint(decoded)
+                .map_or_else(String::new, |hint| format!("\n{hint}"));
+            format!("{}\n{message}{hint}", heading(decoded))
         })
         .collect::<Vec<_>>()
         .join("\n\n")

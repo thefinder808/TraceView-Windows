@@ -4,6 +4,11 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Error Lookup**
+
+- On a PC without CMTrace, such as one logs are copied to, 27 common ConfigMgr codes, such as 0x87D00324, get a short explanation in TraceView's own words, with `TraceView` as its source, rather than no text. The 21 named servicing codes, such as 0x800F0991, get one too. Any other ConfigMgr code says that a copy of `CMTrace.exe` beside `traceview.exe` gives its text, in `lookup`, summaries and the Error Lookup window. Windows' and CMTrace's own text still comes first wherever they have it.
+- A ConfigMgr code with no text reads as a ConfigMgr code, rather than as a plain HRESULT.
+
 **AI agents**
 
 - `traceview setup` also adds TraceView's skill for GitHub Copilot, in `%USERPROFILE%\.copilot\skills\traceview`, when `%USERPROFILE%\.copilot` exists. `traceview setup --remove` takes it back.

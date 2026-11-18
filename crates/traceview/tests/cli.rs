@@ -888,6 +888,63 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn configmgr_codes_are_explained_and_say_where_to_get_more() {
+    // Only on a PC without ConfigMgr's own text, as on CI, where TraceView's
+    // own words stand in.
+    let windows = std::env::var_os("SystemRoot").expect("Windows sets SystemRoot");
+    let program_files = std::env::var_os("ProgramFiles").unwrap_or_default();
+    let has_cmtrace = std::path::Path::new(&windows)
+        .join(r"CCM\CMTrace.exe")
+        .is_file()
+        || std::path::Path::new(&program_files)
+            .join(r"Microsoft Configuration Manager\tools\CMTrace.exe")
+            .is_file()
+        || std::env::var_os("SMS_ADMIN_UI_PATH").is_some();
+    if has_cmtrace {
+        return;
+    }
+    let json = stdout_json(&traceview(&["lookup", "0x87D00324"]));
+    let reading = &json["readings"][0];
+    assert_eq!(reading["kind"], "ConfigMgr");
+    assert_eq!(reading["source"], "TraceView");
+    assert!(reading["message"]
+        .as_str()
+        .unwrap()
+        .contains("detection method"));
+    assert!(json["hint"].as_str().unwrap().contains("CMTrace.exe"));
+    // A code it has no words for still says where to get some.
+    let unlisted = stdout_json(&traceview(&["lookup", "0x87D00314"]));
+    assert_eq!(unlisted["readings"][0]["kind"], "ConfigMgr");
+    assert!(unlisted["hint"].is_string());
+    // Other codes don't get the hint.
+    let windows_code = stdout_json(&traceview(&["lookup", "0x80070005"]));
+    assert!(windows_code.get("hint").is_none());
+
+    // A summary says it once, under its codes.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("AppEnforce.log");
+    std::fs::write(
+        &path,
+        sccm_row("App enforcement failed with 0x87D00324", 21, 3).repeat(2),
+    )
+    .unwrap();
+    let lines = lines_of(&["summarize", path.to_str().unwrap(), "--format", "lines"]);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("0x87D00324 ConfigMgr | The install finished")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("# Note: ConfigMgr's own text"))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn summaries_can_look_for_signs_of_trouble_logged_as_info() {
     let dir = tempfile::tempdir().unwrap();
     let stuck = sccm_row(

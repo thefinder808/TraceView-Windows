@@ -1,11 +1,15 @@
 //! Turns error codes found in Windows logs into readable explanations, for the
 //! Error Lookup feature.
 //!
-//! Every message is read at run time: from Windows through `FormatMessageW`, or,
+//! Messages are read at run time: from Windows through `FormatMessageW`, or,
 //! for ConfigMgr and Windows Update codes, from the `CMTrace.exe` that ConfigMgr
-//! installs. Nothing here stores message text, so Windows' messages are in the
-//! user's own language and match the Windows they're running on. CMTrace's are
-//! in English, the only language it has. The crate keeps three tables: short
+//! installs. Nothing here stores Windows' or CMTrace's text, so Windows'
+//! messages are in the user's own language and match the Windows they're
+//! running on. CMTrace's are in English, the only language it has. For a few
+//! dozen common ConfigMgr and servicing codes that nothing on the PC explains,
+//! `explained.rs` holds a short explanation in TraceView's own words, in
+//! English, with [`OWN_WORDS`] as its source, and [`configmgr_text_hint`] says
+//! where to get CMTrace's text for the rest. The crate keeps three tables: short
 //! names for HRESULT facility numbers; `names.rs`, the names of Windows Update
 //! and Delivery Optimization codes; and `cbs_names.rs`, the names of servicing
 //! codes. Windows has no text for those, so a name is the best explanation
@@ -25,9 +29,9 @@
 //! | BITS, 0x8020xxxx, and the HTTP statuses it reports, 0x8019xxxx | `qmgr.dll` | Works |
 //! | Windows Update, 0x8024xxxx | `wuaueng.dll`, then `CMTrace.exe` | `wuaueng.dll`'s table only holds event messages. CMTrace has text for 249 of these, so they get it where ConfigMgr is installed, and their names from `names.rs` everywhere |
 //! | Delivery Optimization, 0x80D0xxxx | none | No Windows file has text for these, so they get their names from `names.rs` |
-//! | Servicing (CBS and PSFX), 0x800F08xx and 0x800F09xx | none | `servicing\CbsMsg.dll` has no text for them, so 21 get their names from `cbs_names.rs`. CBS.log writes the name itself |
+//! | Servicing (CBS and PSFX), 0x800F08xx and 0x800F09xx | none | `servicing\CbsMsg.dll` has no text for them, so 21 get their names from `cbs_names.rs`, and a short explanation in TraceView's own words from `explained.rs`. CBS.log writes the name itself |
 //! | WMI, 0x80041xxx and 0x80042xxx | `wbem\wmiutils.dll` | Works |
-//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server, or from TraceView's own folder | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled |
+//! | ConfigMgr, 0x87D0xxxx and 0x87D1xxxx | `srsresources.dll` from an installed ConfigMgr console, then `CMTrace.exe` from a ConfigMgr client or site server, or from TraceView's own folder | CMTrace's 448 messages work, tested with CMTrace 5.00.9128.1007. The console's are untested, as no console was installed. Neither is bundled. Without either, 27 common codes get a short explanation in TraceView's own words from `explained.rs`, and `configmgr_text_hint` says to add CMTrace for the rest |
 //!
 //! DLLs are loaded as data, so none of their code runs, and from full paths, so
 //! Windows never searches for them. CMTrace isn't loaded at all: `resources.rs`
@@ -37,6 +41,7 @@
 
 mod cbs_names;
 mod decode;
+mod explained;
 mod find;
 #[allow(unsafe_code)]
 mod messages;
@@ -44,7 +49,12 @@ mod names;
 mod parse;
 mod resources;
 
-pub use decode::{lookup, lookup_all};
+pub use decode::{configmgr_text_hint, lookup, lookup_all};
+
+/// The `source` of text written for TraceView itself, in `explained.rs`, for
+/// common codes Windows and CMTrace have no text for, rather than read from
+/// Windows or CMTrace.
+pub const OWN_WORDS: &str = "TraceView";
 pub use find::find_codes;
 
 /// What kind of code a reading treats the value as.
@@ -103,8 +113,8 @@ pub struct Decoded {
     /// Insert placeholders such as `%1` become `…`, since there's nothing to
     /// fill them with.
     pub message: String,
-    /// Where the text came from: `system`, or a file's name such as
-    /// `ntdll.dll` or `CMTrace.exe`.
+    /// Where the text came from: `system`, a file's name such as `ntdll.dll`
+    /// or `CMTrace.exe`, or [`OWN_WORDS`] for TraceView's own explanation.
     pub source: String,
     /// The code's name, such as `WU_E_PT_WINHTTP_NAME_NOT_RESOLVED`, for the
     /// Windows Update and Delivery Optimization codes Windows has no text for.
