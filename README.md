@@ -145,6 +145,15 @@ Give `--text` or `--regex` more than once, or both, to find only the rows matchi
 .\traceview.exe query C:\Windows\CCM\Logs\CcmExec.log --text "Entering CS mode" --unless-followed-by "Leaving CS mode" --format lines
 ```
 
+Each match it finds says which of two very different things happened. Either the same thing started again before it finished, and whether that attempt finished, which means it was abandoned. Or it's still open at the end of its log, which may mean it's hung:
+
+```
+WUAHandler.log:812 … [started again at row 960 (09:46:45), which finished] | Async installation of updates started
+WUAHandler.log:1307 … [still open at the end of the log] | Async installation of updates started
+```
+
+In JSON, each match has `unclosed`, either `started_again` with a `next_match`, or `still_open`, and the result counts each kind.
+
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
 `lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`. On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0…) and many Windows Update codes also get English text from the copy of CMTrace that ConfigMgr installs. On another PC, such as one you copy logs to, put a copy of `CMTrace.exe` in the folder holding `traceview.exe` for the same text. After `traceview setup`, that's `%LOCALAPPDATA%\Programs\TraceView`. TraceView only reads that file, and never runs it:

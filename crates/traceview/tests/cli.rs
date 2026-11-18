@@ -926,7 +926,18 @@ fn matches_with_nothing_closing_them_are_found() {
         .map(|row| row["row"].as_u64().unwrap())
         .collect();
     assert_eq!(found, [3, 6], "left by the next entry, or never left");
-    assert_eq!(json["result"]["unless_followed_by"], "leaving cs mode");
+    let result = &json["result"];
+    assert_eq!(result["unless_followed_by"], "leaving cs mode");
+    // Row 3 was entered again at row 4, which was left; row 6 never was.
+    assert_eq!(result["started_again"], 1);
+    assert_eq!(result["still_open"], 1);
+    let first = &result["rows"][0];
+    assert_eq!(first["unclosed"], "started_again");
+    assert_eq!(first["next_match"]["row"], 4);
+    assert_eq!(first["next_match"]["timestamp"], "2026-10-23T10:00:00.000");
+    assert_eq!(first["next_match"]["finished"], true);
+    assert_eq!(result["rows"][1]["unclosed"], "still_open");
+    assert!(result["rows"][1].get("next_match").is_none());
 
     let lines = lines_of(&[&base[..], &["--format", "lines"]].concat());
     assert!(
@@ -934,8 +945,73 @@ fn matches_with_nothing_closing_them_are_found() {
         "{}",
         lines[0]
     );
+    assert!(
+        lines[0]
+            .contains("Started again before finishing: 1. Still open at the end of their log: 1."),
+        "{}",
+        lines[0]
+    );
+    // On another day, the label gives the date too.
+    assert!(
+        lines[1].contains("[started again at row 4 (2026-10-23T10:00:00), which finished] | "),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains(" [still open at the end of the log] | Entering CS mode"),
+        "{}",
+        lines[2]
+    );
+    // Without --unless-followed-by, nothing is labelled.
+    let plain = stdout_json(&traceview(&base[..4]));
+    assert!(plain["result"].get("started_again").is_none());
+    assert!(plain["result"]["rows"][0].get("unclosed").is_none());
     let counted = stdout_json(&traceview(&[&base[..], &["--count-by", "level"]].concat()));
     assert_eq!(counted["result"]["total_matches"], 2);
+}
+
+#[test]
+fn a_start_replaced_by_one_that_finished_says_so() {
+    // The case an agent took for a hung install: the 08:53 start was
+    // replaced by one at 09:46 that finished. The 14:02 one never did.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("WUAHandler.log");
+    let text: String = [
+        ("Async installation of updates started", "08:53:17"),
+        ("Async installation of updates started", "09:46:45"),
+        ("Installation of updates completed", "09:47:13"),
+        ("Async installation of updates started", "13:10:00"),
+        ("Async installation of updates started", "14:02:09"),
+    ]
+    .iter()
+    .map(|(message, time)| {
+        format!(
+            "<![LOG[{message}]LOG]!><time=\"{time}.000+360\" date=\"11-16-2026\" component=\"WUAHandler\" context=\"\" type=\"1\" thread=\"7\" file=\"a.cpp\">\r\n"
+        )
+    })
+    .collect();
+    std::fs::write(&path, text).unwrap();
+    let lines = lines_of(&[
+        "query",
+        path.to_str().unwrap(),
+        "--text",
+        "async installation of updates started",
+        "--unless-followed-by",
+        "installation of updates completed",
+        "--format",
+        "lines",
+        "--no-header",
+        "--fields",
+        "row,message",
+    ]);
+    assert_eq!(
+        lines,
+        [
+            "1 [started again at row 2 (09:46:45), which finished] | Async installation of updates started",
+            "4 [started again at row 5 (14:02:09), which didn't finish either] | Async installation of updates started",
+            "5 [still open at the end of the log] | Async installation of updates started",
+        ]
+    );
 }
 
 #[test]
