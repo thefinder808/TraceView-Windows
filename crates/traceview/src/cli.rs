@@ -75,7 +75,9 @@ Query options:
                        before the next match, such as an \"Entering CS mode\"
                        never followed by \"Leaving CS mode\". Read as the first
                        --text or --regex is, in the same log, whatever other
-                       filters say
+                       filters say. Each says whether it started again before
+                       finishing, and if that one finished, or is still open
+                       at the end of its log
   --count-by <group>   Count the matches by day, hour, file, level, component
                        or template, the message with its numbers and codes
                        taken out, instead of listing them. JSON by default:
@@ -631,6 +633,24 @@ struct LogRow {
     before: Option<Vec<RowRecord>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     after: Option<Vec<RowRecord>>,
+    /// With `--unless-followed-by`, why nothing closed it: `started_again`,
+    /// when another match came first, or `still_open`, at the end of its log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unclosed: Option<&'static str>,
+    /// For one started again, the match that came next.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_match: Option<NextMatch>,
+}
+
+/// The next match after one that nothing closed, in the same log.
+#[derive(Serialize)]
+struct NextMatch {
+    row: u64,
+    timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    utc_offset: Option<String>,
+    /// Whether something closed this one.
+    finished: bool,
 }
 
 #[derive(Serialize)]
@@ -649,6 +669,13 @@ struct MergedResult {
     /// them, before the next match, were left out.
     #[serde(skip_serializing_if = "Option::is_none")]
     unless_followed_by: Option<String>,
+    /// Of the matches nothing closed, those followed by another match first,
+    /// and those still open at the end of their log. Only with
+    /// `--unless-followed-by`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_again: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    still_open: Option<u64>,
     /// In time order across every log, or the reverse when newest first.
     rows: Vec<LogRow>,
     next_offset: Option<usize>,
@@ -1164,10 +1191,54 @@ fn one_line(text: &str) -> String {
         .replace(['\r', '\n'], "\\n")
 }
 
+/// A row's time as lines show it: with its offset from UTC when the row says,
+/// so the hour repeated when clocks go back, and logs from other time zones,
+/// read correctly.
+fn time_text(timestamp: Option<&str>, utc_offset: Option<&str>) -> Option<String> {
+    timestamp.map(|time| format!("{time}{}", utc_offset.unwrap_or("")))
+}
+
+/// What lines say about a match `--unless-followed-by` kept: that the same
+/// thing started again before it finished, or that it's still open.
+fn unclosed_label(row: &LogRow) -> Option<String> {
+    row.unclosed?;
+    let Some(next) = &row.next_match else {
+        return Some("still open at the end of the log".to_string());
+    };
+    // Kept short, so --max-width rarely cuts it: the time of day on the same
+    // day, or else the date and time, without fractions or the offset.
+    let at = next.timestamp.as_deref().map_or_else(String::new, |time| {
+        let own_day = row
+            .record
+            .timestamp
+            .as_deref()
+            .and_then(|own| own.get(..10));
+        let shown = if own_day.is_some() && own_day == time.get(..10) {
+            time.get(11..19)
+        } else {
+            time.get(..19)
+        };
+        format!(" ({})", shown.unwrap_or(time))
+    });
+    let ending = if next.finished {
+        "which finished"
+    } else {
+        "which didn't finish either"
+    };
+    Some(format!("started again at row {}{at}, {ending}", next.row))
+}
+
 /// One row as a line: where it is, as `file:row`, its time, level, component
 /// and thread, then its message. Only the fields asked for are shown, still in
-/// that order. A row shown as context for a match is indented.
-fn row_line(file: &str, record: &RowRecord, is_context: bool, shape: &Shape) -> String {
+/// that order. A row shown as context for a match is indented, and a label,
+/// if any, goes in brackets just before the message.
+fn row_line(
+    file: &str,
+    record: &RowRecord,
+    is_context: bool,
+    label: Option<String>,
+    shape: &Shape,
+) -> String {
     let mut parts = Vec::new();
     match (shape.shows(Field::File), shape.shows(Field::Row)) {
         (true, true) => parts.push(format!("{file}:{}", record.row)),
@@ -1176,12 +1247,10 @@ fn row_line(file: &str, record: &RowRecord, is_context: bool, shape: &Shape) -> 
         (false, false) => {}
     }
     if shape.shows(Field::Time) {
-        // With its offset from UTC when the row says, so the hour repeated when
-        // clocks go back, and logs from other time zones, read correctly.
-        parts.push(match &record.timestamp {
-            Some(time) => format!("{time}{}", record.utc_offset.as_deref().unwrap_or("")),
-            None => "-".to_string(),
-        });
+        parts.push(
+            time_text(record.timestamp.as_deref(), record.utc_offset.as_deref())
+                .unwrap_or_else(|| "-".to_string()),
+        );
     }
     if shape.shows(Field::Level) {
         parts.push(short_level(record.level).to_string());
@@ -1191,6 +1260,9 @@ fn row_line(file: &str, record: &RowRecord, is_context: bool, shape: &Shape) -> 
     }
     if shape.shows(Field::Thread) {
         parts.push(field(&record.thread).to_string());
+    }
+    if let Some(label) = label {
+        parts.push(format!("[{label}]"));
     }
     let mut line = parts.join(" ");
     if shape.shows(Field::Message) {
@@ -1212,24 +1284,30 @@ fn row_line(file: &str, record: &RowRecord, is_context: bool, shape: &Shape) -> 
 /// around it, indented, and `--` splits the groups. Matches close together in
 /// one log share a group, in file order, so no row is shown twice.
 fn row_lines(rows: &[LogRow], shape: &Shape) -> Vec<String> {
-    // A group's log, and its rows by number, with whether each is a match.
-    type Group<'a> = (&'a str, BTreeMap<u64, (&'a RowRecord, bool)>);
+    // A group's log, and its rows by number, with the match for each match.
+    type Group<'a> = (&'a str, BTreeMap<u64, (&'a RowRecord, Option<&'a LogRow>)>);
     fn write(group: Group, shape: &Shape, lines: &mut Vec<String>) {
         if !lines.is_empty() {
             lines.push("--".to_string());
         }
         let (file, rows) = group;
-        lines.extend(
-            rows.values()
-                .map(|(record, is_match)| row_line(file, record, !is_match, shape)),
-        );
+        lines.extend(rows.values().map(|(record, matched)| {
+            let label = matched.and_then(unclosed_label);
+            row_line(file, record, matched.is_none(), label, shape)
+        }));
     }
 
     let mut lines = Vec::new();
     let mut open: Option<Group> = None;
     for row in rows {
         let (Some(before), Some(after)) = (&row.before, &row.after) else {
-            lines.push(row_line(&row.file, &row.record, false, shape));
+            lines.push(row_line(
+                &row.file,
+                &row.record,
+                false,
+                unclosed_label(row),
+                shape,
+            ));
             continue;
         };
         let first = row.record.row - before.len() as u64;
@@ -1248,9 +1326,9 @@ fn row_lines(rows: &[LogRow], shape: &Shape) -> Vec<String> {
         }
         let (_, shown) = open.get_or_insert_with(|| (row.file.as_str(), BTreeMap::new()));
         for record in before.iter().chain(after) {
-            shown.entry(record.row).or_insert((record, false));
+            shown.entry(record.row).or_insert((record, None));
         }
-        shown.insert(row.record.row, (&row.record, true));
+        shown.insert(row.record.row, (&row.record, Some(row)));
     }
     if let Some(done) = open {
         write(done, shape, &mut lines);
@@ -1274,6 +1352,11 @@ fn header_line(what: &str, result: &MergedResult) -> String {
         result.total_rows,
         unless_words(result.unless_followed_by.as_deref())
     );
+    if let (Some(again), Some(open)) = (result.started_again, result.still_open) {
+        line.push_str(&format!(
+            " Started again before finishing: {again}. Still open at the end of their log: {open}."
+        ));
+    }
     if !result.rows.is_empty() {
         line.push_str(&format!(
             " Showing {}-{}{}.",
@@ -1482,24 +1565,62 @@ impl Search {
     /// no closing row after them before the next match, such as an "Entering"
     /// with no "Leaving" after it.
     fn rows(&self, log: &LogFile, control: &Control) -> Result<Vec<u32>, QueryError> {
+        Ok(self
+            .found(log, control)?
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect())
+    }
+
+    /// The same rows, each with what came after it when there's a closer.
+    fn found(
+        &self,
+        log: &LogFile,
+        control: &Control,
+    ) -> Result<Vec<(u32, Option<Unclosed>)>, QueryError> {
         let rows = query::matching_rows(log, &self.matcher, control)?;
         let Some(closer) = &self.closer else {
-            return Ok(rows);
+            return Ok(rows.into_iter().map(|row| (row, None)).collect());
         };
         let closing = query::matching_rows(log, closer, control)?;
+        // Whether a closing row follows each match before the next match.
+        let closed: Vec<bool> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let next = rows.get(index + 1).copied().unwrap_or(u32::MAX);
+                let first_after = closing.partition_point(|closed| closed <= row);
+                closing
+                    .get(first_after)
+                    .is_some_and(|closed| *closed < next)
+            })
+            .collect();
         Ok(rows
             .iter()
             .enumerate()
-            .filter(|(index, row)| {
-                let next = rows.get(index + 1).copied().unwrap_or(u32::MAX);
-                let first_after = closing.partition_point(|closed| closed <= *row);
-                closing
-                    .get(first_after)
-                    .is_none_or(|closed| *closed >= next)
+            .filter(|(index, _)| !closed[*index])
+            .map(|(index, row)| {
+                let then = match rows.get(index + 1) {
+                    Some(next) => Unclosed::StartedAgain {
+                        row: *next,
+                        finished: closed[index + 1],
+                    },
+                    None => Unclosed::StillOpen,
+                };
+                (*row, Some(then))
             })
-            .map(|(_, row)| *row)
             .collect())
     }
+}
+
+/// What came after a match that nothing closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unclosed {
+    /// Another match, such as the same install started again: that match's
+    /// row, and whether something closed it. Abandoned, rather than hung.
+    StartedAgain { row: u32, finished: bool },
+    /// Nothing: it's the log's last match, still open at the end.
+    StillOpen,
 }
 
 /// Counts the rows a query matches in each group, such as each day.
@@ -1786,8 +1907,27 @@ fn merged_query(
     let control = Control::default();
     let matched = opened
         .iter()
-        .map(|log| search.rows(&log.log, &control))
+        .map(|log| search.found(&log.log, &control))
         .collect::<Result<Vec<_>, _>>()?;
+    let unclosed = |index: usize, row: u32| {
+        let found = &matched[index];
+        found
+            .binary_search_by_key(&row, |(row, _)| *row)
+            .ok()
+            .and_then(|at| found[at].1)
+    };
+    // How many matches were started again, and how many are still open, when
+    // --unless-followed-by asks.
+    let (started_again, still_open) = if unless_followed_by.is_some() {
+        let all = matched.iter().flatten();
+        let open = all
+            .clone()
+            .filter(|(_, then)| *then == Some(Unclosed::StillOpen))
+            .count();
+        (Some((all.count() - open) as u64), Some(open as u64))
+    } else {
+        (None, None)
+    };
 
     // Merging reads every row of a log for its exact time, so only logs with
     // matches are merged, and one log's matches stay in file order.
@@ -1795,7 +1935,7 @@ fn merged_query(
         .filter(|index| !matched[*index].is_empty())
         .collect();
     let mut rows: Vec<(usize, u32)> = if let &[only] = sources.as_slice() {
-        matched[only].iter().map(|row| (only, *row)).collect()
+        matched[only].iter().map(|(row, _)| (only, *row)).collect()
     } else if sources.is_empty() {
         Vec::new()
     } else {
@@ -1803,7 +1943,11 @@ fn merged_query(
         merge::merge_order(&logs, &control)?
             .into_iter()
             .map(|merged| (sources[merged.source as usize], merged.row))
-            .filter(|(index, row)| matched[*index].binary_search(row).is_ok())
+            .filter(|(index, row)| {
+                matched[*index]
+                    .binary_search_by_key(row, |(row, _)| *row)
+                    .is_ok()
+            })
             .collect()
     };
     if newest_first {
@@ -1821,6 +1965,20 @@ fn merged_query(
         .iter()
         .map(|(index, row)| {
             let log = &opened[*index];
+            let then = unclosed(*index, *row);
+            let next_match = match then {
+                Some(Unclosed::StartedAgain { row, finished }) => {
+                    let next =
+                        query::read_record(&log.log, row as usize, &mut buffer, &mut scratch)?;
+                    Some(NextMatch {
+                        row: next.row,
+                        timestamp: next.timestamp,
+                        utc_offset: next.utc_offset,
+                        finished,
+                    })
+                }
+                _ => None,
+            };
             let row = *row as usize;
             let (before, after) = if context > 0 {
                 let after_end = row.saturating_add(context + 1).min(log.log.rows());
@@ -1846,6 +2004,11 @@ fn merged_query(
                 record: query::read_record(&log.log, row, &mut buffer, &mut scratch)?,
                 before,
                 after,
+                unclosed: then.map(|then| match then {
+                    Unclosed::StartedAgain { .. } => "started_again",
+                    Unclosed::StillOpen => "still_open",
+                }),
+                next_match,
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -1857,6 +2020,8 @@ fn merged_query(
         newest_first,
         context,
         unless_followed_by: unless_followed_by.map(str::to_string),
+        started_again,
+        still_open,
         rows: page,
         next_offset: (end < rows.len()).then_some(end),
     })

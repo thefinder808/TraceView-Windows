@@ -116,7 +116,7 @@ the latest matches first, with --limit for how many, and --context 5 to see the 
 side of each match. Give --text or --regex more than once to \
 find rows matching every one. Use --count-by day, or template, to see how often something \
 happens, --exclude to leave out known noise, and --unless-followed-by to find something started \
-but never finished. To keep lines short, add --fields file,time,message for only those, and \
+but never finished, which says if it was started again or is still open. To keep lines short, add --fields file,time,message for only those, and \
 --max-width to cut long lines, such as --max-width 300.
 3. Run `traceview lookup <code>` for an error code the summary didn't explain.
 
