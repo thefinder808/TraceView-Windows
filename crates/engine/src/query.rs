@@ -45,9 +45,24 @@ pub struct Query {
     /// Regular expressions for rows to leave out, such as known noise. A row
     /// matching any of them doesn't match the query.
     pub exclude: Vec<String>,
+    /// Text, patterns and `exclude` look only at each row's first line, for
+    /// logs whose entries span lines, such as SCCM's WMI dumps.
+    pub first_line: bool,
     pub offset: usize,
     /// Rows per page. Defaults to [`DEFAULT_LIMIT`] and is capped at [`MAX_LIMIT`].
     pub limit: Option<usize>,
+}
+
+/// A row's first line: its text up to the first line break, after any
+/// leading blank space, as an entry spanning several lines starts with it.
+pub fn first_line(text: &[u8]) -> &[u8] {
+    let start = text
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(text.len());
+    let text = &text[start..];
+    let end = memchr::memchr2(b'\r', b'\n', text).unwrap_or(text.len());
+    &text[..end]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +85,35 @@ pub struct RowRecord {
     pub message: String,
     /// True if the row or message was too long and was cut off.
     pub truncated: bool,
+    /// Lines left out of the message, when only its first line is kept.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more_lines: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
+impl RowRecord {
+    /// Keeps only the message's first line, as [`first_line`] finds it, and
+    /// counts the lines left out.
+    pub fn keep_first_line(&mut self) {
+        let bytes = self.message.as_bytes();
+        let start = bytes
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+        let end = start + first_line(bytes).len();
+        let more = self.message[end..]
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        if more > 0 {
+            self.message.truncate(end);
+            self.message.drain(..start);
+            self.more_lines = more;
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +210,7 @@ pub struct Matcher {
     thread: Option<Vec<u8>>,
     from: Option<u32>,
     to: Option<u32>,
+    first_line: bool,
 }
 
 /// Passes when there's no filter, or when the field equals it in any case.
@@ -237,6 +282,7 @@ impl Matcher {
                 .as_deref()
                 .map(|text| parse_bound(text, true))
                 .transpose()?,
+            first_line: query.first_line,
         })
     }
 
@@ -281,6 +327,11 @@ impl Matcher {
             }
         }
         let searchable = parse::searchable(log.format(), text);
+        let searchable = if self.first_line {
+            first_line(searchable)
+        } else {
+            searchable
+        };
         self.pattern
             .as_ref()
             .is_none_or(|pattern| pattern.is_match(searchable))
@@ -393,6 +444,7 @@ pub fn read_record(
             source: display_text(fields.source),
             message,
             truncated: cut || message_cut,
+            more_lines: 0,
         });
     })?;
     record.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "row is out of range"))
@@ -623,6 +675,72 @@ mod tests {
             ..Query::default()
         };
         assert_eq!(matched(&log, query), vec![3]);
+    }
+
+    #[test]
+    fn first_lines_skip_leading_space_and_stop_at_a_break() {
+        assert_eq!(first_line(b"one\r\ntwo"), b"one");
+        assert_eq!(first_line(b"\r\n  one\ntwo"), b"one");
+        assert_eq!(first_line(b"only"), b"only");
+        assert_eq!(first_line(b""), b"");
+
+        let record = |message: &str| {
+            let mut record = RowRecord {
+                row: 1,
+                offset: 0,
+                timestamp: None,
+                utc_offset: None,
+                level: Level::Info,
+                component: String::new(),
+                thread: String::new(),
+                source: String::new(),
+                message: message.to_string(),
+                truncated: false,
+                more_lines: 0,
+            };
+            record.keep_first_line();
+            (record.message, record.more_lines)
+        };
+        assert_eq!(
+            record("Raising event:\r\ninstance of X\r\n{\r\n};"),
+            ("Raising event:".to_string(), 3)
+        );
+        assert_eq!(record("\r\nfirst\r\n\r\nsecond"), ("first".to_string(), 1));
+        // Blank lines after it aren't counted, so nothing is cut.
+        assert_eq!(
+            record("one line\r\n  \r\n"),
+            ("one line\r\n  \r\n".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn first_line_matches_only_each_rows_first_line() {
+        let row = |message: &str, second: u32| {
+            format!("<![LOG[{message}]LOG]!><time=\"10:00:{second:02}.000+000\" date=\"11-16-2026\" component=\"Agent\" context=\"\" type=\"1\" thread=\"1\" file=\"\">\r\n")
+        };
+        let text = [
+            row("Policy for CCM_Application arrived", 1),
+            row("Event object details:\r\ninstance of CCM_InstanceEvent\r\n{\r\n ClassName = \"CCM_Application\";\r\n};", 2),
+        ]
+        .concat();
+        let (_dir, log) = open(&text);
+        let search = |first_line: bool, exclude: Vec<String>| {
+            matched(
+                &log,
+                Query {
+                    text: Some("ccm_application".to_string()),
+                    first_line,
+                    exclude,
+                    ..Query::default()
+                },
+            )
+        };
+        assert_eq!(search(false, Vec::new()), vec![1, 2]);
+        assert_eq!(search(true, Vec::new()), vec![1]);
+        // --exclude looks at the first line too.
+        assert_eq!(search(false, vec!["ClassName".to_string()]), vec![1]);
+        assert_eq!(search(true, vec!["ClassName".to_string()]), vec![1]);
+        assert_eq!(search(true, vec!["^Policy".to_string()]), Vec::<u64>::new());
     }
 
     #[test]
