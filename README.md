@@ -115,6 +115,12 @@ To see what happened last, `--newest-first` starts from the end, so `--limit 10`
 .\traceview.exe query C:\Windows\CCM\Logs\AppEnforce.log --min-level error --newest-first --limit 10 --format lines
 ```
 
+`--context 5` adds the five rows before and after each match, from its own log, whatever the filters say, so you can see what led up to an error without opening the file. In lines, those rows are indented and `--` separates the groups, and matches close together share a group. In JSON, each match gets `before` and `after` lists:
+
+```powershell
+.\traceview.exe query C:\Windows\Logs\CBS\CBS.log --min-level error --context 5 --format lines
+```
+
 Lines can be trimmed further with `--fields time,message`, `--max-width 200` and `--no-header`. `summarize --no-examples` leaves the example rows out of the JSON.
 
 `--count-by` counts the matches instead of listing them, by `day`, `hour`, `file`, `level`, `component` or `template`, which is the message with its numbers and codes taken out:

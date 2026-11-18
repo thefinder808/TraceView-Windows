@@ -8,8 +8,9 @@
 use crate::gui::places;
 use crate::setup;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicU64;
@@ -62,6 +63,9 @@ Query options:
   --offset <n>         Skip this many matches
   --limit <n>          Matches per page (default 100, maximum 1000)
   --newest-first       Newest matches first, so --limit 10 gives the last ten
+  --context <n>        Show the n rows before and after each match, from its
+                       own log, whatever the filters say (at most 50). In
+                       lines, they're indented, and -- splits the groups
   --exclude <pattern>  Leave out rows matching this regular expression, such as
                        known noise. Give it more than once to leave out more
   --unless-followed-by <text>
@@ -133,6 +137,9 @@ const LICENSES: &str = concat!(
     "\n\n",
     include_str!("../../../THIRD-PARTY-NOTICES.txt")
 );
+
+/// The most rows `--context` shows on each side of a match.
+const MOST_CONTEXT: usize = 50;
 
 /// Logs read at most in one command, across every file and folder given.
 const MOST_LOGS: usize = places::MOST_LOGS_PER_FOLDER;
@@ -221,6 +228,8 @@ struct Shape {
     /// Counts of matching rows in groups, instead of the rows.
     count_by: Option<CountBy>,
     newest_first: bool,
+    /// Rows to show before and after each match, from its own log.
+    context: usize,
     no_examples: bool,
     header: bool,
     /// Every field when None.
@@ -234,6 +243,7 @@ impl Default for Shape {
             form: Form::Json,
             count_by: None,
             newest_first: false,
+            context: 0,
             no_examples: false,
             header: true,
             fields: None,
@@ -375,6 +385,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             }
             "--no-examples" if !is_query => shape.no_examples = true,
             "--newest-first" if is_query => shape.newest_first = true,
+            "--context" if is_query => {
+                shape.context = parse_number(&arg, &value(&arg)?)?;
+                if shape.context > MOST_CONTEXT {
+                    return Err(format!("--context is at most {MOST_CONTEXT}"));
+                }
+            }
             "--no-header" if is_query => shape.header = false,
             "--fields" if is_query => shape.fields = Some(parse_fields(&value(&arg)?)?),
             "--text" | "--regex" if is_query => {
@@ -412,9 +428,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     if shapes_lines && shape.form != Form::Lines {
         return Err("--no-header, --fields and --max-width need --format lines".to_string());
     }
-    if shape.count_by.is_some() && (shape.fields.is_some() || shape.newest_first) {
+    if shape.count_by.is_some()
+        && (shape.fields.is_some() || shape.newest_first || shape.context > 0)
+    {
         return Err(
-            "--count-by gives counts, not rows, so it can't take --fields or --newest-first"
+            "--count-by gives counts, not rows, so it can't take --fields, --newest-first or --context"
                 .to_string(),
         );
     }
@@ -605,6 +623,12 @@ struct LogRow {
     file: String,
     #[serde(flatten)]
     record: RowRecord,
+    /// With `--context`, the rows just before and after it in its log, in
+    /// file order. Matches close together can share some.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<Vec<RowRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<Vec<RowRecord>>,
 }
 
 #[derive(Serialize)]
@@ -616,6 +640,9 @@ struct MergedResult {
     /// True when rows run newest first. Only written then.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     newest_first: bool,
+    /// Rows shown before and after each match. Only written when asked for.
+    #[serde(skip_serializing_if = "is_zero")]
+    context: usize,
     /// The text `--unless-followed-by` looked for: matches with it after
     /// them, before the next match, were left out.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1130,13 +1157,12 @@ fn one_line(text: &str) -> String {
 
 /// One row as a line: where it is, as `file:row`, its time, level, component
 /// and thread, then its message. Only the fields asked for are shown, still in
-/// that order.
-fn row_line(row: &LogRow, shape: &Shape) -> String {
-    let record = &row.record;
+/// that order. A row shown as context for a match is indented.
+fn row_line(file: &str, record: &RowRecord, is_context: bool, shape: &Shape) -> String {
     let mut parts = Vec::new();
     match (shape.shows(Field::File), shape.shows(Field::Row)) {
-        (true, true) => parts.push(format!("{}:{}", row.file, record.row)),
-        (true, false) => parts.push(row.file.clone()),
+        (true, true) => parts.push(format!("{file}:{}", record.row)),
+        (true, false) => parts.push(file.to_string()),
         (false, true) => parts.push(record.row.to_string()),
         (false, false) => {}
     }
@@ -1167,13 +1193,74 @@ fn row_line(row: &LogRow, shape: &Shape) -> String {
             line.push_str(" [cut]");
         }
     }
+    if is_context {
+        line.insert_str(0, "  ");
+    }
     shape.fit(line)
+}
+
+/// A page of rows as lines. With `--context`, each match comes with the rows
+/// around it, indented, and `--` splits the groups. Matches close together in
+/// one log share a group, in file order, so no row is shown twice.
+fn row_lines(rows: &[LogRow], shape: &Shape) -> Vec<String> {
+    // A group's log, and its rows by number, with whether each is a match.
+    type Group<'a> = (&'a str, BTreeMap<u64, (&'a RowRecord, bool)>);
+    fn write(group: Group, shape: &Shape, lines: &mut Vec<String>) {
+        if !lines.is_empty() {
+            lines.push("--".to_string());
+        }
+        let (file, rows) = group;
+        lines.extend(
+            rows.values()
+                .map(|(record, is_match)| row_line(file, record, !is_match, shape)),
+        );
+    }
+
+    let mut lines = Vec::new();
+    let mut open: Option<Group> = None;
+    for row in rows {
+        let (Some(before), Some(after)) = (&row.before, &row.after) else {
+            lines.push(row_line(&row.file, &row.record, false, shape));
+            continue;
+        };
+        let first = row.record.row - before.len() as u64;
+        let last = row.record.row + after.len() as u64;
+        // Joins the open group if it's the same log and they touch or overlap.
+        let joins = open.as_ref().is_some_and(|(file, shown)| {
+            let (Some(low), Some(high)) = (shown.keys().next(), shown.keys().next_back()) else {
+                return false;
+            };
+            *file == row.file && first <= high + 1 && last + 1 >= *low
+        });
+        if !joins {
+            if let Some(done) = open.take() {
+                write(done, shape, &mut lines);
+            }
+        }
+        let (_, shown) = open.get_or_insert_with(|| (row.file.as_str(), BTreeMap::new()));
+        for record in before.iter().chain(after) {
+            shown.entry(record.row).or_insert((record, false));
+        }
+        shown.insert(row.record.row, (&row.record, true));
+    }
+    if let Some(done) = open {
+        write(done, shape, &mut lines);
+    }
+    lines
 }
 
 /// The first line of lines output: what was searched, and where the page is.
 fn header_line(what: &str, result: &MergedResult) -> String {
+    let context = if result.context > 0 {
+        format!(
+            ", with {} of context",
+            counted(result.context as u64, "row")
+        )
+    } else {
+        String::new()
+    };
     let mut line = format!(
-        "# {what}: {} of {} rows match{}.",
+        "# {what}: {} of {} rows match{}{context}.",
         result.total_matches,
         result.total_rows,
         unless_words(result.unless_followed_by.as_deref())
@@ -1574,7 +1661,7 @@ fn run_query(
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match merged_query(&opened, request, unless_followed_by, shape.newest_first) {
+    let result = match merged_query(&opened, request, unless_followed_by, shape) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1592,7 +1679,7 @@ fn run_query(
             );
             lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
         }
-        lines.extend(result.rows.iter().map(|row| row_line(row, shape)));
+        lines.extend(row_lines(&result.rows, shape));
         return finish(write_lines(&lines));
     }
     finish(write_json(
@@ -1622,7 +1709,7 @@ fn query_one(
         label: file_name_of(path),
         log,
     }];
-    let result = match merged_query(&opened, request, unless_followed_by, shape.newest_first) {
+    let result = match merged_query(&opened, request, unless_followed_by, shape) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1632,7 +1719,7 @@ fn query_one(
         if shape.header {
             lines.push(header_line(&log.path().display().to_string(), &result));
         }
-        lines.extend(result.rows.iter().map(|row| row_line(row, shape)));
+        lines.extend(row_lines(&result.rows, shape));
         return finish(write_lines(&lines));
     }
     finish(write_json(
@@ -1645,14 +1732,27 @@ fn query_one(
     ))
 }
 
+/// Reads a run of rows, in file order.
+fn read_rows(
+    log: &LogFile,
+    rows: Range<usize>,
+    buffer: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+) -> io::Result<Vec<RowRecord>> {
+    rows.map(|row| query::read_record(log, row, buffer, scratch))
+        .collect()
+}
+
 /// Queries logs as one timeline, in the order a merged view shows them, and
 /// returns a page of it: from the start, or from the end when newest first.
+/// With `context`, each match comes with that many rows either side of it.
 fn merged_query(
     opened: &[Opened],
     request: &Query,
     unless_followed_by: Option<&str>,
-    newest_first: bool,
+    shape: &Shape,
 ) -> Result<MergedResult, QueryError> {
+    let (newest_first, context) = (shape.newest_first, shape.context);
     let search = Search::new(request, unless_followed_by)?;
     let control = Control::default();
     let matched = opened
@@ -1692,9 +1792,31 @@ fn merged_query(
         .iter()
         .map(|(index, row)| {
             let log = &opened[*index];
+            let row = *row as usize;
+            let (before, after) = if context > 0 {
+                let after_end = row.saturating_add(context + 1).min(log.log.rows());
+                (
+                    Some(read_rows(
+                        &log.log,
+                        row.saturating_sub(context)..row,
+                        &mut buffer,
+                        &mut scratch,
+                    )?),
+                    Some(read_rows(
+                        &log.log,
+                        row + 1..after_end,
+                        &mut buffer,
+                        &mut scratch,
+                    )?),
+                )
+            } else {
+                (None, None)
+            };
             Ok(LogRow {
                 file: log.label.clone(),
-                record: query::read_record(&log.log, *row as usize, &mut buffer, &mut scratch)?,
+                record: query::read_record(&log.log, row, &mut buffer, &mut scratch)?,
+                before,
+                after,
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -1704,6 +1826,7 @@ fn merged_query(
         offset: start,
         limit,
         newest_first,
+        context,
         unless_followed_by: unless_followed_by.map(str::to_string),
         rows: page,
         next_offset: (end < rows.len()).then_some(end),

@@ -298,6 +298,169 @@ fn lines_of(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// A plain log of `count` rows, two seconds apart from `start` seconds past
+/// 10:00, where the rows numbered in `failing` say "failed" and the rest "ok".
+fn numbered_log(
+    dir: &std::path::Path,
+    name: &str,
+    count: u32,
+    failing: &[u32],
+    start: u32,
+) -> String {
+    let text: String = (1..=count)
+        .map(|row| {
+            let at = start + 2 * row;
+            let said = if failing.contains(&row) {
+                "failed"
+            } else {
+                "ok"
+            };
+            format!(
+                "2026-01-01 10:{:02}:{:02} row {row} {said}\n",
+                at / 60,
+                at % 60
+            )
+        })
+        .collect();
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn context_shows_the_rows_around_each_match_whatever_the_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = numbered_log(dir.path(), "app.log", 20, &[5, 7, 15], 0);
+    let path = path.as_str();
+    let query = |extra: &[&str]| {
+        let mut args = vec![
+            "query",
+            path,
+            "--text",
+            "failed",
+            "--min-level",
+            "error",
+            "--context",
+            "2",
+            "--format",
+            "lines",
+            "--fields",
+            "row,message",
+        ];
+        args.extend_from_slice(extra);
+        lines_of(&args)
+    };
+    let lines = query(&[]);
+    assert!(
+        lines[0].contains(": 3 of 20 rows match, with 2 rows of context."),
+        "{}",
+        lines[0]
+    );
+    // Rows 5 and 7 are close, so they share a group, and no row shows twice.
+    let early = [
+        "  3 | row 3 ok",
+        "  4 | row 4 ok",
+        "5 | row 5 failed",
+        "  6 | row 6 ok",
+        "7 | row 7 failed",
+        "  8 | row 8 ok",
+        "  9 | row 9 ok",
+    ];
+    let late = [
+        "  13 | row 13 ok",
+        "  14 | row 14 ok",
+        "15 | row 15 failed",
+        "  16 | row 16 ok",
+        "  17 | row 17 ok",
+    ];
+    assert_eq!(lines[1..], [&early[..], &["--"], &late[..]].concat());
+    // Newest first, the groups are reversed, but each keeps file order.
+    let newest = query(&["--newest-first", "--no-header"]);
+    assert_eq!(newest, [&late[..], &["--"], &early[..]].concat());
+    // A page counts matches, not the rows around them.
+    let first = query(&["--limit", "1", "--no-header"]);
+    assert_eq!(
+        first,
+        [
+            "  3 | row 3 ok",
+            "  4 | row 4 ok",
+            "5 | row 5 failed",
+            "  6 | row 6 ok",
+            "  7 | row 7 failed"
+        ]
+    );
+}
+
+#[test]
+fn context_in_json_lists_each_matchs_neighbours() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = numbered_log(dir.path(), "app.log", 4, &[1, 4], 0);
+    let path = path.as_str();
+    let json = stdout_json(&traceview(&[
+        "query",
+        path,
+        "--text",
+        "failed",
+        "--context",
+        "2",
+    ]));
+    let result = &json["result"];
+    assert_eq!(result["context"], 2);
+    let numbers = |rows: &Value| -> Vec<u64> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["row"].as_u64().unwrap())
+            .collect()
+    };
+    let rows = &result["rows"];
+    // Near the start and end there's less to show, and close matches share rows.
+    assert_eq!(numbers(&rows[0]["before"]), Vec::<u64>::new());
+    assert_eq!(numbers(&rows[0]["after"]), [2, 3]);
+    assert_eq!(numbers(&rows[1]["before"]), [2, 3]);
+    assert_eq!(numbers(&rows[1]["after"]), Vec::<u64>::new());
+    assert_eq!(rows[0]["after"][0]["message"], "row 2 ok");
+    assert!(rows[0]["after"][0].get("file").is_none());
+
+    let plain = stdout_json(&traceview(&["query", path, "--text", "failed"]));
+    assert!(plain["result"].get("context").is_none());
+    assert!(plain["result"]["rows"][0].get("before").is_none());
+    assert!(plain["result"]["rows"][0].get("after").is_none());
+}
+
+#[test]
+fn merged_logs_take_context_from_each_matchs_own_log() {
+    let dir = tempfile::tempdir().unwrap();
+    // b.log's rows fall a second after a.log's, so the timeline alternates.
+    numbered_log(dir.path(), "a.log", 5, &[3], 0);
+    numbered_log(dir.path(), "b.log", 5, &[3], 1);
+    let lines = lines_of(&[
+        "query",
+        dir.path().to_str().unwrap(),
+        "--text",
+        "failed",
+        "--context",
+        "1",
+        "--format",
+        "lines",
+        "--no-header",
+        "--fields",
+        "file,row",
+    ]);
+    assert_eq!(
+        lines,
+        [
+            "  a.log:2",
+            "a.log:3",
+            "  a.log:4",
+            "--",
+            "  b.log:2",
+            "b.log:3",
+            "  b.log:4"
+        ]
+    );
+}
+
 #[test]
 fn newest_first_pages_back_from_the_end() {
     let (_dir, path) = sample_log();
@@ -908,6 +1071,10 @@ fn incorrect_usage_exits_with_code_two() {
         &["summarize", path, "--count-by", "day"],
         &["query", path, "--count-by", "week"],
         &["query", path, "--count-by", "day", "--newest-first"],
+        &["query", path, "--count-by", "day", "--context", "2"],
+        &["query", path, "--context", "51"],
+        &["query", path, "--context", "some"],
+        &["summarize", path, "--context", "2"],
         &["query", path, "--exclude"],
         &["query", path, "--unless-followed-by", "done"],
         &["summarize", path, "--unless-followed-by", "done"],

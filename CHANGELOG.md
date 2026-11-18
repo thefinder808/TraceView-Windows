@@ -22,7 +22,8 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--help` says that `--count-by` gives JSON unless `--format lines` is added.
 - `--from` and `--to` take times without seconds, such as `2026-10-15T10:06`. As a `--to`, that takes in the whole minute.
 - `--text` and `--regex` can be given together, or more than once, to find only the rows matching every one. Before, using both was an error.
-- The AI agent skill mentions `--fields` and `--max-width` for keeping lines short, and giving `--text` more than once. Run `traceview setup` again to update it.
+- `query --context N` shows the N rows before and after each match, from its own log, so there's no need to open the file to see what led up to an error. In lines, they're indented, `--` separates the groups, and matches close together share one. In JSON, each match gets `before` and `after` lists.
+- The AI agent skill mentions `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
 
 ## 0.10.0
 
