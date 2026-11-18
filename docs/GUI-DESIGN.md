@@ -210,7 +210,7 @@ The launch figure has no log open. A log with a cached index adds about 50-110 m
 - **Live tail.**
   - New rows appear within about a quarter of a second, and log rotation is followed.
   - A tab follows new rows while it's at the bottom, which is where logs open, as in CMTrace.
-  - Ctrl+U pauses. Later, a Pause button at the end of the status bar did too, showing Resume while paused, as CMTrace has a pause button on its toolbar.
+  - Ctrl+U pauses. Later, a Pause button at the end of the status bar did too, showing Resume while paused, as CMTrace has a pause button on its toolbar. Its word looked out of place in the status bar, so it became a square like the find buttons, with the pause symbol drawn as two bars, which stay crisp at any scale, and ▶ while paused. A screen reader still says "Pause live updates" or "Resume live updates".
   - End, or Ctrl+End, in the log goes to the newest row and follows it again, and ends a pause. Shift+End only selects to the end.
   - Later, while a tab follows new rows, a selected last row moves to each newest row as it arrives, so the details pane shows it. This happens whether the last row was clicked or reached with End, in one log or a merged timeline. Any other selection, or a range ending on the last row, stays where it is.
 - **Merge** (Ctrl+Shift+M). Merges the open logs into one timeline in a new tab, which keeps updating.

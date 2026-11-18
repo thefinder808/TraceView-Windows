@@ -264,6 +264,63 @@ fn find_matches_are_highlighted() {
 }
 
 #[test]
+fn the_pause_button_is_a_square_with_a_symbol() {
+    use super::workspace::BarButton;
+    for (theme, name) in [
+        (&Theme::CLASSIC, "pause-classic"),
+        (&Theme::DARK, "pause-dark"),
+    ] {
+        let (_dir, mut workspace) = opened(ThemeChoice::Fixed(theme));
+        render(&mut workspace, name, 144.0, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        for paused in [false, true] {
+            workspace.tabs[0].set_paused(paused);
+            let shot = format!("{name}-{}", if paused { "paused" } else { "live" });
+            let frame = render(&mut workspace, &shot, 144.0, |_| true);
+            let (_, rect) = workspace
+                .bar_buttons()
+                .find(|(button, _)| *button == BarButton::Pause)
+                .unwrap();
+            assert!(
+                (rect.width() - rect.height()).abs() < 0.01,
+                "{shot}: not square"
+            );
+            let inside = Rect::new(
+                rect.left + 3.0,
+                rect.top + 3.0,
+                rect.right - 3.0,
+                rect.bottom - 3.0,
+            );
+            assert!(
+                frame.has_ink(inside, theme.chip_background),
+                "{shot}: the symbol didn't draw"
+            );
+            if !paused {
+                // Two bars with a gap between them, at the middle.
+                let middle = rect.left + rect.width() / 2.0;
+                let row = rect.top + rect.height() / 2.0;
+                assert_eq!(
+                    frame.at(middle, row),
+                    theme.chip_background,
+                    "{shot}: no gap"
+                );
+                assert_ne!(
+                    frame.at(middle - 3.0, row),
+                    theme.chip_background,
+                    "{shot}: no left bar"
+                );
+                assert_ne!(
+                    frame.at(middle + 3.0, row),
+                    theme.chip_background,
+                    "{shot}: no right bar"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_box_with_text_draws_its_clear_button() {
     use super::workspace::BarButton;
     for (theme, name) in [
