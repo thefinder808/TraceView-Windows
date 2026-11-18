@@ -165,12 +165,15 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | SCCM / CMTrace | `<![LOG[msg]LOG]!><time="..." ...>` | Multi-line entries are one row |
 | CBS and DISM | `2026-04-23 14:25:00, Info  CBS  msg` | Windows servicing logs |
 | Windows Update `ReportingEvents.log` | `{GUID}⇥2026-11-02 15:37:25:598-0500⇥…⇥Failure⇥Software Synchronization⇥msg` | Tab-separated, UTF-16. The operation is the component, the program that asked the thread, the event's name the source, and `Failure` an error. A colon comes before the milliseconds |
+| ConfigMgr site server | `msg  $$<SMS_EXECUTIVE><11-18-2026 09:30:12.123+300><thread=5112 (0x13F8)>` | As CMTrace reads them. There's no level, so the words decide. The part from `$$<` on isn't searched, as SCCM's attributes aren't |
+| `WindowsUpdate.log` from `Get-WindowsUpdateLog` | `2026/11/11 14:24:21.1458910 47996 51540 Misc  msg` | The thread ID is the thread, and the process ID the source |
+| winget | `2026-11-11 15:40:09.381 <I> [CORE] msg` | `<V>`, `<I>`, `<W>`, `<E>` and `<C>` are levels, and the brackets hold the component |
 | Classic syslog | `Apr 23 14:25:00 host proc[1]: msg` | Year from the file's date |
 | Dated syslog | `2026-03-08 13:46:47-07 host proc[1]: msg` | |
 | Bracketed timestamp | `[2026-04-19 19:54:24.115] [info] msg` | |
 | Prefix-tagged | `[VM] 2026-03-28 15:17:57 [info] msg` | |
 | logfmt | `time="..." level=info msg="..."` | Message escapes are left as written |
-| Timestamp first | `2026-04-23T14:32:01 [WARN] msg` | Slashed dates work too, as in `WindowsUpdate.log` |
+| Timestamp first | `2026-04-23T14:32:01 [WARN] msg` | Slashed dates work too |
 | Custom | Defined by a pattern in `traceview.toml` or Tools > Log formats | One row per line |
 | Anything else | Bare text | Severity from keywords |
 

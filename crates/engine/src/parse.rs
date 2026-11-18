@@ -94,20 +94,15 @@ pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
         Format::Sccm => {
             let message = sccm_message(line)?;
             let attributes = &line[SCCM_START.len() + message.len() + SCCM_END.len()..];
-            let time = sccm_attribute(attributes, b"time=\"");
-            let sign_at = time.iter().rposition(|byte| matches!(byte, b'+' | b'-'))?;
-            let bias = &time[sign_at + 1..];
-            if bias.is_empty() || bias.len() > 4 || !bias.iter().all(u8::is_ascii_digit) {
-                return None;
-            }
-            let bias: i32 = std::str::from_utf8(bias).ok()?.parse().ok()?;
-            if bias > 14 * 60 {
-                return None;
-            }
-            Some(if time[sign_at] == b'+' { -bias } else { bias })
+            bias_offset(sccm_attribute(attributes, b"time=\""))
         }
         Format::Plain | Format::Custom => {
             let line = trim_spaces(line);
+            if format == Format::Plain {
+                if let Some(server) = server_parts(line) {
+                    return bias_offset(server.time);
+                }
+            }
             match time::parse_iso(line) {
                 Some(parsed) => parsed.zone,
                 // ReportingEvents.log writes its offset as -0500.
@@ -118,12 +113,29 @@ pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
     }
 }
 
-/// The text a filter searches. SCCM metadata is left out, so searching for
-/// `type` doesn't match every row.
+/// The offset from UTC in an SCCM time such as `10:23:01.442+360`, whose bias
+/// is what Windows adds to local time to get UTC.
+fn bias_offset(time: &[u8]) -> Option<i32> {
+    let sign_at = time.iter().rposition(|byte| matches!(byte, b'+' | b'-'))?;
+    let bias = &time[sign_at + 1..];
+    if bias.is_empty() || bias.len() > 4 || !bias.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let bias: i32 = std::str::from_utf8(bias).ok()?.parse().ok()?;
+    if bias > 14 * 60 {
+        return None;
+    }
+    Some(if time[sign_at] == b'+' { -bias } else { bias })
+}
+
+/// The text a filter searches. SCCM metadata, and the part of a site server
+/// row after its `$$<`, is left out, so searching for `type` or `thread`
+/// doesn't match every row.
 pub fn searchable(format: Format, row: &[u8]) -> &[u8] {
     let line = trim_line_ending(row);
     match format {
-        Format::Plain | Format::Custom => line,
+        Format::Plain => server_parts(trim_spaces(line)).map_or(line, |server| server.message),
+        Format::Custom => line,
         Format::Sccm => sccm_message(line).unwrap_or(line),
     }
 }
@@ -208,11 +220,66 @@ fn sccm_fields(line: &[u8]) -> Option<Fields<'_>> {
     })
 }
 
+/// The parts of a ConfigMgr site server row, as CMTrace reads them:
+/// `message  $$<SMS_EXECUTIVE><11-18-2026 09:30:12.123+300><thread=1234 (0x4D2)>`.
+struct ServerParts<'a> {
+    message: &'a [u8],
+    component: &'a [u8],
+    date: &'a [u8],
+    time: &'a [u8],
+    thread: &'a [u8],
+}
+
+const SERVER_START: &[u8] = b"$$<";
+
+/// Splits a site server row. Only rows ending as one does are searched for
+/// its `$$<`, which keeps this quick for every other plain row.
+fn server_parts(text: &[u8]) -> Option<ServerParts<'_>> {
+    if !text.ends_with(b")>") {
+        return None;
+    }
+    let start = memmem::rfind(text, SERVER_START)?;
+    let trailer = text[start + SERVER_START.len()..].strip_suffix(b">")?;
+    let mut parts = trailer.split(|byte| *byte == b'>');
+    let component = parts.next()?;
+    let when = parts.next()?.strip_prefix(b"<")?;
+    let thread = parts.next()?.strip_prefix(b"<thread=")?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let space = memchr::memchr(b' ', when)?;
+    let thread = &thread[..memchr::memchr(b' ', thread).unwrap_or(thread.len())];
+    if thread.is_empty() || !thread.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(ServerParts {
+        message: trim_spaces(&text[..start]),
+        component,
+        date: &when[..space],
+        time: &when[space + 1..],
+        thread,
+    })
+}
+
+/// A site server row has no level, so its words decide, as in CMTrace.
+fn server_fields(text: &[u8]) -> Option<Fields<'_>> {
+    let server = server_parts(text)?;
+    Some(Fields {
+        stamp: time::parse_sccm(server.date, server.time),
+        component: server.component,
+        thread: server.thread,
+        ..Fields::message_only(server.message, level::detect(server.message))
+    })
+}
+
 fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
     let text = trim_spaces(line);
     let Some(first) = text.first() else {
         return Fields::message_only(text, Level::Info);
     };
+    if let Some(fields) = server_fields(text) {
+        return fields;
+    }
     let parsed = if first.is_ascii_digit() {
         dated_fields(text)
     } else if *first == b'{' {
@@ -368,6 +435,15 @@ fn dated_fields(text: &[u8]) -> Option<Fields<'_>> {
     }
     let rest = skip_spaces(after);
 
+    // `Get-WindowsUpdateLog` writes its dates with slashes.
+    if text.get(4) == Some(&b'/') {
+        if let Some(fields) = windows_update_fields(parsed.stamp, rest) {
+            return Some(fields);
+        }
+    }
+    if let Some(fields) = tagged_fields(parsed.stamp, rest) {
+        return Some(fields);
+    }
     if parsed.space_separated {
         if let Some(fields) = dated_syslog_fields(parsed.stamp, rest) {
             return Some(fields);
@@ -379,6 +455,57 @@ fn dated_fields(text: &[u8]) -> Option<Fields<'_>> {
     let (level, message, component) = level_and_component(rest);
     Some(Fields {
         stamp: Some(parsed.stamp),
+        component,
+        ..Fields::message_only(message, level)
+    })
+}
+
+/// The `WindowsUpdate.log` that `Get-WindowsUpdateLog` writes:
+/// `2026/11/11 14:24:21.1458910 47996 51540 Misc   message`, with the
+/// process and thread IDs and the component after the time. The thread ID is
+/// the thread, and the process ID the source.
+fn windows_update_fields(stamp: Stamp, rest: &[u8]) -> Option<Fields<'_>> {
+    let is_number = |word: &[u8]| word.iter().all(u8::is_ascii_digit);
+    let (process, rest) = split_word(rest)?;
+    let (thread, rest) = split_word(rest)?;
+    let (component, message) = split_word(rest)?;
+    if !is_number(process)
+        || !is_number(thread)
+        || !component.first().is_some_and(u8::is_ascii_alphabetic)
+    {
+        return None;
+    }
+    let message = trim_spaces(message);
+    Some(Fields {
+        stamp: Some(stamp),
+        component,
+        thread,
+        source: process,
+        ..Fields::message_only(message, level::detect(message))
+    })
+}
+
+/// winget's `2026-11-11 15:40:09.381 <I> [CORE] message`: a one-letter
+/// level in angle brackets, then the component in square ones.
+fn tagged_fields(stamp: Stamp, rest: &[u8]) -> Option<Fields<'_>> {
+    let (tag, after) = split_word(rest)?;
+    let level = match tag {
+        b"<V>" => Level::Debug,
+        b"<I>" => Level::Info,
+        b"<W>" => Level::Warning,
+        b"<E>" => Level::Error,
+        b"<C>" => Level::Critical,
+        _ => return None,
+    };
+    let (component, message) = match after.strip_prefix(b"[") {
+        Some(inside) => match memchr::memchr(b']', &inside[..inside.len().min(32)]) {
+            Some(close) => (&inside[..close], skip_spaces(&inside[close + 1..])),
+            None => (&b""[..], after),
+        },
+        None => (&b""[..], after),
+    };
+    Some(Fields {
+        stamp: Some(stamp),
         component,
         ..Fields::message_only(message, level)
     })
@@ -675,6 +802,93 @@ mod tests {
             assert_eq!(parsed.stamp, None, "{other}");
             assert_eq!(parsed.message, other.as_bytes(), "{other}");
         }
+    }
+
+    #[test]
+    fn splits_configmgr_site_server_rows() {
+        let row = "SMS_EXECUTIVE started as thread ID 5112 (0x13F8).~  $$<SMS_EXECUTIVE><11-18-2026 09:30:12.123+300><thread=5112 (0x13F8)>\r\n";
+        let parsed = plain(row);
+        assert_eq!(stamp_text(&parsed), "2026-11-18T09:30:12.123");
+        assert_eq!(parsed.component, b"SMS_EXECUTIVE");
+        assert_eq!(parsed.thread, b"5112");
+        assert_eq!(
+            parsed.message,
+            b"SMS_EXECUTIVE started as thread ID 5112 (0x13F8).~"
+        );
+        assert_eq!(parsed.level, Level::Info);
+        assert_eq!(utc_offset(Format::Plain, row.as_bytes()), Some(-300));
+        assert_eq!(
+            searchable(Format::Plain, row.as_bytes()),
+            b"SMS_EXECUTIVE started as thread ID 5112 (0x13F8).~"
+        );
+
+        // With no level, the words decide, as in CMTrace.
+        let failed = plain("Failed to connect to the SQL Server.  $$<SMS_DATABASE_NOTIFICATION_MONITOR><11-18-2026 09:31:00.000-060><thread=4532 (0x11B4)>");
+        assert_eq!(failed.level, Level::Error);
+        assert_eq!(failed.component, b"SMS_DATABASE_NOTIFICATION_MONITOR");
+
+        // Anything else ending the same way reads as it did.
+        for other in [
+            "nothing to see (here)>",
+            "msg $$<Comp><11-18-2026 09:30:12.123+300><thread=x (0x1)>",
+            "msg $$<Comp><11-18-2026 09:30:12.123+300>",
+        ] {
+            let parsed = plain(other);
+            assert_eq!(parsed.stamp, None, "{other}");
+            assert_eq!(parsed.message, other.as_bytes(), "{other}");
+            assert_eq!(
+                searchable(Format::Plain, other.as_bytes()),
+                other.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn splits_get_windows_update_log_rows() {
+        let parsed = plain("2026/11/11 14:24:21.1461160 47996 51540 Misc            Load undocked module: UusId:wu.handler.wuauengcore|hr:0x0\r\n");
+        assert_eq!(stamp_text(&parsed), "2026-11-11T14:24:21.146");
+        assert_eq!(parsed.component, b"Misc");
+        assert_eq!(parsed.thread, b"51540");
+        assert_eq!(parsed.source, b"47996");
+        assert_eq!(
+            parsed.message,
+            b"Load undocked module: UusId:wu.handler.wuauengcore|hr:0x0"
+        );
+        let failed = plain("2026/11/18 12:12:59.1234567 1234  5678  Agent           *FAILED* [80240438] wuauengcore.dll");
+        assert_eq!(failed.level, Level::Error);
+        assert_eq!(failed.component, b"Agent");
+        assert_eq!(failed.thread, b"5678");
+
+        // A slashed date that isn't followed by two numbers reads as before.
+        let other = plain("2026/11/18 12:12:59 WARN: something");
+        assert_eq!(other.level, Level::Warning);
+        assert_eq!(other.thread, b"");
+    }
+
+    #[test]
+    fn splits_winget_rows() {
+        let parsed = plain(
+            "2026-11-11 15:40:09.381 <I> [CORE] WinGet, version [1.29.380], activity [{43015E72}]",
+        );
+        assert_eq!(stamp_text(&parsed), "2026-11-11T15:40:09.381");
+        assert_eq!(parsed.level, Level::Info);
+        assert_eq!(parsed.component, b"CORE");
+        assert_eq!(
+            parsed.message,
+            b"WinGet, version [1.29.380], activity [{43015E72}]"
+        );
+        assert_eq!(
+            plain("2026-11-11 15:40:09.381 <E> [REPO] Failed to open source").level,
+            Level::Error
+        );
+        let untagged = plain("2026-11-11 15:40:09.381 <W> no component here");
+        assert_eq!(untagged.level, Level::Warning);
+        assert_eq!(untagged.component, b"");
+        assert_eq!(untagged.message, b"no component here");
+        assert_eq!(
+            plain("2026-11-11 15:40:09.381 <X> [CORE] not a level").component,
+            b""
+        );
     }
 
     #[test]
