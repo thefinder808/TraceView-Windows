@@ -212,6 +212,7 @@ The launch figure has no log open. A log with a cached index adds about 50-110 m
   - A tab follows new rows while it's at the bottom, which is where logs open, as in CMTrace.
   - Ctrl+U pauses. Later, a Pause button at the end of the status bar did too, showing Resume while paused, as CMTrace has a pause button on its toolbar.
   - End, or Ctrl+End, in the log goes to the newest row and follows it again, and ends a pause. Shift+End only selects to the end.
+  - Later, while a tab follows new rows, a selected last row moves to each newest row as it arrives, so the details pane shows it. This happens whether the last row was clicked or reached with End, in one log or a merged timeline. Any other selection, or a range ending on the last row, stays where it is.
 - **Merge** (Ctrl+Shift+M). Merges the open logs into one timeline in a new tab, which keeps updating.
 - **Themes.** Classic and Console, or follow Windows.
 

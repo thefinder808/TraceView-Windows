@@ -300,6 +300,12 @@ impl LogView {
         self.cursor
     }
 
+    /// True when the selection is just the last row, which follows new rows
+    /// while the view follows the log.
+    pub fn selects_last_row(&self) -> bool {
+        self.rows > 0 && self.cursor == Some(self.rows - 1) && self.anchor == self.cursor
+    }
+
     fn is_selected(&self, row: usize) -> bool {
         self.selection().is_some_and(|range| range.contains(&row))
     }
