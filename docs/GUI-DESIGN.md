@@ -433,7 +433,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **AI agents:**
 
-- **Tools > Set up for AI agents...** shows what it will change in an OK and Cancel box, with Cancel the default: copying TraceView to `%LOCALAPPDATA%\Programs\TraceView`, adding that folder to the user's PATH, and adding a skill for each of Claude Code, Codex and the ChatGPT app that's installed. After OK, a second box says what was done. When everything's already in place, it just says so.
+- **Tools > Set up for AI agents...** shows what it will change in an OK and Cancel box, with Cancel the default: copying TraceView to `%LOCALAPPDATA%\Programs\TraceView`, adding that folder to the user's PATH, and adding a skill for each of Claude Code, Codex, the ChatGPT app and GitHub Copilot that's installed. After OK, a second box says what was done. When everything's already in place, it just says so.
 - **Tools > Copy instructions for AI agents** puts the same instructions on the clipboard, for any other agent's instructions file, and says so in the status bar.
 - **Tools > Remove AI agent setup...** shows what it will take back, asks, then does it. With nothing set up, it says there's nothing to remove.
 

@@ -128,8 +128,9 @@ code as hex, decimal or a negative number, such as 0x80070005, 1603 or
 
 Setup gets TraceView ready for AI agents, for your Windows account only: it
 copies TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds that folder to your
-PATH, and adds a skill telling Claude Code, Codex and the ChatGPT app how to use
-it, for those that are installed. It says what will change and asks first.
+PATH, and adds a skill telling Claude Code, Codex, the ChatGPT app and GitHub
+Copilot how to use it, for those that are installed. It says what will change
+and asks first.
   --yes                Go ahead without asking
   --remove             Undo it
   --print              Show the instructions to give any other agent

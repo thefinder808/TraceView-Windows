@@ -2,6 +2,12 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**AI agents**
+
+- `traceview setup` also adds TraceView's skill for GitHub Copilot, in `%USERPROFILE%\.copilot\skills\traceview`, when `%USERPROFILE%\.copilot` exists. `traceview setup --remove` takes it back.
+
 ## 0.11.0
 
 Following one ID through every log, the rows around each match, gaps where a PC logged nothing, ConfigMgr's warning signs that are only logged as info, Windows Update's `ReportingEvents.log` read as rows, and faster opens on network shares. Still a beta, tested on Windows 11.

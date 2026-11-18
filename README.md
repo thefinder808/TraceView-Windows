@@ -14,7 +14,7 @@ It's one signed EXE with nothing to install, so it can be copied to a USB stick 
 
 ## Features
 
-- **Built for AI agents:** a command line that summarizes and searches logs in short lines or JSON, so agents read only what matters, and `traceview setup` to get Claude Code, Codex and the ChatGPT app using it.
+- **Built for AI agents:** a command line that summarizes and searches logs in short lines or JSON, so agents read only what matters, and `traceview setup` to get Claude Code, Codex, the ChatGPT app and GitHub Copilot using it.
 - **CMTrace's habits:** severity colors, live tail, find, filter, Error Lookup on Ctrl+L, tabs, merging logs into one timeline, and the Classic theme.
 - **TraceView's own:** severity chips, the event histogram, a sidebar of nearby and Windows logs, bookmarks, filter presets, split view, a command palette and five themes.
 - **Yours to change:** highlight rules, columns, fonts, keyboard shortcuts, custom log formats, theme files and named layouts. All of it is plain text that loads as it's edited.
@@ -192,7 +192,7 @@ Rows show the time as the log wrote it, plus its offset from UTC when the log sa
 
 ### With an AI agent
 
-Agents that can run commands, such as Claude Code, Codex and the ChatGPT app, read logs for far less with TraceView than by opening them. A summary of a whole logs folder is a few kilobytes, and summaries keep each problem's real error codes, looked up on your PC.
+Agents that can run commands, such as Claude Code, Codex, the ChatGPT app and GitHub Copilot CLI, read logs for far less with TraceView than by opening them. A summary of a whole logs folder is a few kilobytes, and summaries keep each problem's real error codes, looked up on your PC.
 
 To set it up, choose Tools > Set up for AI agents..., or run this from the EXE's folder:
 
@@ -204,7 +204,7 @@ It says what it will change and asks first. For your Windows account only, and w
 
 - copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`;
 - adds that folder to your PATH, so `traceview` works in new terminals;
-- adds a skill for each of Claude Code, Codex and the ChatGPT app that's installed. A skill tells the agent when and how to use TraceView, and the agent only reads it in full when a task is about logs.
+- adds a skill for each of Claude Code, Codex, the ChatGPT app and GitHub Copilot that's installed. A skill tells the agent when and how to use TraceView, and the agent only reads it in full when a task is about logs.
 
 Then restart your agent apps and terminals, unzip a PC's logs, and ask about them. To update TraceView, run setup again from the newer EXE. `traceview setup --remove`, or Tools > Remove AI agent setup..., undoes it all.
 
