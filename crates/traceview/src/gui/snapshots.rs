@@ -264,6 +264,44 @@ fn find_matches_are_highlighted() {
 }
 
 #[test]
+fn a_box_with_text_draws_its_clear_button() {
+    use super::workspace::BarButton;
+    for (theme, name) in [
+        (&Theme::CLASSIC, "clear-classic"),
+        (&Theme::DARK, "clear-dark"),
+    ] {
+        let (_dir, mut workspace) = opened(ThemeChoice::Fixed(theme));
+        render(&mut workspace, name, 144.0, |workspace| {
+            workspace.tabs[0].document().is_some()
+        });
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+        for character in "a long search that runs past the end of the find box".chars() {
+            send(&mut workspace, Event::Char(character));
+        }
+        let frame = render(&mut workspace, name, 144.0, |_| true);
+        let (_, clear) = workspace
+            .bar_buttons()
+            .find(|(button, _)| *button == BarButton::ClearFind)
+            .expect("the find box has text");
+        assert!(
+            frame.has_ink(clear, theme.input_background),
+            "{name}: the × didn't draw"
+        );
+        // The text stops short of the ×, so its left edge is clear of ink.
+        let gap = Rect::new(
+            clear.left,
+            clear.top + 2.0,
+            clear.left + 3.0,
+            clear.bottom - 2.0,
+        );
+        assert!(
+            !frame.has_ink(gap, theme.input_background),
+            "{name}: text ran under the ×"
+        );
+    }
+}
+
+#[test]
 fn an_open_menu_draws_over_the_grid() {
     let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CONSOLE));
     render(&mut workspace, "menu", 96.0, |workspace| {

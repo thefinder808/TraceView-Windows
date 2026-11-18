@@ -204,7 +204,7 @@ The launch figure has no log open. A log with a cached index adds about 50-110 m
 - **Tabs.** Logs open from the Open dialog, which takes several files at once, from drag and drop, or from the command line. Ctrl+Tab and Ctrl+1-9 switch tabs. Ctrl+W or a middle-click closes one.
 - **Menu bar.** File, Edit, View and Tools, all usable from the keyboard with Alt or F10.
 - **Filter** (Ctrl+Shift+F). Takes words, "quoted phrases", `/regex/`, `level:`, `component:`, `thread:`, `from:` and `to:`. The old filter stays on screen until a new one finishes.
-- **Find** (Ctrl+F, F3, Shift+F3). Matching rows are highlighted and counted, as in "3 of 120", which also covers CMTrace's Highlight. Ctrl+E and Ctrl+Shift+E jump between errors. Later, ▲ and ▼ buttons beside the box did what Shift+F3 and F3 do, leaving focus in the box.
+- **Find** (Ctrl+F, F3, Shift+F3). Matching rows are highlighted and counted, as in "3 of 120", which also covers CMTrace's Highlight. Ctrl+E and Ctrl+Shift+E jump between errors. Later, ▲ and ▼ buttons beside the box did what Shift+F3 and F3 do, leaving focus in the box. Later still, the Filter and Find boxes got a × at their right end while they have text. It empties the box, which for Filter shows every row again, and moves focus there, ready for new text. The text stops short of it, and a screen reader reads it right after its box.
 - **Details pane.** Shows the selected row's fields and whole message, and what Windows says its error codes mean.
 - **Error Lookup** (Ctrl+L). Takes a code or a pasted log line, and opens with the selected row's first code.
 - **Live tail.**
