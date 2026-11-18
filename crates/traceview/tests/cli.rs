@@ -888,6 +888,66 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn templates_come_with_a_real_row_as_an_example() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Updates.log");
+    let text = [
+        sccm_row("Installing 7-Zip 26.04 (MSI-x64)", 20, 1),
+        sccm_row("Installing 7-Zip 26.05 (MSI-x64)", 21, 1),
+        sccm_row("Installed update KB5066835", 22, 1),
+        sccm_row(
+            "Event object details:\r\ninstance of CCM_InstanceEvent {\r\n};",
+            23,
+            1,
+        ),
+    ]
+    .concat();
+    std::fs::write(&path, text).unwrap();
+    let path = path.to_str().unwrap();
+    let count = |more: &[&str]| {
+        let mut args = vec!["query", path, "--count-by", "template", "--format", "lines"];
+        args.extend_from_slice(more);
+        lines_of(&args)
+    };
+
+    let lines = count(&[]);
+    assert!(
+        lines[0].contains("Each line: count template | example."),
+        "{}",
+        lines[0]
+    );
+    // The template takes the numbers out; the example keeps them, and the
+    // first line of a longer message stands for the rest.
+    assert_eq!(
+        lines[1..],
+        [
+            "2 Installing <n>-Zip <n>.<n> (MSI-x<n>) | Updates.log:1 Installing 7-Zip 26.04 (MSI-x64)",
+            "1 Event object details: | Updates.log:4 Event object details: …",
+            "1 Installed update KB<n> | Updates.log:3 Installed update KB5066835",
+        ]
+    );
+    let plain = count(&["--no-examples"]);
+    assert!(
+        plain[0].contains("Each line: count template."),
+        "{}",
+        plain[0]
+    );
+    assert_eq!(plain[1], "2 Installing <n>-Zip <n>.<n> (MSI-x<n>)");
+
+    let json = stdout_json(&traceview(&["query", path, "--count-by", "template"]));
+    let groups = &json["result"]["groups"];
+    assert_eq!(groups[0]["example"]["file"], "Updates.log");
+    assert_eq!(groups[0]["example"]["row"], 1);
+    assert_eq!(
+        groups[1]["example"]["message"],
+        "Event object details:\r\ninstance of CCM_InstanceEvent {\r\n};"
+    );
+    // Other groups have no examples.
+    let days = stdout_json(&traceview(&["query", path, "--count-by", "day"]));
+    assert!(days["result"]["groups"][0].get("example").is_none());
+}
+
+#[test]
 fn matches_with_nothing_closing_them_are_found() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("CcmExec.log");
@@ -1196,6 +1256,7 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--count-by", "week"],
         &["query", path, "--count-by", "day", "--newest-first"],
         &["query", path, "--count-by", "day", "--context", "2"],
+        &["query", path, "--count-by", "day", "--no-examples"],
         &["query", path, "--context", "51"],
         &["query", path, "--context", "some"],
         &["summarize", path, "--context", "2"],

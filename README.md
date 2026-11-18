@@ -131,6 +131,12 @@ Lines can be trimmed further with `--fields time,message`, `--max-width 200` and
 .\traceview.exe query C:\Windows\CCM\Logs --text "upload" --count-by day --format lines
 ```
 
+Each template comes with its first row as an example, and where that row is, so the versions, KB numbers and codes the template takes out are still there to read. `--no-examples` leaves them out:
+
+```
+2 Installing <n>-Zip <n>.<n> (MSI-x<n>) | AppEnforce.log:1234 Installing 7-Zip 26.04 (MSI-x64)
+```
+
 Give `--text` or `--regex` more than once, or both, to find only the rows matching every one, such as `--regex "26100\.9549" --text "Installed"`.
 
 `--exclude` leaves out rows matching a regular expression, such as errors that are routine where you work. Give it more than once to leave out more. A summary says how many rows, errors and warnings it left out, so nothing goes missing silently:

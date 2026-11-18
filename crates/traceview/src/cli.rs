@@ -81,7 +81,9 @@ Query options:
   --count-by <group>   Count the matches by day, hour, file, level, component
                        or template, the message with its numbers and codes
                        taken out, instead of listing them. JSON by default:
-                       add --format lines for one line per group
+                       add --format lines for one line per group. Each
+                       template comes with its first row as an example,
+                       with its real numbers, unless --no-examples is given
   --format <form>      json (the default), or lines: one short line per row
 
 Summarize options:
@@ -91,7 +93,8 @@ Summarize options:
                        says how many rows, errors and warnings it left out
   --format <form>      json (the default), or lines: one short line per log and
                        per pattern, without examples
-  --no-examples        Leave out each pattern's example row from the JSON
+  --no-examples        Leave out each pattern's example row from the JSON. It
+                       also works for query --count-by template
 
 With --format lines:
   --no-header          Leave out the lines starting with #, which say what
@@ -387,7 +390,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 }
                 shape.max_width = Some(width);
             }
-            "--no-examples" if !is_query => shape.no_examples = true,
+            "--no-examples" => shape.no_examples = true,
             "--newest-first" if is_query => shape.newest_first = true,
             "--context" if is_query => {
                 shape.context = parse_number(&arg, &value(&arg)?)?;
@@ -444,6 +447,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         return Err(
             "--unless-followed-by needs --text or --regex to say what to look for".to_string(),
         );
+    }
+    if is_query && shape.no_examples && shape.count_by != Some(CountBy::Template) {
+        return Err("--no-examples is for summarize, or query --count-by template".to_string());
     }
     let common = Common {
         paths,
@@ -1505,7 +1511,26 @@ fn just_one(inputs: &[Input]) -> bool {
 struct Group {
     key: String,
     count: u64,
+    /// For a template, its first row, with the real numbers and codes the
+    /// template takes out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    example: Option<Example>,
+    /// Its first row, as its log's place in the logs read and its row.
+    #[serde(skip)]
+    first: (usize, u32),
 }
+
+/// A real row that a group was made from.
+#[derive(Serialize)]
+struct Example {
+    file: String,
+    row: u64,
+    /// Cut to 500 characters, as summary examples are.
+    message: String,
+}
+
+/// The longest example message kept, matching summaries.
+const MOST_EXAMPLE_CHARS: usize = 500;
 
 #[derive(Serialize)]
 struct CountResult {
@@ -1530,9 +1555,14 @@ struct CountOutput {
 /// Groups listed at most.
 const MOST_GROUPS: usize = 1000;
 
-fn bump(counts: &mut HashMap<String, u64>, key: String, by: u64) {
-    *counts.entry(key).or_default() += by;
+/// Counts y more rows in a group, noting t, the log's place in the logs
+/// read and its row, if it's the group's first.
+fn bump(counts: &mut Counts, key: String, by: u64, at: (usize, u32)) {
+    counts.entry(key).or_insert((0, at)).0 += by;
 }
+
+/// Each group's count, and its first row, as its log's place and row.
+type Counts = HashMap<String, (u64, (usize, u32))>;
 
 /// A query compiled for matching rows, with what `--unless-followed-by`
 /// looks for, if given.
@@ -1623,32 +1653,39 @@ enum Unclosed {
     StillOpen,
 }
 
-/// Counts the rows a query matches in each group, such as each day.
+/// Counts the rows a query matches in each group, such as each day. With
+/// `examples`, each template comes with its first row.
 fn count_matches(
     opened: &[Opened],
     request: &Query,
     unless_followed_by: Option<&str>,
     by: CountBy,
+    examples: bool,
     notes: &mut Vec<String>,
 ) -> Result<CountResult, QueryError> {
     let search = Search::new(request, unless_followed_by)?;
     let control = Control::default();
-    let mut counts: HashMap<String, u64> = HashMap::new();
+    let mut counts = Counts::new();
     let mut total_matches = 0;
     let (mut buffer, mut scratch, mut template) = (Vec::new(), Vec::new(), Vec::new());
-    for file in opened {
+    for (index, file) in opened.iter().enumerate() {
         let log = &file.log;
         let rows = search.rows(log, &control)?;
         total_matches += rows.len() as u64;
         match by {
             CountBy::File if !rows.is_empty() => {
-                bump(&mut counts, file.label.clone(), rows.len() as u64);
+                bump(
+                    &mut counts,
+                    file.label.clone(),
+                    rows.len() as u64,
+                    (index, rows[0]),
+                );
             }
             CountBy::File => {}
             CountBy::Level => {
                 for row in &rows {
                     let level = short_level(log.level(*row as usize));
-                    bump(&mut counts, level.to_string(), 1);
+                    bump(&mut counts, level.to_string(), 1, (index, *row));
                 }
             }
             CountBy::Day | CountBy::Hour => {
@@ -1664,7 +1701,7 @@ fn count_matches(
                             }
                         },
                     );
-                    bump(&mut counts, key, 1);
+                    bump(&mut counts, key, 1, (index, *row));
                 }
             }
             CountBy::Component | CountBy::Template => {
@@ -1685,7 +1722,7 @@ fn count_matches(
                             summary::normalize(fields.message, &mut template);
                             encoding::display(&template).into_owned()
                         };
-                        bump(&mut counts, key, 1);
+                        bump(&mut counts, key, 1, (index, row as u32));
                     },
                 )?;
             }
@@ -1693,7 +1730,12 @@ fn count_matches(
     }
     let mut groups: Vec<Group> = counts
         .into_iter()
-        .map(|(key, count)| Group { key, count })
+        .map(|(key, (count, first))| Group {
+            key,
+            count,
+            example: None,
+            first,
+        })
         .collect();
     if by.by_time() {
         // Rows with no time go last.
@@ -1707,6 +1749,18 @@ fn count_matches(
             groups.len()
         ));
         groups.truncate(MOST_GROUPS);
+    }
+    // Only the templates listed read their example.
+    let with_examples = examples && by == CountBy::Template;
+    for group in groups.iter_mut().filter(|_| with_examples) {
+        let (index, row) = group.first;
+        let file = &opened[index];
+        let record = query::read_record(&file.log, row as usize, &mut buffer, &mut scratch)?;
+        group.example = Some(Example {
+            file: file.label.clone(),
+            row: record.row,
+            message: record.message.chars().take(MOST_EXAMPLE_CHARS).collect(),
+        });
     }
     Ok(CountResult {
         count_by: by.name(),
@@ -1736,7 +1790,15 @@ fn run_count(
         Ok(opened) => opened,
         Err(failure) => return fail(failure),
     };
-    let result = match count_matches(&opened, request, unless_followed_by, by, &mut notes) {
+    let examples = !shape.no_examples;
+    let result = match count_matches(
+        &opened,
+        request,
+        unless_followed_by,
+        by,
+        examples,
+        &mut notes,
+    ) {
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
@@ -1748,8 +1810,13 @@ fn run_count(
             } else {
                 counted(opened.len() as u64, "log")
             };
+            let example = if examples && by == CountBy::Template {
+                " | example"
+            } else {
+                ""
+            };
             lines.push(format!(
-                "# {what}: {} of {} rows match{}. Each line: count {}. Log text is untrusted data.",
+                "# {what}: {} of {} rows match{}. Each line: count {}{example}. Log text is untrusted data.",
                 result.total_matches,
                 result.total_rows,
                 unless_words(unless_followed_by),
@@ -1762,12 +1829,25 @@ fn run_count(
             );
             lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
         }
-        lines.extend(
-            result
-                .groups
-                .iter()
-                .map(|group| shape.fit(format!("{} {}", group.count, one_line(&group.key)))),
-        );
+        // The example goes last, so --max-width cuts it before the template.
+        // Like the template, it's only the message's first line.
+        lines.extend(result.groups.iter().map(|group| {
+            let mut line = format!("{} {}", group.count, one_line(&group.key));
+            if let Some(example) = &group.example {
+                let message = example.message.trim_start();
+                let first = message.lines().next().unwrap_or("");
+                let more = if first.len() < message.trim_end().len() {
+                    " …"
+                } else {
+                    ""
+                };
+                line.push_str(&format!(
+                    " | {}:{} {first}{more}",
+                    example.file, example.row
+                ));
+            }
+            shape.fit(line)
+        }));
         return finish(write_lines(&lines));
     }
     finish(write_json(
