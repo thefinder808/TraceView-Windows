@@ -106,7 +106,15 @@ pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
             }
             Some(if time[sign_at] == b'+' { -bias } else { bias })
         }
-        Format::Plain | Format::Custom => time::parse_iso(trim_spaces(line))?.zone,
+        Format::Plain | Format::Custom => {
+            let line = trim_spaces(line);
+            match time::parse_iso(line) {
+                Some(parsed) => parsed.zone,
+                // ReportingEvents.log writes its offset as -0500.
+                None if format == Format::Plain => reporting_events_start(line)?.1,
+                None => None,
+            }
+        }
     }
 }
 
@@ -207,6 +215,8 @@ fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
     };
     let parsed = if first.is_ascii_digit() {
         dated_fields(text)
+    } else if *first == b'{' {
+        reporting_events_fields(text)
     } else if *first == b'[' {
         bracketed_fields(text)
     } else if first.is_ascii_alphabetic() {
@@ -271,6 +281,76 @@ fn syslog_fields<'a>(text: &'a [u8], context: &ParseContext) -> Option<Fields<'a
         stamp: Some(stamp),
         component: name,
         ..Fields::message_only(message, level)
+    })
+}
+
+/// The event GUID and time that start a row of Windows Update's
+/// `ReportingEvents.log`, and the tab-separated fields after them.
+fn reporting_events_start(text: &[u8]) -> Option<(Stamp, Option<i32>, &[u8])> {
+    let tab = memchr::memchr(b'\t', text)?;
+    let guid = &text[..tab];
+    if guid.len() != 38 || guid.first() != Some(&b'{') || guid.last() != Some(&b'}') {
+        return None;
+    }
+    let rest = &text[tab + 1..];
+    let time_end = memchr::memchr(b'\t', rest)?;
+    let (stamp, zone) = time::parse_reporting_events(&rest[..time_end])?;
+    Some((stamp, zone, &rest[time_end + 1..]))
+}
+
+/// Windows Update's `ReportingEvents.log`: tab-separated fields, from the
+/// event's GUID and time, as in
+/// `{GUID}  2026-11-02 15:37:25:598-0500  1  148 [AGENT_DETECTION_FAILED]  101
+/// {update}  0  80240438  <<PROCESS>>: wa_3rd_party_host_32.exe  Failure
+/// Software Synchronization  Windows Update Client failed to detect ...  {id}`.
+/// The operation is the component, the program that asked the thread, the
+/// event's name the source, and a Failure is an error. Every field can still
+/// be searched, as searches read the whole row.
+fn reporting_events_fields(text: &[u8]) -> Option<Fields<'_>> {
+    let (stamp, _, rest) = reporting_events_start(text)?;
+    let mut parts = rest.split(|byte| *byte == b'\t');
+    let _revision = parts.next()?;
+    let event = parts.next()?;
+    let _category = parts.next()?;
+    let _update = parts.next()?;
+    let _update_revision = parts.next()?;
+    let _code = parts.next()?;
+    // Later fields can be empty, and the row's trailing tabs are trimmed off
+    // before it gets here, so missing ones are empty.
+    let mut next = || parts.next().unwrap_or(b"");
+    let caller = next();
+    let result = trim_spaces(next());
+    let operation = next();
+    let message = trim_spaces(next());
+    // Some events have no text, so their event, such as
+    // `170 [AGENT_DOWNLOAD_PROGRESS]`, stands in.
+    let message = if message.is_empty() {
+        trim_spaces(event)
+    } else {
+        message
+    };
+    // `148 [AGENT_DETECTION_FAILED]` is named by its brackets.
+    let name = memchr::memchr(b'[', event)
+        .and_then(|open| {
+            let inside = &event[open + 1..];
+            memchr::memchr(b']', inside).map(|close| &inside[..close])
+        })
+        .unwrap_or(event);
+    let caller = caller
+        .strip_prefix(b"<<PROCESS>>:")
+        .map_or(caller, skip_spaces);
+    let level = if result.eq_ignore_ascii_case(b"failure") {
+        Level::Error
+    } else {
+        Level::Info
+    };
+    Some(Fields {
+        stamp: Some(stamp),
+        level,
+        component: trim_spaces(operation),
+        thread: trim_spaces(caller),
+        source: trim_spaces(name),
+        message,
     })
 }
 
@@ -553,6 +633,48 @@ mod tests {
         assert_eq!(parsed.thread, b"5240");
         assert_eq!(parsed.source, b"a.cpp");
         assert_eq!(parsed.message, b"Failed ]LOG]!> text");
+    }
+
+    #[test]
+    fn splits_windows_update_reporting_events() {
+        let failed = "{485A0372-C771-4077-8F8D-3618D2F69926}\t2026-11-02 15:37:16:808-0500\t1\t148 [AGENT_DETECTION_FAILED]\t101\t{8B24B027-1DEE-BABB-9A95-3517DFB9C552}\t0\t80240438\t<<PROCESS>>: wa_3rd_party_host_32.exe\tFailure\tSoftware Synchronization\tWindows Update Client failed to detect with error 0x80240438.\tINxXTpgwaU+ocK1f.1.2.0.3.0\r\n";
+        let parsed = plain(failed);
+        assert_eq!(stamp_text(&parsed), "2026-11-02T15:37:16.808");
+        assert_eq!(parsed.level, Level::Error);
+        assert_eq!(parsed.component, b"Software Synchronization");
+        assert_eq!(parsed.thread, b"wa_3rd_party_host_32.exe");
+        assert_eq!(parsed.source, b"AGENT_DETECTION_FAILED");
+        assert_eq!(
+            parsed.message,
+            b"Windows Update Client failed to detect with error 0x80240438."
+        );
+        assert_eq!(utc_offset(Format::Plain, failed.as_bytes()), Some(-300));
+
+        let found = plain("{14F2D8C9-B388-4400-9692-5CE782CD2491}\t2026-11-04 20:21:45:274+0130\t1\t147 [AGENT_DETECTION_FINISHED]\t101\t{855E8A7C-ECB4-4CA3-B045-1DFA50104289}\t0\t0\tMoUpdateOrchestrator\tSuccess\tSoftware Synchronization\tWindows Update Client successfully detected 0 updates.\tZ3IZV.4.3");
+        assert_eq!(found.level, Level::Info);
+        assert_eq!(found.thread, b"MoUpdateOrchestrator");
+
+        // Trailing empty fields are trimmed off with the row's spaces, and an
+        // event with no text is named by its event instead.
+        let empty = "{FEFE1FD8-B102-4C41-A1CE-1EA570F91541}\t2026-11-05 11:44:13:175-0600\t1\t170 [AGENT_DOWNLOAD_PROGRESS]\t101\t{EBC09DA3-2221-48F2-95B8-6F88183A60D1}\t1\t0\t(null)\tUnknown\t\t\t\r\n";
+        let parsed = plain(empty);
+        assert_eq!(stamp_text(&parsed), "2026-11-05T11:44:13.175");
+        assert_eq!(parsed.level, Level::Info);
+        assert_eq!(parsed.component, b"");
+        assert_eq!(parsed.message, b"170 [AGENT_DOWNLOAD_PROGRESS]");
+        assert_eq!(utc_offset(Format::Plain, empty.as_bytes()), Some(-360));
+
+        // Anything else starting with a brace reads as it did.
+        for other in [
+            "{not a guid}\t2026-11-05 11:44:13:175-0600\t1\t2\t3\t4\t5\t6",
+            "{FEFE1FD8-B102-4C41-A1CE-1EA570F91541}\t2026-11-05 11:44:13.175\t1\t2\t3\t4\t5\t6",
+            "{FEFE1FD8-B102-4C41-A1CE-1EA570F91541}\t2026-11-05 11:44:13:175-0600\t1\t2",
+            "{\"json\": true}",
+        ] {
+            let parsed = plain(other);
+            assert_eq!(parsed.stamp, None, "{other}");
+            assert_eq!(parsed.message, other.as_bytes(), "{other}");
+        }
     }
 
     #[test]

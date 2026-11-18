@@ -198,6 +198,25 @@ fn clock(bytes: &[u8], at: usize) -> Option<(u32, u32, u32, u16, usize)> {
     Some((hour, minute, second, millis, end))
 }
 
+/// Reads Windows Update's `ReportingEvents.log` time, `YYYY-MM-DD
+/// HH:MM:SS:fff-hhmm`, which has a colon before the milliseconds. Returns the
+/// time and its offset from UTC, as minutes east, if it has one.
+pub fn parse_reporting_events(bytes: &[u8]) -> Option<(Stamp, Option<i32>)> {
+    let year = digits(bytes, 0, 4)?;
+    if bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') || bytes.get(10) != Some(&b' ') {
+        return None;
+    }
+    let month = digits(bytes, 5, 2)?;
+    let day = digits(bytes, 8, 2)?;
+    let (hour, minute, second, _, end) = clock(bytes, 11)?;
+    if bytes.get(end) != Some(&b':') {
+        return None;
+    }
+    let millis = digits(bytes, end + 1, 3)?;
+    let stamp = Stamp::from_parts(year as i32, month, day, hour, minute, second, millis as u16)?;
+    Some((stamp, zone_at(bytes, end + 4)))
+}
+
 /// Skips `Z`, `+hh`, `+hhmm` or `+hh:mm` at `at`.
 fn skip_zone(bytes: &[u8], at: usize) -> usize {
     match bytes.get(at) {
@@ -584,6 +603,22 @@ mod tests {
         assert!(january.to_string().starts_with("2026-01-15"));
         let (december, _) = parse_syslog(b"Dec 31 23:59:59 host", hint).unwrap();
         assert!(december.to_string().starts_with("2025-12-31"));
+    }
+
+    #[test]
+    fn reads_reporting_events_times() {
+        let (stamp, zone) = parse_reporting_events(b"2026-11-02 15:37:25:598-0500").unwrap();
+        assert_eq!(stamp.to_string(), "2026-11-02T15:37:25.598");
+        assert_eq!(zone, Some(-300));
+        assert_eq!(
+            parse_reporting_events(b"2026-11-02 15:37:25:598")
+                .unwrap()
+                .1,
+            None
+        );
+        assert!(parse_reporting_events(b"2026-11-02 15:37:25.598-0500").is_none());
+        assert!(parse_reporting_events(b"2026-11-02T15:37:25:598-0500").is_none());
+        assert!(parse_reporting_events(b"2026-11-02 15:37:25:5").is_none());
     }
 
     #[test]

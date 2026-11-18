@@ -158,6 +158,7 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 |---|---|---|
 | SCCM / CMTrace | `<![LOG[msg]LOG]!><time="..." ...>` | Multi-line entries are one row |
 | CBS and DISM | `2026-04-23 14:25:00, Info  CBS  msg` | Windows servicing logs |
+| Windows Update `ReportingEvents.log` | `{GUID}⇥2026-11-02 15:37:25:598-0500⇥…⇥Failure⇥Software Synchronization⇥msg` | Tab-separated, UTF-16. The operation is the component, the program that asked the thread, the event's name the source, and `Failure` an error. A colon comes before the milliseconds |
 | Classic syslog | `Apr 23 14:25:00 host proc[1]: msg` | Year from the file's date |
 | Dated syslog | `2026-03-08 13:46:47-07 host proc[1]: msg` | |
 | Bracketed timestamp | `[2026-04-19 19:54:24.115] [info] msg` | |

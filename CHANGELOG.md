@@ -4,6 +4,10 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Reading logs**
+
+- Windows Update's `ReportingEvents.log` is read as rows, in the viewer and the command line. Each row's time, with its milliseconds and offset from UTC, is in the Time column, and a `Failure` is an error. The operation, such as `Content Install`, is the component, the program that asked, such as `wa_3rd_party_host_32.exe`, the thread, and the event's name the source. Before, each whole row was the message, with no time. Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
+
 **Viewer**
 
 - ▲ and ▼ buttons beside the Find box move to the previous and next match, as Shift+F3 and F3 do, and leave the cursor in the box.
