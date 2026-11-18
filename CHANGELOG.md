@@ -11,6 +11,8 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - winget's logs have their level and component, from the `<I> [CORE]` after each time.
 - Windows Installer verbose logs, from `msiexec /l*v`, have times: each row's time of day on the date its `=== Logging started:` line gives. `MSI (s)` is the component, the process and thread the thread, and `Return value 3`, an action that failed, is an error. Before, no row had a time.
 - PowerShell transcripts mark error records as errors, from Windows PowerShell and PowerShell 7, such as `Get-Item : Cannot find path…` and its `+ CategoryInfo` lines. Their `Start time:` and `Command start time:` lines have times. Before, only `WARNING:` and `VERBOSE:` had a level.
+- Office's Click-to-Run logs, such as `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's, in the ULS format, have their time, level, category, thread and process. `Unexpected` is an error, and `Monitorable` and `High` are notices. Before, each whole row was the message, with no time.
+- WiX Burn's logs, from the Visual C++ and .NET installers, and the Visual Studio installer's, such as `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg`, have their time and thread, and Burn's `i`, `w` and `e` codes are their levels. Before, they had no time.
 - `setupapi.dev.log` goes by its `!!!` and `!` markers, so `Error Control = 1` is no longer an error, and a failed `[Exit status: FAILURE(…)]` is. Sections' starts and ends have times, and the short name before a colon, such as `dvi`, is the component.
 - Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
 
