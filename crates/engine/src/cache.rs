@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// Version 3 added the custom format key, and version 4 reads the times and
 /// levels of Windows Update's ReportingEvents.log, so older entries are
 /// rebuilt once.
-const MAGIC: &[u8; 8] = b"TVIDX05\0";
+const MAGIC: &[u8; 8] = b"TVIDX06\0";
 const HEADER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 4 + 8;
 const BYTES_PER_ROW: u64 = 5 + 1 + 4;
 /// The cache's size limit. The oldest entries go first when it's exceeded.

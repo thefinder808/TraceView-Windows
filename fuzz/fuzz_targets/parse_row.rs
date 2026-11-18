@@ -4,7 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::{Arc, OnceLock};
-use tv_engine::parse::{self, Format, ParseContext};
+use tv_engine::parse::{self, Format, Hint, ParseContext};
 use tv_engine::summary::normalize;
 use tv_engine::time::{self, YearHint};
 use tv_engine::CustomFormat;
@@ -13,7 +13,32 @@ const HINT: YearHint = YearHint { year: 2026, month: 6 };
 const PLAIN: ParseContext = ParseContext {
     year_hint: HINT,
     custom: None,
+    hint: Hint::None,
 };
+/// Plain logs whose first lines change how rows are read. The installer log
+/// starts near the last time a stamp can hold, so the next day overflows.
+const HINTED: [ParseContext; 3] = [
+    ParseContext {
+        year_hint: HINT,
+        custom: None,
+        hint: Hint::Msi {
+            started: time::Stamp {
+                seconds: u32::MAX - 60,
+                millis: 0,
+            },
+        },
+    },
+    ParseContext {
+        year_hint: HINT,
+        custom: None,
+        hint: Hint::Transcript,
+    },
+    ParseContext {
+        year_hint: HINT,
+        custom: None,
+        hint: Hint::SetupApi,
+    },
+];
 /// Names every part a custom format can, loosely, so most rows match and
 /// each part's parsing is reached.
 const PATTERN: &str = r"^(?P<time>\S+(?: \S+)?(?: [AP]M)?)\s+\[?(?P<level>\w*)\]?\s*(?P<component>[^:\s]*):?\s*(?P<thread>\d*)\s*(?P<source>\S*)\s*(?P<message>.*)$";
@@ -23,6 +48,7 @@ fn custom() -> &'static ParseContext {
     CONTEXT.get_or_init(|| ParseContext {
         year_hint: HINT,
         custom: Some(Arc::new(CustomFormat::new("Fuzz", PATTERN, "", true).unwrap())),
+        hint: Hint::None,
     })
 }
 
@@ -31,6 +57,9 @@ fuzz_target!(|data: &[u8]| {
         (Format::Plain, &PLAIN),
         (Format::Sccm, &PLAIN),
         (Format::Custom, custom()),
+        (Format::Plain, &HINTED[0]),
+        (Format::Plain, &HINTED[1]),
+        (Format::Plain, &HINTED[2]),
     ] {
         let fields = parse::fields(format, data, context);
         let _ = parse::searchable(format, data);
@@ -41,6 +70,10 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     let _ = parse::detect_format(data);
+    let _ = parse::hint_for(data);
+    let _ = time::parse_msi_date(data);
+    let _ = time::parse_compact(data);
+    let _ = time::parse_time_of_day(data);
     let _ = time::parse_iso(data);
     let _ = time::parse_syslog(data, HINT);
     let _ = time::parse_any(data, HINT, false);

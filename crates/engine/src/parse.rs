@@ -41,6 +41,51 @@ pub struct ParseContext {
     pub year_hint: YearHint,
     /// The definition of a custom format, when the file has one.
     pub custom: Option<Arc<CustomFormat>>,
+    /// What the log's first lines say about reading its rows.
+    pub hint: Hint,
+}
+
+/// What a plain log's first lines say about how to read rows that don't say
+/// it themselves. It's found from the start of the file when it opens, so
+/// every row can still be read on its own, in any order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Hint {
+    #[default]
+    None,
+    /// A Windows Installer log. Its rows give only a time of day, so they take
+    /// the day logging started, and a time before that is the day after.
+    Msi { started: Stamp },
+    /// A PowerShell transcript, whose error records are marked as errors.
+    Transcript,
+    /// A `setupapi` device install log, whose `!!!` and `!` mark errors and
+    /// warnings, rather than its words.
+    SetupApi,
+}
+
+/// Finds a plain log's hint from its first lines, as UTF-8.
+pub fn hint_for(head: &[u8]) -> Hint {
+    let head = head.strip_prefix("\u{feff}".as_bytes()).unwrap_or(head);
+    let first = head
+        .split(|byte| *byte == b'\n')
+        .map(|line| trim_spaces(trim_line_ending(line)))
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let msi_started = [
+        &b"=== Verbose logging started: "[..],
+        b"=== Logging started: ",
+    ]
+    .iter()
+    .find_map(|prefix| first.strip_prefix(*prefix))
+    .and_then(time::parse_msi_date);
+    if let Some(started) = msi_started {
+        Hint::Msi { started }
+    } else if first == b"[Device Install Log]" {
+        Hint::SetupApi
+    } else if memmem::find(&head[..head.len().min(512)], b"PowerShell transcript start").is_some() {
+        Hint::Transcript
+    } else {
+        Hint::None
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -261,6 +306,267 @@ fn server_parts(text: &[u8]) -> Option<ServerParts<'_>> {
     })
 }
 
+/// A Windows Installer time of day, on the day logging started, or the day
+/// after if it's earlier than the start.
+fn msi_stamp(time_of_day: &[u8], started: Stamp) -> Option<Stamp> {
+    let (seconds, millis) = time::parse_time_of_day(time_of_day)?;
+    let midnight = started.seconds - started.seconds % 86_400;
+    let next_day = if seconds < started.seconds % 86_400 {
+        86_400
+    } else {
+        0
+    };
+    Some(Stamp {
+        seconds: midnight.checked_add(seconds + next_day)?,
+        millis,
+    })
+}
+
+/// `Return value 3` is how Windows Installer says an action failed, and 2 that
+/// it was cancelled. Anything else goes by its words, except that `Verbose
+/// logging started` and the `Debug` policy, in every such log, aren't debug.
+fn msi_level(message: &[u8]) -> Level {
+    if memmem::find(message, b"Return value 3").is_some() {
+        Level::Error
+    } else if memmem::find(message, b"Return value 2").is_some() {
+        Level::Warning
+    } else {
+        match level::detect(message) {
+            Level::Debug => Level::Info,
+            found => found,
+        }
+    }
+}
+
+/// A Windows Installer log's rows: `MSI (s) (A4:B8) [15:42:16:698]: message`,
+/// whose context and process and thread are the component and thread, and
+/// `Action start 15:42:20: InstallInitialize.`, besides the `=== Logging
+/// started: 11/18/2026  15:42:16 ===` lines, which give the whole date. Other
+/// rows, such as properties, have no time.
+fn msi_fields(text: &[u8], started: Stamp) -> Option<Fields<'_>> {
+    if let Some(rest) = text.strip_prefix(b"=== ") {
+        let colon = memchr::memchr(b':', rest)?;
+        let stamp = time::parse_msi_date(skip_spaces(&rest[colon + 1..]))?;
+        return Some(Fields {
+            stamp: Some(stamp),
+            ..Fields::message_only(text, msi_level(text))
+        });
+    }
+    if let Some(rest) = text.strip_prefix(b"MSI (") {
+        let close = memchr::memchr(b')', rest)?;
+        let component = &text[..b"MSI (".len() + close + 1];
+        let rest = skip_spaces(&rest[close + 1..]).strip_prefix(b"(")?;
+        let close = memchr::memchr(b')', rest)?;
+        let thread = &rest[..close];
+        let rest = skip_spaces(&rest[close + 1..]).strip_prefix(b"[")?;
+        let close = memchr::memchr(b']', rest)?;
+        let stamp = msi_stamp(&rest[..close], started)?;
+        let message = skip_spaces(rest[close + 1..].strip_prefix(b":")?);
+        return Some(Fields {
+            stamp: Some(stamp),
+            component,
+            thread,
+            ..Fields::message_only(message, msi_level(message))
+        });
+    }
+    let rest = text
+        .strip_prefix(b"Action start ")
+        .or_else(|| text.strip_prefix(b"Action ended "))?;
+    let stamp = msi_stamp(rest, started)?;
+    Some(Fields {
+        stamp: Some(stamp),
+        ..Fields::message_only(text, msi_level(text))
+    })
+}
+
+/// PowerShell's approved verbs, from `Get-Verb`, in byte order. A cmdlet's
+/// name starts with one, which tells an error record's first line from
+/// other output.
+const POWERSHELL_VERBS: [&[u8]; 98] = [
+    b"Add",
+    b"Approve",
+    b"Assert",
+    b"Backup",
+    b"Block",
+    b"Checkpoint",
+    b"Clear",
+    b"Close",
+    b"Compare",
+    b"Complete",
+    b"Compress",
+    b"Confirm",
+    b"Connect",
+    b"Convert",
+    b"ConvertFrom",
+    b"ConvertTo",
+    b"Copy",
+    b"Debug",
+    b"Deny",
+    b"Disable",
+    b"Disconnect",
+    b"Dismount",
+    b"Edit",
+    b"Enable",
+    b"Enter",
+    b"Exit",
+    b"Expand",
+    b"Export",
+    b"Find",
+    b"Format",
+    b"Get",
+    b"Grant",
+    b"Group",
+    b"Hide",
+    b"Import",
+    b"Initialize",
+    b"Install",
+    b"Invoke",
+    b"Join",
+    b"Limit",
+    b"Lock",
+    b"Measure",
+    b"Merge",
+    b"Mount",
+    b"Move",
+    b"New",
+    b"Open",
+    b"Optimize",
+    b"Out",
+    b"Ping",
+    b"Pop",
+    b"Protect",
+    b"Publish",
+    b"Push",
+    b"Read",
+    b"Receive",
+    b"Redo",
+    b"Register",
+    b"Remove",
+    b"Rename",
+    b"Repair",
+    b"Request",
+    b"Reset",
+    b"Resize",
+    b"Resolve",
+    b"Restart",
+    b"Restore",
+    b"Resume",
+    b"Revoke",
+    b"Save",
+    b"Search",
+    b"Select",
+    b"Send",
+    b"Set",
+    b"Show",
+    b"Skip",
+    b"Split",
+    b"Start",
+    b"Step",
+    b"Stop",
+    b"Submit",
+    b"Suspend",
+    b"Switch",
+    b"Sync",
+    b"Test",
+    b"Trace",
+    b"Unblock",
+    b"Undo",
+    b"Uninstall",
+    b"Unlock",
+    b"Unprotect",
+    b"Unpublish",
+    b"Unregister",
+    b"Update",
+    b"Use",
+    b"Wait",
+    b"Watch",
+    b"Write",
+];
+
+/// The first line of an error record: `Get-Item : Cannot find path…` in
+/// Windows PowerShell, or `Get-Item: C:\script.ps1:6` in PowerShell 7.
+fn is_error_record_start(text: &[u8]) -> bool {
+    let Some(colon) = memchr::memchr(b':', &text[..text.len().min(64)]) else {
+        return false;
+    };
+    let name = trim_spaces(&text[..colon]);
+    let Some(dash) = memchr::memchr(b'-', name) else {
+        return false;
+    };
+    let noun = &name[dash + 1..];
+    POWERSHELL_VERBS.binary_search(&&name[..dash]).is_ok()
+        && noun.first().is_some_and(u8::is_ascii_uppercase)
+        && noun.iter().all(u8::is_ascii_alphanumeric)
+        && text.get(colon + 1) == Some(&b' ')
+}
+
+/// A PowerShell transcript's rows. Only the times in its headers, as in
+/// `Start time: 20261118154047` or `Command start time:`, are rows' times.
+/// Error records are errors: their first line, `PS>TerminatingError(…)`, and
+/// Windows PowerShell's `+ CategoryInfo` and `+ FullyQualifiedErrorId`.
+/// `WARNING:` and the rest read as in any other log.
+fn transcript_fields(text: &[u8]) -> Option<Fields<'_>> {
+    let timed = [&b"Start time: "[..], b"End time: ", b"Command start time: "]
+        .iter()
+        .find_map(|prefix| text.strip_prefix(*prefix))
+        .and_then(time::parse_compact);
+    if let Some(stamp) = timed {
+        return Some(Fields {
+            stamp: Some(stamp),
+            ..Fields::message_only(text, Level::Info)
+        });
+    }
+    let error = text.starts_with(b"PS>TerminatingError(")
+        || text.starts_with(b"+ CategoryInfo ")
+        || text.starts_with(b"+ FullyQualifiedErrorId ")
+        || is_error_record_start(text);
+    error.then(|| Fields::message_only(text, Level::Error))
+}
+
+/// A `setupapi` device install log's rows. `!!!` marks an error and `!` a
+/// warning, and other rows are information whatever their words, so
+/// `Error Control = 1` isn't an error. `>>>  Section start` and `<<<  Section
+/// end` give the time, and `[Exit status: FAILURE(…)]` is an error. The short
+/// name before a colon, as in `dvi:`, is the component.
+fn setupapi_fields(text: &[u8]) -> Fields<'_> {
+    let (marked, rest) = if let Some(rest) = text.strip_prefix(b"!!!") {
+        (Level::Error, skip_spaces(rest))
+    } else if let Some(rest) = text.strip_prefix(b"!") {
+        (Level::Warning, skip_spaces(rest))
+    } else {
+        (Level::Info, text)
+    };
+    if let Some(section) = rest
+        .strip_prefix(b">>>")
+        .or_else(|| rest.strip_prefix(b"<<<"))
+    {
+        let section = skip_spaces(section);
+        let stamp = section
+            .strip_prefix(b"Section start ")
+            .or_else(|| section.strip_prefix(b"Section end "))
+            .and_then(time::parse_iso)
+            .map(|parsed| parsed.stamp);
+        let level = if section.starts_with(b"[Exit status: FAILURE") {
+            Level::Error
+        } else {
+            marked
+        };
+        return Fields {
+            stamp,
+            ..Fields::message_only(text, level)
+        };
+    }
+    let category = memchr::memchr(b':', &rest[..rest.len().min(5)])
+        .filter(|colon| *colon >= 2 && rest[..*colon].iter().all(u8::is_ascii_alphabetic));
+    match category {
+        Some(colon) => Fields {
+            component: &rest[..colon],
+            ..Fields::message_only(skip_spaces(&rest[colon + 1..]), marked)
+        },
+        None => Fields::message_only(rest, marked),
+    }
+}
+
 /// A site server row has no level, so its words decide, as in CMTrace.
 fn server_fields(text: &[u8]) -> Option<Fields<'_>> {
     let server = server_parts(text)?;
@@ -278,6 +584,15 @@ fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
         return Fields::message_only(text, Level::Info);
     };
     if let Some(fields) = server_fields(text) {
+        return fields;
+    }
+    let hinted = match context.hint {
+        Hint::None => None,
+        Hint::Msi { started } => msi_fields(text, started),
+        Hint::Transcript => transcript_fields(text),
+        Hint::SetupApi => Some(setupapi_fields(text)),
+    };
+    if let Some(fields) = hinted {
         return fields;
     }
     let parsed = if first.is_ascii_digit() {
@@ -738,6 +1053,7 @@ mod tests {
             month: 6,
         },
         custom: None,
+        hint: Hint::None,
     };
 
     fn plain(row: &str) -> Fields<'_> {
@@ -841,6 +1157,167 @@ mod tests {
                 other.as_bytes()
             );
         }
+    }
+
+    fn hinted(hint: Hint, row: &str) -> Fields<'_> {
+        let context = ParseContext { hint, ..CONTEXT };
+        fields(Format::Plain, row.as_bytes(), &context)
+    }
+
+    #[test]
+    fn windows_installer_rows_take_the_day_logging_started() {
+        let head = "=== Verbose logging started: 11/18/2026  15:42:16  Build type: SHIP UNICODE 5.00.10011.00  Calling process: C:\\Windows\\system32\\msiexec.exe ===\r\nMSI (c) (50:E0) [15:42:16:698]: Resetting cached policy values\r\n";
+        let hint = hint_for(head.as_bytes());
+        let Hint::Msi { started } = hint else {
+            panic!("not an installer log: {hint:?}");
+        };
+        assert_eq!(started.to_string(), "2026-11-18T15:42:16.000");
+        assert_eq!(
+            hinted(hint, head.lines().next().unwrap()).level,
+            Level::Info
+        );
+        assert_eq!(
+            hinted(
+                hint,
+                "MSI (c) (50:E0) [15:42:16:698]: Machine policy value 'Debug' is 0"
+            )
+            .level,
+            Level::Info
+        );
+
+        let row = hinted(
+            hint,
+            "MSI (c) (50:E0) [15:42:16:698]: Resetting cached policy values\r\n",
+        );
+        assert_eq!(stamp_text(&row), "2026-11-18T15:42:16.698");
+        assert_eq!(row.component, b"MSI (c)");
+        assert_eq!(row.thread, b"50:E0");
+        assert_eq!(row.message, b"Resetting cached policy values");
+        assert_eq!(row.level, Level::Info);
+
+        let failed = hinted(
+            hint,
+            "Action ended 15:42:21: InstallFinalize. Return value 3.",
+        );
+        assert_eq!(stamp_text(&failed), "2026-11-18T15:42:21.000");
+        assert_eq!(failed.level, Level::Error);
+        assert_eq!(
+            failed.message,
+            b"Action ended 15:42:21: InstallFinalize. Return value 3."
+        );
+        assert_eq!(
+            hinted(hint, "Action ended 15:42:22: Foo. Return value 2.").level,
+            Level::Warning
+        );
+        // A time before logging started is from after midnight.
+        let late = hinted(hint, "Action start 00:05:00: InstallValidate.");
+        assert_eq!(stamp_text(&late), "2026-11-19T00:05:00.000");
+        let custom = hinted(
+            hint,
+            "MSI (s) (A4!B8) [15:42:20:123]: Product: Foo -- Installation failed.",
+        );
+        assert_eq!(custom.level, Level::Error);
+        assert_eq!(custom.thread, b"A4!B8");
+        let stopped = hinted(hint, "=== Logging stopped: 11/18/2026  15:42:30 ===");
+        assert_eq!(stamp_text(&stopped), "2026-11-18T15:42:30.000");
+
+        let property = hinted(hint, "Property(S): ProductName = Foo");
+        assert_eq!(property.stamp, None);
+        assert_eq!(property.message, b"Property(S): ProductName = Foo");
+
+        // Dates in a day-first order are read too.
+        for head in [
+            "=== Logging started: 18.11.2026  15:42:16 ===",
+            "=== Logging started: 18/11/2026  15:42:16 ===",
+        ] {
+            assert_eq!(hint_for(head.as_bytes()), hint, "{head}");
+        }
+        // Without its first line, a row reads as any other.
+        assert_eq!(
+            plain("MSI (c) (50:E0) [15:42:16:698]: Resetting").stamp,
+            None
+        );
+    }
+
+    #[test]
+    fn transcript_error_records_are_errors() {
+        let windows = "\u{feff}**********************\r\nWindows PowerShell transcript start\r\nStart time: 20261118154047\r\n";
+        let core =
+            "**********************\nPowerShell transcript start\nStart time: 20261118154049\n";
+        assert_eq!(hint_for(windows.as_bytes()), Hint::Transcript);
+        assert_eq!(hint_for(core.as_bytes()), Hint::Transcript);
+        let row = |text| hinted(Hint::Transcript, text);
+
+        let started = row("Start time: 20261118154047");
+        assert_eq!(stamp_text(&started), "2026-11-18T15:40:47.000");
+        assert_eq!(
+            stamp_text(&row("Command start time: 20261118154050")),
+            "2026-11-18T15:40:50.000"
+        );
+        for error in [
+            "Get-Item : Cannot find path 'C:\\does-not-exist' because it does not exist.",
+            "Get-Item: C:\\Users\\me\\make.ps1:6",
+            "    + CategoryInfo          : ObjectNotFound: (C:\\does-not-exist:String) [Get-Item], ItemNotFoundException",
+            "    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand",
+            "PS>TerminatingError(Get-Item): \"Cannot find path\"",
+            "ConvertFrom-Json : Invalid JSON primitive: x.",
+        ] {
+            assert_eq!(row(error).level, Level::Error, "{error}");
+        }
+        for other in [
+            "Username: CONTOSO\\admin",
+            "Host Application: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "Last-Modified : Tue, 18 Nov 2026",
+            "Get-thing : lowercase nouns aren't cmdlets",
+            "PS C:\\> Get-Item C:\\does-not-exist",
+            "done",
+        ] {
+            assert_eq!(row(other).level, Level::Info, "{other}");
+        }
+        assert_eq!(row("WARNING: careful now").level, Level::Warning);
+        assert!(
+            POWERSHELL_VERBS.windows(2).all(|pair| pair[0] < pair[1]),
+            "the verbs are searched, so they stay in byte order"
+        );
+        // In any other log, those lines go by their words as before.
+        assert_eq!(plain("Get-Item : Cannot find path").level, Level::Info);
+    }
+
+    #[test]
+    fn setupapi_markers_set_the_level() {
+        let head = "[Device Install Log]\r\n     OS Version = 10.0.26300\r\n";
+        assert_eq!(hint_for(head.as_bytes()), Hint::SetupApi);
+        let row = |text| hinted(Hint::SetupApi, text);
+
+        let start = row(">>>  Section start 2026/10/14 09:59:16.183");
+        assert_eq!(stamp_text(&start), "2026-10-14T09:59:16.183");
+        assert_eq!(start.level, Level::Info);
+        assert_eq!(
+            stamp_text(&row("<<<  Section end 2026/10/14 09:59:16.734")),
+            "2026-10-14T09:59:16.734"
+        );
+        assert_eq!(
+            row("<<<  [Exit status: FAILURE(0xe0000219)]").level,
+            Level::Error
+        );
+        assert_eq!(row("<<<  [Exit status: SUCCESS]").level, Level::Info);
+
+        let error = row("!!!  set: Failed to remove INF oem33.inf, Err = 0x3");
+        assert_eq!(error.level, Level::Error);
+        assert_eq!(error.component, b"set");
+        assert_eq!(error.message, b"Failed to remove INF oem33.inf, Err = 0x3");
+        let warning = row("!    dvi: Query-and-Remove failed: 0x05: CR_INVALID_DEVNODE.");
+        assert_eq!(warning.level, Level::Warning);
+        assert_eq!(warning.component, b"dvi");
+        // Words don't decide, so this setting isn't an error.
+        let setting = row("     inf:                          Error Control = 1");
+        assert_eq!(setting.level, Level::Info);
+        assert_eq!(setting.component, b"inf");
+        assert_eq!(setting.message, b"Error Control = 1");
+        assert_eq!(row("     OS Version = 10.0.26300").component, b"");
+
+        assert_eq!(hint_for(b"2026-01-01 10:00:00 plain text\n"), Hint::None);
+        assert_eq!(hint_for(b""), Hint::None);
     }
 
     #[test]

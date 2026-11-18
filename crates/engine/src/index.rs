@@ -284,6 +284,7 @@ mod tests {
             month: 6,
         },
         custom: None,
+        hint: crate::parse::Hint::None,
     };
 
     /// Returns each row's bytes after scanning with the given chunk size.

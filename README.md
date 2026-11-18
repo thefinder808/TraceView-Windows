@@ -16,7 +16,7 @@ It's one signed EXE with nothing to install, so it can be copied to a USB stick 
 
 - **Built for AI agents:** a command line that summarizes and searches logs in short lines or JSON, so agents read only what matters, and `traceview setup` to get Claude Code, Codex, the ChatGPT app and GitHub Copilot using it.
 - **CMTrace's habits:** severity colors, live tail, find, filter, Error Lookup on Ctrl+L, tabs, merging logs into one timeline, and the Classic theme.
-- **Reads the logs admins open:** ConfigMgr client and site server logs, Intune's, CBS, DISM and setup logs, Windows Update's `WindowsUpdate.log` and `ReportingEvents.log`, winget's and syslog, with times, levels and components in their columns. Any other format can be taught in Tools > Log formats.
+- **Reads the logs admins open:** ConfigMgr client and site server logs, Intune's, CBS, DISM and setup logs, Windows Update's `WindowsUpdate.log` and `ReportingEvents.log`, Windows Installer, PowerShell transcripts, `setupapi`, winget's and syslog, with times, levels and components in their columns. Any other format can be taught in Tools > Log formats.
 - **TraceView's own:** severity chips, the event histogram, a sidebar of nearby and Windows logs, bookmarks, filter presets, split view, a command palette and five themes.
 - **Yours to change:** highlight rules, columns, fonts, keyboard shortcuts, custom log formats, theme files and named layouts. All of it is plain text that loads as it's edited.
 - **Accessible:** screen readers get every control through UI Automation, everything works from the keyboard, and Windows contrast themes are followed.

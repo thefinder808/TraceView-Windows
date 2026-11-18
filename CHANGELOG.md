@@ -9,6 +9,9 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - ConfigMgr site server logs, such as `sitecomp.log` and `distmgr.log`, are read in the `$$<` format CMTrace also reads, with each row's time, offset from UTC, component and thread. Before, each whole row was the message, with no time.
 - `WindowsUpdate.log`, as `Get-WindowsUpdateLog` writes it, has its component, thread ID and process ID in the Component, Thread and Source columns. Before, a colon early in a message made the IDs and the component read as one component, such as `51540 Misc UUS`, and summaries split one problem into several patterns because the IDs' widths vary.
 - winget's logs have their level and component, from the `<I> [CORE]` after each time.
+- Windows Installer verbose logs, from `msiexec /l*v`, have times: each row's time of day on the date its `=== Logging started:` line gives. `MSI (s)` is the component, the process and thread the thread, and `Return value 3`, an action that failed, is an error. Before, no row had a time.
+- PowerShell transcripts mark error records as errors, from Windows PowerShell and PowerShell 7, such as `Get-Item : Cannot find path…` and its `+ CategoryInfo` lines. Their `Start time:` and `Command start time:` lines have times. Before, only `WARNING:` and `VERBOSE:` had a level.
+- `setupapi.dev.log` goes by its `!!!` and `!` markers, so `Error Control = 1` is no longer an error, and a failed `[Exit status: FAILURE(…)]` is. Sections' starts and ends have times, and the short name before a colon, such as `dvi`, is the component.
 - Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
 
 **Viewer**
