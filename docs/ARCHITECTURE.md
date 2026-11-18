@@ -20,7 +20,8 @@ crates/
     encoding.rs   UTF-8, UTF-16 and Windows-1252 handling
     level.rs      severity levels and the keyword fallback
     time.rs       timestamp parsing
-    parse.rs      splits one row into fields, for every supported format
+    parse.rs      splits one row into fields, for every supported format, and finds the hint
+                  some plain formats give in their first lines, such as a #Fields line
     custom.rs     formats defined by a regex, and choosing one for a file
     index.rs      parallel scan into compact per-row arrays
     cache.rs      on-disk index cache
@@ -331,6 +332,6 @@ The goal is one engine with several front ends in the same EXE:
 - **The GUI** is designed in [GUI-DESIGN.md](GUI-DESIGN.md), including how one EXE serves both the CLI and GUI.
 - **A real no-GPU VM and slow RDP links** are still untested.
 - **ConfigMgr and Windows Update error text away from ConfigMgr.** CMTrace's text covers clients and site servers. A PC with neither, such as one that logs were copied to, gets it only from a copy of `CMTrace.exe` put in TraceView's folder, and a console's `srsresources.dll` hasn't been tested.
-- **Time zones,** which merging files from different zones will need.
+- **Time zones,** which merging files from different zones will need, as will merging IIS logs, which are in UTC, with local ones.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.
 - **Auto-updates,** planned for the next release. TraceView never connects to the internet today, as the README promises, so this needs: a clear way to turn it off, including for managed and offline PCs, and the README's privacy section changed to say so; a download used only once it's signed by the same publisher as the running EXE and matches `SHA256SUMS.txt`; only full releases, and never a downgrade; only the copy `traceview setup` installed updated, swapped in by renaming, as Windows locks a running EXE; and never an update in the middle of a command an agent is running.

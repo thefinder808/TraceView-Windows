@@ -34,6 +34,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 **AI agents**
 
+- The skill `traceview setup` writes tells agents it's for site server, Windows Installer, PowerShell transcript, IIS and Windows Firewall logs too, as agents choose a skill by its description. Run `traceview setup` again to update it.
 - `traceview setup` also adds TraceView's skill for GitHub Copilot, in `%USERPROFILE%\.copilot\skills\traceview`, when `%USERPROFILE%\.copilot` exists. `traceview setup --remove` takes it back.
 
 ## 0.11.0
