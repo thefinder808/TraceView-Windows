@@ -42,6 +42,7 @@ crates/
                 DoubleClick event, so code that only wants presses sees every one
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs.
                 names.rs holds Windows Update and Delivery Optimization code names, written by scripts/code-names.ps1
+                cbs_names.rs holds servicing (CBS and PSFX) code names, from Microsoft Learn
   traceview/    the EXE. No unsafe
     cli.rs        query, summarize, lookup and setup
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
@@ -270,7 +271,7 @@ The goal is one engine with several front ends in the same EXE:
    - Each summary pattern keeps its first row as an example, and the CLI looks up the error codes in the problem patterns' examples with `tv-errors`. Without this, an exit code of 1603 would read only as `<n>`.
    - Error codes:
      - WMI codes, 0x80041000 to 0x80042FFF, read from `System32\wbem\wmiutils.dll`, loaded as data like every other table. Other codes in the same facility, number 4, belong to other components, so only that range goes there.
-     - Windows has no text for Windows Update and Delivery Optimization codes. `tv-errors/src/names.rs` maps them to their names, and a lookup carries the name in `Decoded::name`, on its reading with text if any, or else on a reading of its own. `scripts/code-names.ps1` writes that file from the Windows SDK's `wuerror.h` and `deliveryoptimizationerrors.h`. It keeps only names, which are the codes' identifiers, not Microsoft's descriptions.
+     - Windows has no text for Windows Update and Delivery Optimization codes. `tv-errors/src/names.rs` maps them to their names, and a lookup carries the name in `Decoded::name`, on its reading with text if any, or else on a reading of its own. `scripts/code-names.ps1` writes that file from the Windows SDK's `wuerror.h` and `deliveryoptimizationerrors.h`. It keeps only names, which are the codes' identifiers, not Microsoft's descriptions. Servicing codes, 0x800F08xx and 0x800F09xx such as CBS_E_SOURCE_MISSING, aren't in the SDK, and servicing\CbsMsg.dll has no text for them, so 	v-errors/src/cbs_names.rs holds 21 names, each taken from a Microsoft Learn page that gives code and name together. The file names those pages.
      - The SDK has no names for CBS's `CBS_E_*` codes, but CBS logs write the name themselves.
    - Rows carry `utc_offset` when the row says what zone its time is in: SCCM rows' bias, such as `+360` for six hours behind UTC, or an ISO time's `Z` or `+hh:mm`. `parse::utc_offset` reads it only for rows being output, since the index keeps no zones, so filters, merging and summaries still use the log's own clock. Lines output adds it after the time.
    - `--format lines` writes one line per row, `file:row time level component thread | message`, for agents that pay by the token. `--fields` picks which of those show, always in that order, `--max-width` cuts lines with an ellipsis, and `--no-header` drops the `#` lines.

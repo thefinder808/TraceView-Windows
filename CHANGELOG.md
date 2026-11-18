@@ -21,6 +21,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 - On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0… and 0x87D1…) get text, such as "Item not found" for 0x87D00215, and many Windows Update codes get text beside their names. It comes, in English, from the copy of CMTrace that ConfigMgr installs, which TraceView reads as a file but never runs. `lookup`, summaries and the Error Lookup window all use it.
 - On other PCs, such as one logs are copied to, a copy of `CMTrace.exe` in the folder holding `traceview.exe` gives the same text.
+- 21 common servicing codes, 0x800F08xx and 0x800F09xx, get their names, such as `PSFX_E_MISSING_PAYLOAD_FILE` for 0x800F0991 and `CBS_E_SOURCE_MISSING` for 0x800F081F. Windows has no text for them, and they weren't explained at all before. The names come from Microsoft Learn.
 
 **Command line**
 
