@@ -53,8 +53,8 @@ The start page opens recent logs and folders, and this PC's usual log folders, s
 | Ctrl+O | Open logs, each in its own tab |
 | Ctrl+Shift+O | Open a folder, such as one of logs copied from another PC. Its logs are listed with their errors and warnings, and a click opens one. Dropping a folder does the same |
 | Ctrl+Tab, Ctrl+1-9, Ctrl+W | Switch tabs, close a tab |
-| Ctrl+F, F3, Shift+F3 | Find, and move between matches, as the ▲ and ▼ buttons beside Find do |
-| Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/` |
+| Ctrl+F, F3, Shift+F3 | Find, and move between matches, as the ▲ and ▼ buttons beside Find do. The × in the box clears it |
+| Ctrl+Shift+F | Filter, as in `failed level:warning component:PolicyAgent` or `/regex/`. The × in the box clears it, showing every row again |
 | Ctrl+E, Ctrl+Shift+E | Next and previous error |
 | Ctrl+L | Error Lookup |
 | Ctrl+H | Highlight rules: color or mark rows that match, as in `download failed level:error` |

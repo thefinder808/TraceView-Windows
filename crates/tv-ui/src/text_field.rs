@@ -35,6 +35,8 @@ pub struct TextField {
     undo: Vec<(String, usize)>,
     scroll: f32,
     dragging: bool,
+    /// Room kept clear at the right end, for a button drawn in the box.
+    trailing: f32,
 }
 
 fn is_word_char(character: char) -> bool {
@@ -76,6 +78,12 @@ impl TextField {
     pub fn select_all(&mut self) {
         self.anchor = 0;
         self.cursor = self.text.len();
+    }
+
+    /// Keeps `width` at the box's right end clear of text, for a button its
+    /// owner draws there.
+    pub fn set_trailing(&mut self, width: f32) {
+        self.trailing = width.max(0.0);
     }
 
     pub fn selection(&self) -> std::ops::Range<usize> {
@@ -384,7 +392,7 @@ impl TextField {
         let content = Rect::new(
             inner.left + PADDING - 1.0,
             inner.top,
-            inner.right - PADDING,
+            (inner.right - PADDING - self.trailing).max(inner.left + PADDING - 1.0),
             inner.bottom,
         );
 
@@ -706,6 +714,21 @@ mod tests {
         let caret = field.draw(&mut canvas, RECT, &Theme::CLASSIC, true, "");
         assert!(caret.x <= RECT.right, "caret at {}", caret.x);
         assert!(canvas.clips_balance());
+    }
+
+    #[test]
+    fn trailing_room_stays_clear_of_text() {
+        let mut field = typed(&"x".repeat(200));
+        field.set_trailing(22.0);
+        let caret = field.draw(&mut RecordingCanvas::new(), RECT, &Theme::CLASSIC, true, "");
+        let clear_from = RECT.right - 1.0 - PADDING - 22.0;
+        assert!(caret.x <= clear_from, "caret at {}", caret.x);
+        // Clicking still places the caret, measured from the left.
+        let point = Point::new(RECT.left + PADDING + 7.0 * 2.0 + 1.0, 10.0);
+        field.select_all();
+        send(&mut field, Event::MouseDown(point, MouseButton::Left, NONE));
+        send(&mut field, Event::MouseUp(point, MouseButton::Left));
+        assert!(field.selection().is_empty());
     }
 
     #[test]

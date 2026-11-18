@@ -124,6 +124,8 @@ pub mod command {
     /// [`REMOVE_AGENT_SETUP`] show. They're in no menu.
     pub const SET_UP_AGENTS_CONFIRMED: u32 = 78;
     pub const REMOVE_AGENT_SETUP_CONFIRMED: u32 = 79;
+    /// Empties the find box, as its × does. It's in no menu.
+    pub const CLEAR_FIND: u32 = 80;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -171,19 +173,24 @@ fn free_theme_name(base: &str, taken: &[String]) -> String {
         .unwrap_or_else(|| base.to_string())
 }
 
-/// The buttons beside the find box, and the one at the end of the status bar.
+/// The buttons beside the find box, the one at the end of the status bar,
+/// and the × in the filter and find boxes while they have text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarButton {
     FindPrevious,
     FindNext,
     Pause,
+    ClearFilter,
+    ClearFind,
 }
 
 impl BarButton {
-    pub const ALL: [BarButton; 3] = [
+    pub const ALL: [BarButton; 5] = [
         BarButton::FindPrevious,
         BarButton::FindNext,
         BarButton::Pause,
+        BarButton::ClearFilter,
+        BarButton::ClearFind,
     ];
 
     pub fn command(self) -> u32 {
@@ -191,6 +198,8 @@ impl BarButton {
             BarButton::FindPrevious => command::FIND_PREVIOUS,
             BarButton::FindNext => command::FIND_NEXT,
             BarButton::Pause => command::PAUSE,
+            BarButton::ClearFilter => command::CLEAR_FILTER,
+            BarButton::ClearFind => command::CLEAR_FIND,
         }
     }
 
@@ -201,6 +210,7 @@ impl BarButton {
             BarButton::FindNext => "▼",
             BarButton::Pause if paused => "Resume",
             BarButton::Pause => "Pause",
+            BarButton::ClearFilter | BarButton::ClearFind => "×",
         }
     }
 
@@ -211,8 +221,55 @@ impl BarButton {
             BarButton::FindNext => "Next match",
             BarButton::Pause if paused => "Resume live updates",
             BarButton::Pause => "Pause live updates",
+            BarButton::ClearFilter => "Clear filter",
+            BarButton::ClearFind => "Clear find",
         }
     }
+
+    /// The box a clear button empties, which it gives focus to.
+    pub fn field(self) -> Option<Focus> {
+        match self {
+            BarButton::ClearFilter => Some(Focus::Filter),
+            BarButton::ClearFind => Some(Focus::Find),
+            _ => None,
+        }
+    }
+}
+
+/// The × at the right end of a box with text, which only shows a background
+/// while hovered, as in Windows' own search boxes.
+fn draw_clear(canvas: &mut dyn Canvas, rect: Rect, theme: &Theme, hovered: bool) {
+    if rect.width() <= 0.0 {
+        return;
+    }
+    let color = if hovered {
+        canvas.fill_rect(rect, theme.hover_background);
+        theme.on_highlight(theme.primary_text)
+    } else {
+        theme.secondary_text
+    };
+    let text = BarButton::ClearFind.text(false);
+    let left = rect.left + ((rect.width() - canvas.text_width(text, FontRole::Ui)) / 2.0).max(0.0);
+    canvas.text(
+        text,
+        Rect::new(left, rect.top, rect.right, rect.bottom),
+        UI_LEFT,
+        color,
+    );
+}
+
+/// The square at the right end of a box, inside its border, where its ×
+/// goes. Nothing while the box is empty.
+fn clear_rect(field: Rect, has_text: bool) -> Rect {
+    if !has_text || field.width() < 3.0 * FIELD_HEIGHT {
+        return Rect::default();
+    }
+    Rect::new(
+        field.right - 1.0 - (FIELD_HEIGHT - 2.0),
+        field.top + 1.0,
+        field.right - 1.0,
+        field.bottom - 1.0,
+    )
 }
 
 /// Draws a small button as chips are drawn, with its text in the middle.
@@ -256,6 +313,9 @@ struct Layout {
     find_previous: Rect,
     find_next: Rect,
     find_count: Rect,
+    /// The × in each box, while it has text.
+    filter_clear: Rect,
+    find_clear: Rect,
     /// The pause button, at the end of the status bar.
     pause: Rect,
     chips: Rect,
@@ -277,9 +337,22 @@ struct PaneLayout {
     find_previous: Rect,
     find_next: Rect,
     find_count: Rect,
+    filter_clear: Rect,
+    find_clear: Rect,
     chips: Rect,
     histogram: Rect,
     grid: Rect,
+}
+
+/// Places the × in each of a pane's boxes that has text.
+fn with_clear_buttons(mut pane: PaneLayout, tab: Option<&Tab>) -> PaneLayout {
+    let has_text = |field: &tv_ui::text_field::TextField| !field.text().is_empty();
+    pane.filter_clear = clear_rect(
+        pane.filter,
+        tab.is_some_and(|tab| has_text(&tab.filter_field)),
+    );
+    pane.find_clear = clear_rect(pane.find, tab.is_some_and(|tab| has_text(&tab.find_field)));
+    pane
 }
 
 /// Lays out a pane: the filter and find boxes, the chips and histogram, and
@@ -376,6 +449,9 @@ fn draw_pane(
         ),
     }
     tab.document()?;
+    // The text stops short of the ×, so it never runs under it.
+    tab.filter_field.set_trailing(pane.filter_clear.width());
+    tab.find_field.set_trailing(pane.find_clear.width());
     let filter_caret = tab.filter_field.draw(
         canvas,
         pane.filter,
@@ -396,6 +472,12 @@ fn draw_pane(
     ] {
         let hovered = button_hover == Some(button);
         draw_button(canvas, rect, button.text(false), theme, hovered);
+    }
+    for (button, rect) in [
+        (BarButton::ClearFilter, pane.filter_clear),
+        (BarButton::ClearFind, pane.find_clear),
+    ] {
+        draw_clear(canvas, rect, theme, button_hover == Some(button));
     }
     if let Some(summary) = tab.find_summary() {
         canvas.text(&summary, pane.find_count, UI_LEFT, theme.secondary_text);
@@ -1544,6 +1626,12 @@ impl Workspace {
                 if let Some(tab) = self.active_tab_mut() {
                     tab.filter_field.set_text("");
                     tab.apply_filter(&waker);
+                }
+            }
+            command::CLEAR_FIND => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.find_field.set_text("");
+                    tab.clear_find();
                 }
             }
             command::DETAILS => self.show_details = !self.show_details,
@@ -2893,9 +2981,13 @@ impl Workspace {
                 return;
             }
             // The buttons leave focus where it was, so typing goes on in Find.
+            // A × moves it to the box it empties, ready for new text.
             if let Some(pressed) = self.button_at(point) {
                 if button == MouseButton::Left {
                     self.run_command(pressed.command(), commands);
+                    if let Some(field) = pressed.field() {
+                        self.set_focus(field, commands);
+                    }
                 }
                 commands.redraw();
                 commands.accessibility_changed();
@@ -3143,15 +3235,22 @@ impl Workspace {
             }
             _ => (area, None),
         };
-        let focused = pane_layout(
-            focused_area,
-            ready(self.active_tab()),
-            self.show_chips,
-            with_histogram(self.active_tab()),
-            scale,
+        let focused = with_clear_buttons(
+            pane_layout(
+                focused_area,
+                ready(self.active_tab()),
+                self.show_chips,
+                with_histogram(self.active_tab()),
+                scale,
+            ),
+            self.active_tab(),
         );
-        let other = other_area
-            .map(|area| pane_layout(area, other_ready, self.show_chips, other_histogram, scale));
+        let other = other_area.map(|area| {
+            with_clear_buttons(
+                pane_layout(area, other_ready, self.show_chips, other_histogram, scale),
+                other_tab,
+            )
+        });
 
         // Chips exist only while they show, so hidden ones can't be clicked
         // or heard by a screen reader.
@@ -3186,6 +3285,8 @@ impl Workspace {
             find_previous: focused.find_previous,
             find_next: focused.find_next,
             find_count: focused.find_count,
+            filter_clear: focused.filter_clear,
+            find_clear: focused.find_clear,
             pause,
             chips: focused.chips,
             histogram: focused.histogram,
@@ -3359,6 +3460,8 @@ impl Workspace {
                     find_previous: layout.find_previous,
                     find_next: layout.find_next,
                     find_count: layout.find_count,
+                    filter_clear: layout.filter_clear,
+                    find_clear: layout.find_clear,
                     chips: layout.chips,
                     histogram: layout.histogram,
                     grid: layout.grid,
@@ -3509,6 +3612,8 @@ impl Workspace {
             (BarButton::FindPrevious, layout.find_previous),
             (BarButton::FindNext, layout.find_next),
             (BarButton::Pause, layout.pause),
+            (BarButton::ClearFilter, layout.filter_clear),
+            (BarButton::ClearFind, layout.find_clear),
         ]
         .into_iter()
         .filter(|(_, rect)| rect.width() > 0.0)
@@ -4092,6 +4197,59 @@ mod tests {
         click_button(&mut workspace, BarButton::Pause);
         click_button(&mut workspace, BarButton::Pause);
         assert!(!workspace.tabs[0].is_paused(), "the button resumes too");
+    }
+
+    fn shows(workspace: &Workspace, wanted: BarButton) -> bool {
+        workspace.bar_buttons().any(|(button, _)| button == wanted)
+    }
+
+    #[test]
+    fn a_box_with_text_has_a_clear_button_that_empties_it() {
+        let (_dir, mut workspace) = opened(100);
+        assert!(
+            !shows(&workspace, BarButton::ClearFilter),
+            "empty boxes have none"
+        );
+        assert!(!shows(&workspace, BarButton::ClearFind));
+
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL_SHIFT));
+        type_text(&mut workspace, "message 1");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        settle(&mut workspace, |workspace| workspace.tabs[0].is_filtered());
+        assert!(shows(&workspace, BarButton::ClearFilter));
+        // The × sits inside the box, at its right end.
+        let (_, clear) = workspace
+            .bar_buttons()
+            .find(|(button, _)| *button == BarButton::ClearFilter)
+            .unwrap();
+        let filter = workspace.filter_rect();
+        assert!(clear.right <= filter.right && clear.left > filter.left);
+
+        // Clearing goes back to every row, with focus in the box for new text.
+        send(&mut workspace, Event::KeyDown(Key::Escape, NONE));
+        assert_eq!(workspace.focus, Focus::Grid);
+        click_button(&mut workspace, BarButton::ClearFilter);
+        settle(&mut workspace, |workspace| !workspace.tabs[0].is_filtered());
+        assert_eq!(workspace.tabs[0].filter_field.text(), "");
+        assert_eq!(row_count(&workspace), 100);
+        assert_eq!(workspace.focus, Focus::Filter);
+        assert!(!shows(&workspace, BarButton::ClearFilter));
+
+        send(&mut workspace, Event::KeyDown(Key::Char('F'), CTRL));
+        type_text(&mut workspace, "message 5");
+        send(&mut workspace, Event::KeyDown(Key::Enter, NONE));
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0]
+                .find_summary()
+                .is_some_and(|summary| summary.contains(" of "))
+        });
+        click_button(&mut workspace, BarButton::ClearFind);
+        settle(&mut workspace, |workspace| {
+            !shows(workspace, BarButton::ClearFind)
+        });
+        assert_eq!(workspace.tabs[0].find_field.text(), "");
+        assert_eq!(workspace.tabs[0].find_summary(), None, "no more highlights");
+        assert_eq!(workspace.focus, Focus::Find);
     }
 
     #[test]

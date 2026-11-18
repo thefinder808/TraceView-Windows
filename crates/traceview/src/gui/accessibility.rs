@@ -945,18 +945,20 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
         window_children.push(HOME_ID);
     } else if let Some(tab) = workspace.active_tab() {
         if tab.document().is_some() {
-            for (id, label, text, rect) in [
+            for (id, label, text, rect, clear) in [
                 (
                     FILTER_ID,
                     "Filter",
                     tab.filter_field.text(),
                     workspace.filter_rect(),
+                    BarButton::ClearFilter,
                 ),
                 (
                     FIND_ID,
                     "Find",
                     tab.find_field.text(),
                     workspace.find_rect(),
+                    BarButton::ClearFind,
                 ),
             ] {
                 let mut node = Node::new(Role::TextInput);
@@ -966,12 +968,18 @@ pub fn build(workspace: &Workspace, scale: f32) -> TreeUpdate {
                 node.add_action(Action::Focus);
                 nodes.push((id, node));
                 window_children.push(id);
+                // A box's × comes right after it, while it shows.
+                if let Some((_, rect)) = workspace.bar_buttons().find(|(each, _)| *each == clear) {
+                    let (id, node) = bar_button_node(clear, rect, false, scale);
+                    nodes.push((id, node));
+                    window_children.push(id);
+                }
             }
         }
         // The find buttons come after the find box, and the pause button
         // after the status bar, where they're drawn.
         for (button, rect) in workspace.bar_buttons() {
-            if button != BarButton::Pause {
+            if button != BarButton::Pause && button.field().is_none() {
                 let (id, node) = bar_button_node(button, rect, tab.is_paused(), scale);
                 nodes.push((id, node));
                 window_children.push(id);
@@ -1281,7 +1289,18 @@ pub fn act(workspace: &mut Workspace, request: &ActionRequest, commands: &mut Co
                 workspace.run_command(super::workspace::command::FIND, commands);
             } else if let Some(index) = in_range(target, FIRST_BAR_BUTTON_ID, BarButton::ALL.len())
             {
-                workspace.run_command(BarButton::ALL[index].command(), commands);
+                let button = BarButton::ALL[index];
+                workspace.run_command(button.command(), commands);
+                // A × goes away with the text, so focus moves to its box.
+                match button.field() {
+                    Some(Focus::Filter) => {
+                        workspace.run_command(super::workspace::command::FILTER, commands)
+                    }
+                    Some(Focus::Find) => {
+                        workspace.run_command(super::workspace::command::FIND, commands)
+                    }
+                    _ => {}
+                }
             } else if let Some(open) = workspace.menu().open_menu() {
                 let items = workspace.menu().menus[open].items.len();
                 if let Some(item) = in_range(target, FIRST_MENU_ITEM_ID, items) {
@@ -1637,6 +1656,49 @@ mod tests {
         assert!(workspace.tabs[0].is_paused());
         let update = build(&workspace, 1.0);
         assert_eq!(node(&update, pause).label(), Some("Resume live updates"));
+    }
+
+    #[test]
+    fn a_boxs_clear_button_follows_it_and_moves_focus_to_it() {
+        let (_dir, mut workspace) = opened();
+        let clear_find = NodeId(FIRST_BAR_BUTTON_ID + 4);
+        let has =
+            |update: &TreeUpdate, id: NodeId| update.nodes.iter().any(|(each, _)| *each == id);
+        assert!(
+            !has(&build(&workspace, 1.0), clear_find),
+            "an empty box has none"
+        );
+
+        workspace.tabs[0].find_field.set_text("disk");
+        workspace.draw(
+            &mut RecordingCanvas::new(),
+            (1000.0, 600.0),
+            1.0,
+            &mut Commands::default(),
+        );
+        let update = build(&workspace, 1.0);
+        assert_eq!(node(&update, clear_find).label(), Some("Clear find"));
+        assert_eq!(node(&update, clear_find).role(), Role::Button);
+        let window = node(&update, WINDOW_ID).children();
+        let at = |id: NodeId| window.iter().position(|each| *each == id).unwrap();
+        assert_eq!(
+            at(clear_find),
+            at(FIND_ID) + 1,
+            "it's read right after its box"
+        );
+
+        act(
+            &mut workspace,
+            &ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: clear_find,
+                data: None,
+            },
+            &mut Commands::default(),
+        );
+        assert_eq!(workspace.tabs[0].find_field.text(), "");
+        assert_eq!(workspace.focus, Focus::Find);
     }
 
     #[test]
