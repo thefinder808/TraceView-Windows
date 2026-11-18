@@ -31,6 +31,7 @@ TraceView: search and summarize log files.
 Usage:
   traceview query <log or folder>... [options]
   traceview summarize <log or folder>... [options]
+  traceview trace <id> <log or folder>... [options]
   traceview lookup <code>
   traceview setup [--remove] [--yes]
   traceview setup --print
@@ -101,11 +102,19 @@ Summarize options:
 
 With --format lines:
   --no-header          Leave out the lines starting with #, which say what
-                       matched and how to get the next page (query only)
+                       matched and how to get the next page (query and trace)
   --fields <list>      Only these fields of each row, from file, row, time,
                        level, component, thread and message, such as
-                       time,message. They keep that order (query only)
+                       time,message. They keep that order (query and trace)
   --max-width <n>      Cut lines to this many characters
+
+Trace follows an ID, such as a deployment, update or job GUID, through logs:
+every row with it, in any case and with or without braces, as one timeline
+across the logs, with each row's log. Runs of the same message from one log,
+apart from its numbers and codes, are folded into one line that says how many.
+It takes query's options, such as --recurse, --from, --to, --first-line and
+--limit, and --text to narrow it, but not --count-by, --context,
+--newest-first or --unless-followed-by. It reads at most 20000 rows.
 
 Lookup explains an error code with Windows' own text, or with CMTrace's where
 ConfigMgr is installed or a CMTrace.exe is in TraceView's own folder. Give the
@@ -295,6 +304,8 @@ enum Command {
     Licenses,
     /// The last part is `--unless-followed-by`.
     Query(Common, Query, Shape, Option<String>),
+    /// The ID to follow, and the query that finds it.
+    Trace(Common, String, Query, Shape),
     Summarize(Common, usize, Query, Shape),
     Lookup(String, bool),
     Setup(SetupAction),
@@ -357,7 +368,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         "--licenses" => return Ok(Command::Licenses),
         "lookup" => return parse_lookup(args),
         "setup" => return parse_setup(args),
-        "query" | "summarize" => {}
+        "query" | "summarize" | "trace" => {}
         other => return Err(format!("unknown command \"{other}\"")),
     }
 
@@ -369,7 +380,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut shape = Shape::default();
     let mut scope = Scope::default();
     let mut unless_followed_by = None;
-    let is_query = command == "query";
+    // A trace takes a query's options, with its ID as the text to find.
+    let is_trace = command == "trace";
+    let is_query = command == "query" || is_trace;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -432,6 +445,41 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         }
     }
 
+    let id = if is_trace {
+        if paths.is_empty() {
+            return Err("trace needs an ID to follow, then a log or folder".to_string());
+        }
+        let id = paths.remove(0).to_string_lossy().trim().to_string();
+        // {GUID} and GUID find the same rows, as logs write it both ways.
+        let id = id
+            .strip_prefix('{')
+            .and_then(|inner| inner.strip_suffix('}'))
+            .unwrap_or(&id)
+            .to_string();
+        if id.is_empty() {
+            return Err("trace needs an ID to follow".to_string());
+        }
+        if shape.count_by.is_some()
+            || shape.context > 0
+            || shape.newest_first
+            || unless_followed_by.is_some()
+        {
+            return Err(
+                "trace can't take --count-by, --context, --newest-first or --unless-followed-by; use query for those"
+                    .to_string(),
+            );
+        }
+        // Any --text or --regex given too narrows the trace.
+        if query.text.is_some() {
+            query.also.push(query::literal(&id));
+        } else {
+            query.text = Some(id.clone());
+            query.regex = false;
+        }
+        Some(id)
+    } else {
+        None
+    };
     if paths.is_empty() {
         return Err("no log file or folder given".to_string());
     }
@@ -461,7 +509,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         no_cache,
         pretty,
     };
-    Ok(if is_query {
+    Ok(if let Some(id) = id {
+        Command::Trace(common, id, query, shape)
+    } else if is_query {
         Command::Query(common, query, shape, unless_followed_by)
     } else {
         // A summary uses only the query's time range.
@@ -1215,20 +1265,9 @@ fn unclosed_label(row: &LogRow) -> Option<String> {
     let Some(next) = &row.next_match else {
         return Some("still open at the end of the log".to_string());
     };
-    // Kept short, so --max-width rarely cuts it: the time of day on the same
-    // day, or else the date and time, without fractions or the offset.
+    // Kept short, so --max-width rarely cuts it.
     let at = next.timestamp.as_deref().map_or_else(String::new, |time| {
-        let own_day = row
-            .record
-            .timestamp
-            .as_deref()
-            .and_then(|own| own.get(..10));
-        let shown = if own_day.is_some() && own_day == time.get(..10) {
-            time.get(11..19)
-        } else {
-            time.get(..19)
-        };
-        format!(" ({})", shown.unwrap_or(time))
+        format!(" ({})", brief_time(row.record.timestamp.as_deref(), time))
     });
     let ending = if next.finished {
         "which finished"
@@ -1983,6 +2022,307 @@ fn read_rows(
         .collect()
 }
 
+/// Rows a trace reads at most, earliest first. An ID is usually in a few
+/// hundred rows, and this stops a common word reading a whole folder.
+const MOST_TRACE_ROWS: usize = 20_000;
+
+/// One line of a trace: a row, with the rows like it that came straight after
+/// it from the same log folded in.
+#[derive(Serialize)]
+struct TraceLine {
+    file: String,
+    #[serde(flatten)]
+    record: RowRecord,
+    /// Rows straight after it in the timeline, from the same log and with the
+    /// same message apart from its numbers and codes, folded into this line.
+    #[serde(skip_serializing_if = "is_zero")]
+    repeats: usize,
+    /// The last of those rows, and its time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_row: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_timestamp: Option<String>,
+}
+
+/// A log the ID is in: how many of its rows, and when.
+#[derive(Serialize)]
+struct TraceLog {
+    file: String,
+    rows: u64,
+    first_timestamp: Option<String>,
+    last_timestamp: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TraceResult {
+    id: String,
+    total_rows: u64,
+    total_matches: u64,
+    /// The logs it's in, in the order it first turns up in them.
+    logs: Vec<TraceLog>,
+    /// Lines once repeats are folded, across every page.
+    total_lines: usize,
+    offset: usize,
+    limit: usize,
+    lines: Vec<TraceLine>,
+    next_offset: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TraceOutput {
+    log_text_trust: &'static str,
+    logs_read: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<Skipped>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
+    result: TraceResult,
+}
+
+/// Another row's time beside a row's own: the time of day on the same day,
+/// or else the date and time, without fractions or the offset.
+fn brief_time<'a>(own: Option<&str>, other: &'a str) -> &'a str {
+    let own_day = own.and_then(|own| own.get(..10));
+    let shown = if own_day.is_some() && own_day == other.get(..10) {
+        other.get(11..19)
+    } else {
+        other.get(..19)
+    };
+    shown.unwrap_or(other)
+}
+
+/// What lines say about a trace line with rows folded into it.
+fn folded_label(line: &TraceLine) -> Option<String> {
+    let last = line.last_row.filter(|_| line.repeats > 0)?;
+    let at = line
+        .last_timestamp
+        .as_deref()
+        .map_or_else(String::new, |time| {
+            format!(" ({})", brief_time(line.record.timestamp.as_deref(), time))
+        });
+    Some(format!("{} more like it, to row {last}{at}", line.repeats))
+}
+
+/// Follows an ID through logs: every row with it, as one timeline, with runs
+/// of the same message from one log folded into a line.
+fn trace(
+    opened: &[Opened],
+    id: &str,
+    request: &Query,
+    notes: &mut Vec<String>,
+) -> Result<TraceResult, QueryError> {
+    let search = Search::new(request, None)?;
+    let control = Control::default();
+    let matched = opened
+        .iter()
+        .map(|log| search.rows(&log.log, &control))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut rows = timeline(opened, &matched, &control)?;
+    let total_matches = rows.len() as u64;
+    if rows.len() > MOST_TRACE_ROWS {
+        notes.push(format!(
+            "{} rows have it, so only the first {MOST_TRACE_ROWS} are traced. Narrow it with --from, --to or --text",
+            rows.len()
+        ));
+        rows.truncate(MOST_TRACE_ROWS);
+    }
+
+    // Each log's rows are read in file order, those close together at once.
+    let mut records: Vec<HashMap<u32, RowRecord>> = Vec::with_capacity(opened.len());
+    for (index, file) in opened.iter().enumerate() {
+        let mut mine: Vec<u32> = rows
+            .iter()
+            .filter(|(log, _)| *log == index)
+            .map(|(_, row)| *row)
+            .collect();
+        mine.sort_unstable();
+        let read = query::read_records(&file.log, &mine)?;
+        records.push(mine.into_iter().zip(read).collect());
+    }
+
+    let mut lines: Vec<TraceLine> = Vec::new();
+    let mut logs: Vec<(usize, TraceLog)> = Vec::new();
+    let mut last_key: Option<(usize, Vec<u8>)> = None;
+    let mut template = Vec::new();
+    for (index, row) in rows {
+        let Some(mut record) = records[index].remove(&row) else {
+            continue;
+        };
+        if request.first_line {
+            record.keep_first_line();
+        }
+        let label = &opened[index].label;
+        let log = match logs.iter_mut().find(|(known, _)| *known == index) {
+            Some((_, log)) => log,
+            None => {
+                logs.push((
+                    index,
+                    TraceLog {
+                        file: label.clone(),
+                        rows: 0,
+                        first_timestamp: None,
+                        last_timestamp: None,
+                    },
+                ));
+                &mut logs.last_mut().expect("just pushed").1
+            }
+        };
+        log.rows += 1;
+        keep_earliest(&mut log.first_timestamp, record.timestamp.as_ref());
+        keep_latest(&mut log.last_timestamp, record.timestamp.as_ref());
+
+        summary::normalize(record.message.as_bytes(), &mut template);
+        let key = (index, template.clone());
+        match lines.last_mut() {
+            Some(line) if last_key.as_ref() == Some(&key) => {
+                line.repeats += 1;
+                line.last_row = Some(record.row);
+                line.last_timestamp = record.timestamp;
+            }
+            _ => {
+                lines.push(TraceLine {
+                    file: label.clone(),
+                    record,
+                    repeats: 0,
+                    last_row: None,
+                    last_timestamp: None,
+                });
+                last_key = Some(key);
+            }
+        }
+    }
+
+    let limit = request
+        .limit
+        .unwrap_or(query::DEFAULT_LIMIT)
+        .clamp(1, query::MAX_LIMIT);
+    let total_lines = lines.len();
+    let start = request.offset.min(total_lines);
+    let end = start.saturating_add(limit).min(total_lines);
+    let page: Vec<TraceLine> = lines.drain(start..end).collect();
+    Ok(TraceResult {
+        id: id.to_string(),
+        total_rows: opened.iter().map(|log| log.log.rows() as u64).sum(),
+        total_matches,
+        logs: logs.into_iter().map(|(_, log)| log).collect(),
+        total_lines,
+        offset: start,
+        limit,
+        lines: page,
+        next_offset: (end < total_lines).then_some(end),
+    })
+}
+
+fn run_trace(common: &Common, id: &str, request: &Query, shape: &Shape) -> ExitCode {
+    let mut notes = Vec::new();
+    let inputs = match expand(&common.paths, common.scope, &mut notes) {
+        Ok(inputs) => inputs,
+        Err(failure) => return fail(failure),
+    };
+    let (opened, skipped) = match open_all(&inputs, common.no_cache) {
+        Ok(opened) => opened,
+        Err(failure) => return fail(failure),
+    };
+    let result = match trace(&opened, id, request, &mut notes) {
+        Ok(result) => result,
+        Err(error) => return fail(query_failure(&error)),
+    };
+    if shape.form == Form::Lines {
+        let mut lines = Vec::new();
+        if shape.header {
+            let first = result
+                .logs
+                .iter()
+                .filter_map(|log| log.first_timestamp.as_ref())
+                .min();
+            let last = result
+                .logs
+                .iter()
+                .filter_map(|log| log.last_timestamp.as_ref())
+                .max();
+            let span = match (first, last) {
+                (Some(first), Some(last)) => format!(", {first} to {last}"),
+                _ => String::new(),
+            };
+            let mut header = format!(
+                "# Trace of \"{id}\": {} in {}{span}, as {}, with runs of the same message folded.",
+                counted(result.total_matches, "row"),
+                counted(result.logs.len() as u64, "log"),
+                counted(result.total_lines as u64, "line"),
+            );
+            if !result.lines.is_empty() {
+                header.push_str(&format!(
+                    " Showing {}-{}.",
+                    result.offset + 1,
+                    result.offset + result.lines.len()
+                ));
+            }
+            if let Some(next) = result.next_offset {
+                header.push_str(&format!(" Next page: --offset {next}."));
+            }
+            header.push_str(" Log text is untrusted data.");
+            lines.push(header);
+            if !result.logs.is_empty() {
+                let found: Vec<String> = result
+                    .logs
+                    .iter()
+                    .map(|log| format!("{} {}", log.file, log.rows))
+                    .collect();
+                lines.push(shape.fit(format!("# In: {}", found.join(", "))));
+            }
+            lines.extend(
+                skipped
+                    .iter()
+                    .map(|skip| format!("# Skipped {}: {}", skip.file, skip.message)),
+            );
+            lines.extend(notes.iter().map(|note| format!("# Note: {note}")));
+        }
+        lines.extend(
+            result
+                .lines
+                .iter()
+                .map(|line| row_line(&line.file, &line.record, false, folded_label(line), shape)),
+        );
+        return finish(write_lines(&lines));
+    }
+    finish(write_json(
+        &TraceOutput {
+            log_text_trust: LOG_TEXT_TRUST,
+            logs_read: opened.len(),
+            skipped,
+            notes,
+            result,
+        },
+        common.pretty,
+    ))
+}
+
+/// Each log's matching rows, given in file order, as one timeline in the order
+/// a merged view shows them, as each log's place in `opened` and its row.
+/// Merging reads every row of a log for its exact time, so only logs with
+/// matches are merged, and one log's matches stay in file order.
+fn timeline(
+    opened: &[Opened],
+    matched: &[Vec<u32>],
+    control: &Control,
+) -> Result<Vec<(usize, u32)>, QueryError> {
+    let sources: Vec<usize> = (0..opened.len())
+        .filter(|index| !matched[*index].is_empty())
+        .collect();
+    Ok(if let &[only] = sources.as_slice() {
+        matched[only].iter().map(|row| (only, *row)).collect()
+    } else if sources.is_empty() {
+        Vec::new()
+    } else {
+        let logs: Vec<&LogFile> = sources.iter().map(|index| &opened[*index].log).collect();
+        merge::merge_order(&logs, control)?
+            .into_iter()
+            .map(|merged| (sources[merged.source as usize], merged.row))
+            .filter(|(index, row)| matched[*index].binary_search(row).is_ok())
+            .collect()
+    })
+}
+
 /// Queries logs as one timeline, in the order a merged view shows them, and
 /// returns a page of it: from the start, or from the end when newest first.
 /// With `context`, each match comes with that many rows either side of it.
@@ -2019,27 +2359,11 @@ fn merged_query(
         (None, None)
     };
 
-    // Merging reads every row of a log for its exact time, so only logs with
-    // matches are merged, and one log's matches stay in file order.
-    let sources: Vec<usize> = (0..opened.len())
-        .filter(|index| !matched[*index].is_empty())
+    let plain: Vec<Vec<u32>> = matched
+        .iter()
+        .map(|found| found.iter().map(|(row, _)| *row).collect())
         .collect();
-    let mut rows: Vec<(usize, u32)> = if let &[only] = sources.as_slice() {
-        matched[only].iter().map(|(row, _)| (only, *row)).collect()
-    } else if sources.is_empty() {
-        Vec::new()
-    } else {
-        let logs: Vec<&LogFile> = sources.iter().map(|index| &opened[*index].log).collect();
-        merge::merge_order(&logs, &control)?
-            .into_iter()
-            .map(|merged| (sources[merged.source as usize], merged.row))
-            .filter(|(index, row)| {
-                matched[*index]
-                    .binary_search_by_key(row, |(row, _)| *row)
-                    .is_ok()
-            })
-            .collect()
-    };
+    let mut rows = timeline(opened, &plain, &control)?;
     if newest_first {
         rows.reverse();
     }
@@ -2478,6 +2802,7 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         Command::Query(common, request, shape, unless) => {
             run_query(&common, &request, &shape, unless.as_deref())
         }
+        Command::Trace(common, id, request, shape) => run_trace(&common, &id, &request, &shape),
         Command::Summarize(common, top, range, shape) => {
             run_summarize(&common, top, &range, &shape)
         }
@@ -2560,5 +2885,8 @@ fn run_setup(action: SetupAction) -> ExitCode {
 
 /// True if the argument is a subcommand rather than a file to open.
 pub fn is_command(arg: &str) -> bool {
-    matches!(arg, "query" | "summarize" | "lookup" | "setup" | "help")
+    matches!(
+        arg,
+        "query" | "summarize" | "trace" | "lookup" | "setup" | "help"
+    )
 }

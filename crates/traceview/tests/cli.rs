@@ -888,6 +888,112 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn trace_follows_an_id_through_logs_and_folds_repeats() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "3DA21691-E39D-4DA6-8A4B-B43877BCB1B7";
+    let row = |message: &str, time: &str, component: &str, kind: u8| {
+        format!(
+            "<![LOG[{message}]LOG]!><time=\"{time}.000+000\" date=\"11-16-2026\" component=\"{component}\" context=\"\" type=\"{kind}\" thread=\"7\" file=\"a.cpp\">\r\n"
+        )
+    };
+    let discovery = [
+        row(
+            &format!("Detecting DT {{{id}}}"),
+            "08:53:10",
+            "AppDiscovery",
+            1,
+        ),
+        row("Unrelated", "08:53:11", "AppDiscovery", 1),
+        row(
+            &format!("Waiting for job {{{id}}} attempt 1"),
+            "08:53:14",
+            "AppDiscovery",
+            1,
+        ),
+        row(
+            &format!("Waiting for job {{{id}}} attempt 2"),
+            "08:53:16",
+            "AppDiscovery",
+            1,
+        ),
+        row(
+            &format!("Waiting for job {{{id}}} attempt 3"),
+            "08:53:18",
+            "AppDiscovery",
+            1,
+        ),
+    ]
+    .concat();
+    let enforce = [
+        row(
+            &format!("Starting install for {id}"),
+            "08:53:12",
+            "AppEnforce",
+            1,
+        ),
+        row(
+            &format!("Exit code 1603 for {id}"),
+            "08:53:30",
+            "AppEnforce",
+            3,
+        ),
+    ]
+    .concat();
+    std::fs::write(dir.path().join("AppDiscovery.log"), discovery).unwrap();
+    std::fs::write(dir.path().join("AppEnforce.log"), enforce).unwrap();
+    let folder = dir.path().to_str().unwrap();
+
+    // With or without braces, in any case, it's one timeline across the logs.
+    let lowered = format!("{{{}}}", id.to_lowercase());
+    let lines = lines_of(&[
+        "trace",
+        &lowered,
+        folder,
+        "--format",
+        "lines",
+        "--fields",
+        "file,row,message",
+    ]);
+    assert!(
+        lines[0].contains(
+            ": 6 rows in 2 logs, 2026-11-16T08:53:10.000 to 2026-11-16T08:53:30.000, as 4 lines"
+        ),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1], "# In: AppDiscovery.log 4, AppEnforce.log 2");
+    assert_eq!(
+        lines[2..],
+        [
+            format!("AppDiscovery.log:1 | Detecting DT {{{id}}}"),
+            format!("AppEnforce.log:1 | Starting install for {id}"),
+            format!("AppDiscovery.log:3 [2 more like it, to row 5 (08:53:18)] | Waiting for job {{{id}}} attempt 1"),
+            format!("AppEnforce.log:2 | Exit code 1603 for {id}"),
+        ]
+    );
+
+    let json = stdout_json(&traceview(&["trace", id, folder, "--limit", "3"]));
+    let result = &json["result"];
+    assert_eq!(result["id"], id);
+    assert_eq!(result["total_matches"], 6);
+    assert_eq!(result["total_lines"], 4);
+    assert_eq!(result["next_offset"], 3);
+    assert_eq!(result["logs"][0]["file"], "AppDiscovery.log");
+    assert_eq!(
+        result["logs"][1]["last_timestamp"],
+        "2026-11-16T08:53:30.000"
+    );
+    let folded = &result["lines"][2];
+    assert_eq!(folded["repeats"], 2);
+    assert_eq!(folded["last_row"], 5);
+    assert!(result["lines"][0].get("repeats").is_none());
+
+    // --text narrows it, and the ID is still needed.
+    let narrowed = stdout_json(&traceview(&["trace", id, folder, "--text", "1603"]));
+    assert_eq!(narrowed["result"]["total_matches"], 1);
+}
+
+#[test]
 fn first_line_keeps_wmi_dumps_out_of_matches_and_output() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("CcmNotificationAgent.log");
@@ -1365,6 +1471,11 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--context", "some"],
         &["summarize", path, "--context", "2"],
         &["summarize", path, "--first-line"],
+        &["trace"],
+        &["trace", "some-id"],
+        &["trace", "{}", path],
+        &["trace", "some-id", path, "--count-by", "day"],
+        &["trace", "some-id", path, "--context", "2"],
         &["query", path, "--exclude"],
         &["query", path, "--unless-followed-by", "done"],
         &["summarize", path, "--unless-followed-by", "done"],

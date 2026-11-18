@@ -411,6 +411,36 @@ fn display_text(bytes: &[u8]) -> String {
     encoding::display(bytes).into_owned()
 }
 
+/// A row's raw bytes in their output form. `cut` says the row was cut off.
+fn to_record(log: &LogFile, row: usize, raw: &[u8], cut: bool, scratch: &mut Vec<u8>) -> RowRecord {
+    let text = log.text(raw, scratch);
+    let fields = log.fields(text);
+    let message = display_text(fields.message);
+    let char_count = message.chars().count();
+    let message_cut = char_count > MAX_MESSAGE_CHARS;
+    let message = if message_cut {
+        message.chars().take(MAX_MESSAGE_CHARS).collect()
+    } else {
+        message
+    };
+    RowRecord {
+        row: row as u64 + 1,
+        offset: log.offset(row),
+        timestamp: fields.stamp.map(|stamp| stamp.to_string()),
+        utc_offset: fields
+            .stamp
+            .and(parse::utc_offset(log.format(), text))
+            .map(time::offset_text),
+        level: log.level(row),
+        component: display_text(fields.component),
+        thread: display_text(fields.thread),
+        source: display_text(fields.source),
+        message,
+        truncated: cut || message_cut,
+        more_lines: 0,
+    }
+}
+
 /// Reads one row into its output form.
 pub fn read_record(
     log: &LogFile,
@@ -420,34 +450,36 @@ pub fn read_record(
 ) -> io::Result<RowRecord> {
     let mut record = None;
     log.read_rows(row..row + 1, buffer, |_, raw, cut| {
-        let text = log.text(raw, scratch);
-        let fields = log.fields(text);
-        let message = display_text(fields.message);
-        let char_count = message.chars().count();
-        let message_cut = char_count > MAX_MESSAGE_CHARS;
-        let message = if message_cut {
-            message.chars().take(MAX_MESSAGE_CHARS).collect()
-        } else {
-            message
-        };
-        record = Some(RowRecord {
-            row: row as u64 + 1,
-            offset: log.offset(row),
-            timestamp: fields.stamp.map(|stamp| stamp.to_string()),
-            utc_offset: fields
-                .stamp
-                .and(parse::utc_offset(log.format(), text))
-                .map(time::offset_text),
-            level: log.level(row),
-            component: display_text(fields.component),
-            thread: display_text(fields.thread),
-            source: display_text(fields.source),
-            message,
-            truncated: cut || message_cut,
-            more_lines: 0,
-        });
+        record = Some(to_record(log, row, raw, cut, scratch));
     })?;
     record.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "row is out of range"))
+}
+
+/// Rows at most this far apart are read together, as one stretch.
+const NEAR_ROWS: u32 = 256;
+
+/// Reads many rows, given in file order, into their output form. Rows close
+/// together are read as one stretch, so a log on a network share is asked
+/// once for each stretch rather than once for each row.
+pub fn read_records(log: &LogFile, rows: &[u32]) -> io::Result<Vec<RowRecord>> {
+    let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
+    let mut records = Vec::with_capacity(rows.len());
+    let mut start = 0;
+    while start < rows.len() {
+        let mut end = start + 1;
+        while end < rows.len() && rows[end] - rows[end - 1] <= NEAR_ROWS {
+            end += 1;
+        }
+        let wanted = &rows[start..end];
+        let span = wanted[0] as usize..*wanted.last().unwrap_or(&wanted[0]) as usize + 1;
+        log.read_rows(span, &mut buffer, |row, raw, cut| {
+            if wanted.binary_search(&(row as u32)).is_ok() {
+                records.push(to_record(log, row, raw, cut, &mut scratch));
+            }
+        })?;
+        start = end;
+    }
+    Ok(records)
 }
 
 /// Runs a query and returns one page of results.
@@ -675,6 +707,25 @@ mod tests {
             ..Query::default()
         };
         assert_eq!(matched(&log, query), vec![3]);
+    }
+
+    #[test]
+    fn many_rows_read_together_match_rows_read_one_by_one() {
+        let text: String = (0..1000)
+            .map(|row| format!("2026-01-01 10:00:00 host a[1]: row {row}\n"))
+            .collect();
+        let (_dir, log) = open(&text);
+        // Close rows share a read, and far ones don't, which reads the same.
+        let rows = [0, 1, 2, 200, 457, 458, 999];
+        let together = read_records(&log, &rows).unwrap();
+        let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
+        let one_by_one: Vec<RowRecord> = rows
+            .iter()
+            .map(|row| read_record(&log, *row as usize, &mut buffer, &mut scratch).unwrap())
+            .collect();
+        assert_eq!(together, one_by_one);
+        assert_eq!(together[3].message, "row 200");
+        assert!(read_records(&log, &[]).unwrap().is_empty());
     }
 
     #[test]
