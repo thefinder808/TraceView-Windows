@@ -51,8 +51,6 @@ const FIELD_HEIGHT: f32 = 24.0;
 const MARGIN: f32 = 8.0;
 /// The space between the find box and its buttons.
 const BUTTON_GAP: f32 = 2.0;
-/// The space either side of the pause button's word.
-const BUTTON_PADDING: f32 = 10.0;
 /// Each pane of a split view keeps at least this much width.
 const MIN_PANE: f32 = 240.0;
 const UI_LEFT: TextStyle = TextStyle::new(FontRole::Ui, Align::Left);
@@ -203,13 +201,14 @@ impl BarButton {
         }
     }
 
-    /// What the button shows. Pause shows what clicking it will do.
+    /// What the button shows. Pause shows what clicking it will do: ▶ to
+    /// resume, or nothing, as [`draw_pause`] draws the pause symbol's bars.
     fn text(self, paused: bool) -> &'static str {
         match self {
             BarButton::FindPrevious => "▲",
             BarButton::FindNext => "▼",
-            BarButton::Pause if paused => "Resume",
-            BarButton::Pause => "Pause",
+            BarButton::Pause if paused => "▶",
+            BarButton::Pause => "",
             BarButton::ClearFilter | BarButton::ClearFind => "×",
         }
     }
@@ -272,20 +271,48 @@ fn clear_rect(field: Rect, has_text: bool) -> Rect {
     )
 }
 
+/// A small button's text color, which changes while it's hovered.
+fn button_text_color(theme: &Theme, hovered: bool) -> tv_ui::Color {
+    if hovered {
+        theme.on_highlight(theme.primary_text)
+    } else {
+        theme.primary_text
+    }
+}
+
+/// The pause button: a square like the find buttons, with ▶ while paused,
+/// and otherwise the pause symbol drawn as two bars, which stay crisp at any
+/// scale where a font's ⏸ varies, or comes out as an emoji.
+fn draw_pause(canvas: &mut dyn Canvas, rect: Rect, paused: bool, theme: &Theme, hovered: bool) {
+    draw_button(canvas, rect, BarButton::Pause.text(paused), theme, hovered);
+    if paused || rect.width() <= 0.0 {
+        return;
+    }
+    let bar = (rect.height() * 0.18).round().max(2.0);
+    let height = (rect.height() * 0.5).round();
+    let top = (rect.top + (rect.height() - height) / 2.0).round();
+    let left = (rect.left + (rect.width() - 3.0 * bar) / 2.0).round();
+    let color = button_text_color(theme, hovered);
+    for bar_left in [left, left + 2.0 * bar] {
+        canvas.fill_rect(
+            Rect::new(bar_left, top, bar_left + bar, top + height),
+            color,
+        );
+    }
+}
+
 /// Draws a small button as chips are drawn, with its text in the middle.
 fn draw_button(canvas: &mut dyn Canvas, rect: Rect, text: &str, theme: &Theme, hovered: bool) {
     if rect.width() <= 0.0 {
         return;
     }
     canvas.fill_rect(rect, theme.border);
-    let (background, color) = if hovered {
-        (
-            theme.hover_background,
-            theme.on_highlight(theme.primary_text),
-        )
+    let background = if hovered {
+        theme.hover_background
     } else {
-        (theme.chip_background, theme.primary_text)
+        theme.chip_background
     };
+    let color = button_text_color(theme, hovered);
     canvas.fill_rect(
         Rect::new(
             rect.left + 1.0,
@@ -3193,18 +3220,14 @@ impl Workspace {
             .status_height
             .max(canvas.line_height(FontRole::Ui) + 6.0);
         let status = area.take_bottom(snap(status_height, scale));
-        // The pause button fits its longer word, so it keeps its size when clicked.
+        // The pause button is a square, as the find buttons are.
         let pause = if ready(self.active_tab()) {
-            let width = [false, true]
-                .map(|paused| canvas.text_width(BarButton::Pause.text(paused), FontRole::Ui))
-                .into_iter()
-                .fold(0.0, f32::max)
-                + 2.0 * BUTTON_PADDING;
+            let (top, bottom) = (status.top + 3.0, status.bottom - 2.0);
             Rect::new(
-                status.right - MARGIN - width,
-                status.top + 3.0,
+                status.right - MARGIN - (bottom - top),
+                top,
                 status.right - MARGIN,
-                status.bottom - 2.0,
+                bottom,
             )
         } else {
             Rect::default()
@@ -3508,10 +3531,10 @@ impl Workspace {
             theme.border,
         );
         let paused = self.active_tab().is_some_and(Tab::is_paused);
-        draw_button(
+        draw_pause(
             canvas,
             layout.pause,
-            BarButton::Pause.text(paused),
+            paused,
             theme,
             self.button_hover == Some(BarButton::Pause),
         );
