@@ -4,6 +4,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Reading logs**
+
+- ConfigMgr site server logs, such as `sitecomp.log` and `distmgr.log`, are read in the `$$<` format CMTrace also reads, with each row's time, offset from UTC, component and thread. Before, each whole row was the message, with no time.
+- `WindowsUpdate.log`, as `Get-WindowsUpdateLog` writes it, has its component, thread ID and process ID in the Component, Thread and Source columns. Before, a colon early in a message made the IDs and the component read as one component, such as `51540 Misc UUS`, and summaries split one problem into several patterns because the IDs' widths vary.
+- winget's logs have their level and component, from the `<I> [CORE]` after each time.
+- Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
+
 **Viewer**
 
 - Selecting the last row of a log that's following new rows, by clicking it or with End, keeps the newest row selected as rows arrive, so the details pane shows each one. Before, the selection stayed on that row as it scrolled away. Any other selection stays where it is.
