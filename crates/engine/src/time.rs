@@ -306,6 +306,12 @@ pub fn parse_msi_date(bytes: &[u8]) -> Option<Stamp> {
     parse_year_last(bytes, dotted).or_else(|| parse_year_last(bytes, !dotted))
 }
 
+/// Reads `MM/DD/YYYY HH:MM:SS.fff`, as the ULS logs of Office and SharePoint
+/// write it whatever the PC's language.
+pub fn parse_month_first(bytes: &[u8]) -> Option<Stamp> {
+    parse_year_last(bytes, false)
+}
+
 /// Reads PowerShell's `20261118154047`, which a transcript's `Start time:`
 /// gives.
 pub fn parse_compact(bytes: &[u8]) -> Option<Stamp> {

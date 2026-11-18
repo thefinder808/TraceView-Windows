@@ -596,7 +596,7 @@ fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
         return fields;
     }
     let parsed = if first.is_ascii_digit() {
-        dated_fields(text)
+        dated_fields(text).or_else(|| uls_fields(text))
     } else if *first == b'{' {
         reporting_events_fields(text)
     } else if *first == b'[' {
@@ -906,12 +906,89 @@ fn dated_component_fields(stamp: Stamp, rest: &[u8]) -> Option<Fields<'_>> {
     })
 }
 
+/// The ULS format of Office's Click-to-Run logs, such as
+/// `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's:
+/// `11/11/2026 13:24:09.703⇥OFFICEC2 (0x8cf8)⇥0x6a00⇥⇥Activity⇥bjtcw⇥Medium⇥msg`.
+/// Its tab-separated fields are the time, process, thread, area, category,
+/// event ID, level and message. The category is the component, and the
+/// process the source.
+fn uls_fields(text: &[u8]) -> Option<Fields<'_>> {
+    let mut parts = text.split(|byte| *byte == b'\t');
+    let time = parts.next()?;
+    let process = parts.next()?;
+    let thread = parts.next()?;
+    let _area = parts.next()?;
+    let category = parts.next()?;
+    let _event = parts.next()?;
+    let level = match trim_spaces(parts.next()?) {
+        b"Critical" => Level::Critical,
+        b"Unexpected" => Level::Error,
+        // Above Medium, but in Click-to-Run logs mostly notes, such as
+        // `Deactivated event detected.`
+        b"Monitorable" | b"High" => Level::Notice,
+        b"Medium" => Level::Info,
+        b"Verbose" | b"VerboseEx" => Level::Debug,
+        _ => return None,
+    };
+    Some(Fields {
+        stamp: time::parse_month_first(time),
+        level,
+        component: trim_spaces(category),
+        thread: trim_spaces(thread),
+        source: trim_spaces(process),
+        message: trim_spaces(parts.next().unwrap_or_default()),
+    })
+}
+
+/// True for a process and thread pair such as `0A1C:0B2C`.
+fn is_hex_pair(text: &[u8]) -> bool {
+    let Some(colon) = memchr::memchr(b':', text) else {
+        return false;
+    };
+    let hex = |part: &[u8]| !part.is_empty() && part.iter().all(u8::is_ascii_hexdigit);
+    hex(&text[..colon]) && hex(&text[colon + 1..])
+}
+
+/// WiX Burn's bootstrapper logs, which the Visual C++ and .NET installers and
+/// the Visual Studio installer write: `[0A1C:0B2C][2026-11-18T12:31:32]i001:
+/// msg`. The process and thread are the thread, and the letter of Burn's
+/// message code says the level: `i` information, `w` a warning and `e` an
+/// error. Without one, the words decide.
+fn burn_fields<'a>(inside: &'a [u8], after: &'a [u8]) -> Option<Fields<'a>> {
+    let rest = after.strip_prefix(b"[")?;
+    let close = memchr::memchr(b']', rest)?;
+    let parsed = time::parse_iso(&rest[..close]).filter(|parsed| parsed.end == close)?;
+    let message = skip_spaces(&rest[close + 1..]);
+    let coded = message.get(4) == Some(&b':') && message[1..4].iter().all(u8::is_ascii_digit);
+    let level = match message.first() {
+        Some(b'i') if coded => Level::Info,
+        Some(b'w') if coded => Level::Warning,
+        Some(b'e') if coded => Level::Error,
+        _ => level::detect(message),
+    };
+    let (thread, component) = if is_hex_pair(inside) {
+        (inside, &b""[..])
+    } else {
+        (&b""[..], inside)
+    };
+    Some(Fields {
+        stamp: Some(parsed.stamp),
+        thread,
+        component,
+        ..Fields::message_only(message, level)
+    })
+}
+
 /// Rows that begin with `[`: `[timestamp tag] [tag] message`,
-/// `[prefix] timestamp message`, or `[LEVEL] message`.
+/// `[prefix] timestamp message`, `[prefix][timestamp]message`, or
+/// `[LEVEL] message`.
 fn bracketed_fields(text: &[u8]) -> Option<Fields<'_>> {
     let close = memchr::memchr(b']', text)?;
     let inside = &text[1..close];
     let after = skip_spaces(&text[close + 1..]);
+    if let Some(fields) = burn_fields(inside, after) {
+        return Some(fields);
+    }
 
     if let Some(parsed) = time::parse_iso(inside) {
         let inner_tag = trim_spaces(&inside[parsed.end..]);
@@ -1318,6 +1395,61 @@ mod tests {
 
         assert_eq!(hint_for(b"2026-01-01 10:00:00 plain text\n"), Hint::None);
         assert_eq!(hint_for(b""), Hint::None);
+    }
+
+    #[test]
+    fn splits_office_uls_rows() {
+        let row = "11/11/2026 13:24:09.703\tOFFICEC2 (0x8cf8)\t0x6a00\t\tActivity\tbjtcw\tMedium\tActivityEnded {\"Name\": \"Office.Telemetry\"}\t\r\n";
+        let parsed = plain(row);
+        assert_eq!(stamp_text(&parsed), "2026-11-11T13:24:09.703");
+        assert_eq!(parsed.level, Level::Info);
+        assert_eq!(parsed.component, b"Activity");
+        assert_eq!(parsed.thread, b"0x6a00");
+        assert_eq!(parsed.source, b"OFFICEC2 (0x8cf8)");
+        assert_eq!(
+            parsed.message,
+            b"ActivityEnded {\"Name\": \"Office.Telemetry\"}"
+        );
+        let level = |word: &str| {
+            let row = format!("11/18/2026 09:30:12.34\tw3wp.exe (0x1234)\t0x5678\tSharePoint Foundation\tGeneral\t8nca\t{word}\tmsg\t");
+            fields(Format::Plain, row.as_bytes(), &CONTEXT).level
+        };
+        assert_eq!(level("Unexpected"), Level::Error);
+        assert_eq!(level("Monitorable"), Level::Notice);
+        assert_eq!(level("High"), Level::Notice);
+        assert_eq!(level("Verbose"), Level::Debug);
+        assert_eq!(level("Critical"), Level::Critical);
+        // A row with tabs but no ULS level reads as before.
+        let other = plain("11/18/2026 09:30:12\ta\tb\tc\td\te\tLoud\tmsg");
+        assert_eq!(other.stamp, None);
+        assert_eq!(other.thread, b"");
+    }
+
+    #[test]
+    fn splits_burn_installer_rows() {
+        let parsed =
+            plain("[0A1C:0B2C][2026-11-18T12:31:32]i001: Burn v3.11.2.4516, Windows v10.0");
+        assert_eq!(stamp_text(&parsed), "2026-11-18T12:31:32.000");
+        assert_eq!(parsed.thread, b"0A1C:0B2C");
+        assert_eq!(parsed.level, Level::Info);
+        assert_eq!(parsed.message, b"i001: Burn v3.11.2.4516, Windows v10.0");
+        assert_eq!(
+            plain("[0A1C:0B2C][2026-11-18T12:31:33]e000: Error 0x80070642: Failed to install MSI package.").level,
+            Level::Error
+        );
+        assert_eq!(
+            plain("[0A1C:0B2C][2026-11-18T12:31:33]w343: Prompt for source of package").level,
+            Level::Warning
+        );
+        // The Visual Studio installer has no codes, so its words decide.
+        let studio = plain("[959c:0018][2026-11-18T12:31:32] Adding orphaned package 'system.diagnostics' to the plan for removal.");
+        assert_eq!(stamp_text(&studio), "2026-11-18T12:31:32.000");
+        assert_eq!(studio.thread, b"959c:0018");
+        assert_eq!(studio.level, Level::Info);
+        let tagged = plain("[setup][2026-11-18T12:31:32] warning: low disk");
+        assert_eq!(tagged.component, b"setup");
+        assert_eq!(tagged.level, Level::Warning);
+        assert_eq!(plain("[0A1C:0B2C][not a time] x").stamp, None);
     }
 
     #[test]
