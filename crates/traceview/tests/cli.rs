@@ -888,6 +888,79 @@ fn matches_can_be_counted_instead_of_listed() {
 }
 
 #[test]
+fn first_line_keeps_wmi_dumps_out_of_matches_and_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("CcmNotificationAgent.log");
+    let text = [
+        sccm_row("Notification received for CCM_Application ScopeId_1", 20, 1),
+        sccm_row(
+            "Event object details:\r\ninstance of CCM_InstanceEvent\r\n{\r\n\tClassName = \"CCM_Application\";\r\n};",
+            21,
+            1,
+        ),
+        sccm_row("Done", 22, 1),
+    ]
+    .concat();
+    std::fs::write(&path, text).unwrap();
+    let path = path.to_str().unwrap();
+    let query = |more: &[&str]| {
+        let mut args = vec![
+            "query",
+            path,
+            "--format",
+            "lines",
+            "--no-header",
+            "--fields",
+            "row,message",
+        ];
+        args.extend_from_slice(more);
+        lines_of(&args)
+    };
+
+    // Without it, the dump matches on its body, and prints whole.
+    let all = query(&["--text", "ccm_application"]);
+    assert_eq!(all.len(), 2);
+    assert!(
+        all[1].contains("\\ninstance of CCM_InstanceEvent"),
+        "{}",
+        all[1]
+    );
+    // With it, only first lines match, and rows show only their first line.
+    assert_eq!(
+        query(&["--text", "ccm_application", "--first-line"]),
+        ["1 | Notification received for CCM_Application ScopeId_1"]
+    );
+    assert_eq!(
+        query(&["--text", "done", "--first-line", "--context", "1"]),
+        ["  2 | Event object details: [+4 lines]", "3 | Done"]
+    );
+    let json = stdout_json(&traceview(&[
+        "query",
+        path,
+        "--text",
+        "event object",
+        "--first-line",
+    ]));
+    let row = &json["result"]["rows"][0];
+    assert_eq!(row["message"], "Event object details:");
+    assert_eq!(row["more_lines"], 4);
+    // Without it, JSON is as it was.
+    let plain = stdout_json(&traceview(&["query", path, "--text", "event object"]));
+    assert!(plain["result"]["rows"][0].get("more_lines").is_none());
+    // Counting matches the same way.
+    let counted = stdout_json(&traceview(&[
+        "query",
+        path,
+        "--text",
+        "ccm_application",
+        "--first-line",
+        "--count-by",
+        "level",
+    ]));
+    assert_eq!(counted["result"]["total_matches"], 1);
+}
+
+#[test]
 fn windows_update_reporting_events_are_read_as_rows() {
     // Windows writes ReportingEvents.log in UTF-16, with a byte order mark.
     let text = concat!(
@@ -1291,6 +1364,7 @@ fn incorrect_usage_exits_with_code_two() {
         &["query", path, "--context", "51"],
         &["query", path, "--context", "some"],
         &["summarize", path, "--context", "2"],
+        &["summarize", path, "--first-line"],
         &["query", path, "--exclude"],
         &["query", path, "--unless-followed-by", "done"],
         &["summarize", path, "--unless-followed-by", "done"],

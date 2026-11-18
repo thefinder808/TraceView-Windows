@@ -145,6 +145,8 @@ Give `--text` or `--regex` more than once, or both, to find only the rows matchi
 .\traceview.exe summarize C:\Windows\CCM\Logs --exclude "ReadStringFromFile failed" --exclude "PeerDistribution" --format lines
 ```
 
+Some ConfigMgr entries span many lines, such as the WMI dumps in `CcmNotificationAgent.log` and `SCNotify.log`, so a search can match deep inside them and flood the results. `query --first-line` matches and shows only each row's first line, with a count of the lines left out, as in `Event object details: [+14 lines]`. It's off unless asked for, as the detail is sometimes in the body, such as an exit code.
+
 `--unless-followed-by` finds what started but never finished: each match with no row containing that text after it, before the next match, in the same log. It finds the closing rows whatever other filters say, so an info row still closes an error:
 
 ```powershell

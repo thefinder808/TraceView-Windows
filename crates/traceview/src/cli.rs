@@ -54,6 +54,9 @@ Query options:
                        than once, or together, --text and --regex find rows
                        matching every one
   --case-sensitive     Match case exactly
+  --first-line         Match and show only each row's first line, for logs
+                       whose entries span lines, such as SCCM's WMI dumps.
+                       Lines say how many were left out, as in [+14 lines]
   --min-level <level>  debug, info, notice, warning, error or critical
   --level <level>      Only rows at exactly this level
   --component <name>   Only this component
@@ -415,6 +418,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
             }
             "--unless-followed-by" if is_query => unless_followed_by = Some(value(&arg)?),
             "--case-sensitive" if is_query => query.case_sensitive = true,
+            "--first-line" if is_query => query.first_line = true,
             "--min-level" if is_query => query.min_level = Some(parse_level(&value(&arg)?)?),
             "--level" if is_query => query.level = Some(parse_level(&value(&arg)?)?),
             "--component" if is_query => query.component = Some(value(&arg)?),
@@ -1276,6 +1280,11 @@ fn row_line(
             line.push_str(" | ");
         }
         line.push_str(&one_line(&record.message));
+        match record.more_lines {
+            0 => {}
+            1 => line.push_str(" [+1 line]"),
+            more => line.push_str(&format!(" [+{more} lines]")),
+        }
         if record.truncated {
             line.push_str(" [cut]");
         }
@@ -1581,6 +1590,7 @@ impl Search {
                     text: Some(text.to_string()),
                     regex: request.regex,
                     case_sensitive: request.case_sensitive,
+                    first_line: request.first_line,
                     ..Query::default()
                 })
             })
@@ -2041,7 +2051,7 @@ fn merged_query(
     let start = request.offset.min(rows.len());
     let end = start.saturating_add(limit).min(rows.len());
     let (mut buffer, mut scratch) = (Vec::new(), Vec::new());
-    let page = rows[start..end]
+    let mut page = rows[start..end]
         .iter()
         .map(|(index, row)| {
             let log = &opened[*index];
@@ -2092,6 +2102,16 @@ fn merged_query(
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
+    // With --first-line, rows show only the line they were matched on, and
+    // the rows around them are cut the same way.
+    if request.first_line {
+        for row in &mut page {
+            row.record.keep_first_line();
+            for near in row.before.iter_mut().chain(row.after.iter_mut()).flatten() {
+                near.keep_first_line();
+            }
+        }
+    }
     Ok(MergedResult {
         total_rows: opened.iter().map(|log| log.log.rows() as u64).sum(),
         total_matches: rows.len() as u64,
