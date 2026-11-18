@@ -5,11 +5,10 @@
 use crate::encoding::Encoding;
 use crate::level::Level;
 use crate::parse::{self, Format, ParseContext};
-use crate::reader;
+use crate::reader::Source;
 use crate::time::Stamp;
 use memchr::memmem::Finder;
 use rayon::prelude::*;
-use std::fs::File;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -130,7 +129,7 @@ fn unpack(packed: [u8; 5]) -> u64 {
 
 /// Everything a chunk needs in order to find and analyze rows.
 struct Scanner<'a> {
-    file: &'a File,
+    source: Source<'a>,
     len: u64,
     layout: Layout,
     context: &'a ParseContext,
@@ -174,7 +173,7 @@ impl Scanner<'_> {
         let read_start = if chunk == 0 { start } else { start - unit };
         let read_end = (end + self.lookahead as u64).min(self.len);
         buffer.resize((read_end - read_start) as usize, 0);
-        let filled = reader::read_at(self.file, read_start, buffer)?;
+        let filled = self.source.read_at(read_start, buffer)?;
         buffer.truncate(filled);
 
         let mut rows = RowArrays::default();
@@ -208,7 +207,7 @@ impl Scanner<'_> {
 /// Reads and analyzes rows from `from` to `len` in parallel. `from` must be the
 /// start of a row.
 pub(crate) fn scan(
-    file: &File,
+    source: Source<'_>,
     len: u64,
     layout: Layout,
     context: &ParseContext,
@@ -216,13 +215,13 @@ pub(crate) fn scan(
     progress: &AtomicU64,
 ) -> io::Result<RowArrays> {
     scan_with_sizes(
-        file, len, layout, context, from, progress, CHUNK_SIZE, LOOKAHEAD,
+        source, len, layout, context, from, progress, CHUNK_SIZE, LOOKAHEAD,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn scan_with_sizes(
-    file: &File,
+    source: Source<'_>,
     len: u64,
     layout: Layout,
     context: &ParseContext,
@@ -237,7 +236,7 @@ fn scan_with_sizes(
         Format::Sccm => encoding.encode_ascii(b"\n<![LOG["),
     };
     let scanner = Scanner {
-        file,
+        source,
         len,
         layout,
         context,
@@ -305,17 +304,25 @@ mod tests {
             body_offset,
             format_key: 0,
         };
-        let rows = scan_with_sizes(
-            &file,
-            bytes.len() as u64,
-            layout,
-            &CONTEXT,
-            body_offset,
-            &AtomicU64::new(0),
-            chunk_size,
-            lookahead,
-        )
-        .unwrap();
+        let scan = |source| {
+            scan_with_sizes(
+                source,
+                bytes.len() as u64,
+                layout,
+                &CONTEXT,
+                body_offset,
+                &AtomicU64::new(0),
+                chunk_size,
+                lookahead,
+            )
+            .unwrap()
+        };
+        let rows = scan(Source::File(&file));
+        // A log read whole first scans the same as one read in parts.
+        let from_memory = scan(Source::Bytes(bytes));
+        assert_eq!(rows.offsets, from_memory.offsets);
+        assert_eq!(rows.levels, from_memory.levels);
+        assert_eq!(rows.times, from_memory.times);
         let contents = (0..rows.rows())
             .map(|row| {
                 let start = rows.offset(row) as usize;
