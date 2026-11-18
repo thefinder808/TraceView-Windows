@@ -162,6 +162,18 @@ WUAHandler.log:1307 … [still open at the end of the log] | Async installation 
 
 In JSON, each match has `unclosed`, either `started_again` with a `next_match`, or `still_open`, and the result counts each kind.
 
+`trace` follows one ID, such as a deployment type, update or job GUID, through every log. It lists each row with that ID as one timeline, with each row's log, and folds runs of the same message from one log into one line that says how many. The ID can be given with or without braces, in any case. It takes query's options, such as `--recurse`, `--from`, `--to` and `--text` to narrow it:
+
+```powershell
+.\traceview.exe trace 3DA21691-E39D-4DA6-8A4B-B43877BCB1B7 C:\Windows\CCM\Logs --format lines
+```
+
+```
+# Trace of "3DA21691-…": 412 rows in 7 logs, … as 57 lines, with runs of the same message folded. …
+# In: AppDiscovery.log 120, AppEnforce.log 30, …
+AppDiscovery.log:4 2026-11-16T08:53:14.000-06:00 INFO AppDiscovery 7 [2 more like it, to row 6 (08:53:18)] | Waiting for job …
+```
+
 Rows show the time as the log wrote it, plus its offset from UTC when the log says, as ConfigMgr and Intune logs do: `2026-11-01T01:30:00.000-05:00`. That keeps the hour repeated when clocks go back apart, and makes logs from PCs in other time zones safe to compare. `--from` and `--to` still use the log's own clock.
 
 `lookup` explains an error code with Windows' own text, including WMI's. Windows has no text for Windows Update (0x8024…) and Delivery Optimization (0x80D0…) codes, so for those it gives the code's name, such as `DO_E_DOWNLOAD_NO_PROGRESS`. On a ConfigMgr client or site server, ConfigMgr's own codes (0x87D0…) and many Windows Update codes also get English text from the copy of CMTrace that ConfigMgr installs. On another PC, such as one you copy logs to, put a copy of `CMTrace.exe` in the folder holding `traceview.exe` for the same text. After `traceview setup`, that's `%LOCALAPPDATA%\Programs\TraceView`. TraceView only reads that file, and never runs it:

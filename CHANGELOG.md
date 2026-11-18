@@ -32,7 +32,8 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - `--unless-followed-by` says why nothing closed each match it finds. Either the same thing started again first, and whether that one finished, or it's still open at the end of its log. Before, an attempt that was abandoned and then retried successfully looked the same as one that hung. In lines, a label in brackets says which, and the header counts each. In JSON, it's `unclosed` and `next_match`, with the counts as `started_again` and `still_open`.
 - `query --count-by template` gives each template its first row as an example, with its log and row number, so the versions, KB numbers and codes a template takes out can still be read. `7-Zip 26.04 (MSI-x64)` used to show only as `<n>-Zip <n>.<n> (MSI-x<n>)`. `--no-examples` leaves them out.
 - `query --first-line` matches and shows only each row's first line, for SCCM entries that span many lines, such as WMI dumps, which used to match deep inside and flood results. Lines say how many were left out, as in `[+14 lines]`, and JSON has `more_lines`. It's off unless asked for.
-- The AI agent skill mentions `--first-line`, gaps, `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
+- `traceview trace <id> <logs or folders>` follows one ID, such as a deployment, update or job GUID, through every log. It lists each row with that ID as one timeline, each with its log, and folds runs of the same message from one log into one line that says how many, as in `[2 more like it, to row 6 (08:53:18)]`. A header names the logs it's in. Before, this took `query --recurse --text <id>` and reading every repeat.
+- The AI agent skill mentions `trace`, `--first-line`, gaps, `--context`, giving `--text` more than once, and `--fields` and `--max-width` for keeping lines short. Run `traceview setup` again to update it.
 
 ## 0.10.0
 
