@@ -7,6 +7,7 @@
 
 use crate::gui::places;
 use crate::setup;
+use crate::symptoms::{self, Found};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
@@ -99,6 +100,10 @@ Summarize options:
                        per pattern, without examples
   --no-examples        Leave out each pattern's example row from the JSON. It
                        also works for query --count-by template
+  --symptoms           Also look for signs of trouble that ConfigMgr logs at
+                       info level, which problem patterns leave out, such as
+                       an update assignment \"already in progress\", with what
+                       each can mean. Some are common in healthy logs too
 
 With --format lines:
   --no-header          Leave out the lines starting with #, which say what
@@ -249,6 +254,8 @@ struct Shape {
     newest_first: bool,
     /// Rows to show before and after each match, from its own log.
     context: usize,
+    /// For summaries: look for signs of trouble logged at info level.
+    symptoms: bool,
     no_examples: bool,
     header: bool,
     /// Every field when None.
@@ -263,6 +270,7 @@ impl Default for Shape {
             count_by: None,
             newest_first: false,
             context: 0,
+            symptoms: false,
             no_examples: false,
             header: true,
             fields: None,
@@ -407,6 +415,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 shape.max_width = Some(width);
             }
             "--no-examples" => shape.no_examples = true,
+            "--symptoms" if !is_query => shape.symptoms = true,
             "--newest-first" if is_query => shape.newest_first = true,
             "--context" if is_query => {
                 shape.context = parse_number(&arg, &value(&arg)?)?;
@@ -591,6 +600,9 @@ struct SummaryOutput<'a> {
     codes: Vec<CodeInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     excluded: Option<Excluded>,
+    /// With `--symptoms`, signs of trouble logged at info level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symptoms: Option<Vec<Found>>,
 }
 
 /// The rows `--exclude` left out of a summary, so it never hides problems
@@ -813,6 +825,9 @@ struct LogsSummaryOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     notes: Vec<String>,
     result: LogsSummary,
+    /// With `--symptoms`, signs of trouble logged at info level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symptoms: Option<Vec<Found>>,
 }
 
 #[derive(Serialize)]
@@ -1444,6 +1459,8 @@ struct SummaryView<'a> {
     several: bool,
     gaps: &'a [Gap],
     other_gaps: usize,
+    /// With `--symptoms`, the signs found, or an empty list if none were.
+    symptoms: Option<&'a [Found]>,
     patterns: Vec<(&'a str, &'a Pattern)>,
     spikes: &'a [Spike],
     codes: &'a [CodeInfo],
@@ -1514,6 +1531,26 @@ fn summary_lines(view: &SummaryView, shape: &Shape) -> Vec<String> {
                 one_line(&pattern.template)
             ))
         }));
+    }
+    match view.symptoms {
+        Some([]) => lines.push("# Signs of trouble logged as info: none found.".to_string()),
+        Some(found) => {
+            lines.push(
+                "# Signs of trouble logged as info: count last_seen file | sign: what it can mean"
+                    .to_string(),
+            );
+            lines.extend(found.iter().map(|found| {
+                shape.fit(format!(
+                    "{} {} {} | {}: {}",
+                    found.count,
+                    found.last_seen.as_deref().unwrap_or("-"),
+                    found.file,
+                    found.sign,
+                    found.meaning
+                ))
+            }));
+        }
+        None => {}
     }
     if !view.spikes.is_empty() {
         lines.push("# Error spikes: minute errors rows usual_errors_per_minute".to_string());
@@ -2478,6 +2515,34 @@ fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> E
         Ok(result) => result,
         Err(error) => return fail(query_failure(&error)),
     };
+    let symptoms = if shape.symptoms {
+        // Rotated copies count as part of their log, named as in the summary:
+        // by the current log, or else the first copy.
+        let families: Vec<String> = opened
+            .iter()
+            .map(|file| log_family(file.log.path()))
+            .collect();
+        let logs: Vec<(String, &LogFile)> = opened
+            .iter()
+            .zip(&families)
+            .map(|(file, family)| {
+                let named = opened
+                    .iter()
+                    .zip(&families)
+                    .filter(|(_, other)| *other == family)
+                    .map(|(other, _)| other)
+                    .find(|other| !is_rotated_copy(other.log.path()))
+                    .unwrap_or(file);
+                (named.label.clone(), &file.log)
+            })
+            .collect();
+        match symptoms::find(&logs, range) {
+            Ok(found) => Some(found),
+            Err(error) => return fail(query_failure(&error)),
+        }
+    } else {
+        None
+    };
     if shape.form == Form::Lines {
         let mut notes: Vec<String> = notes.iter().map(|note| format!("Note: {note}")).collect();
         notes.extend(
@@ -2509,6 +2574,7 @@ fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> E
             several: true,
             gaps: &result.gaps,
             other_gaps: result.other_gaps,
+            symptoms: symptoms.as_deref(),
             patterns: result
                 .problem_patterns
                 .iter()
@@ -2532,6 +2598,7 @@ fn run_summarize(common: &Common, top: usize, range: &Query, shape: &Shape) -> E
             skipped,
             notes,
             result,
+            symptoms,
         },
         common.pretty,
     ))
@@ -2549,9 +2616,16 @@ fn summarize_one(
         Err(failure) => return fail(failure),
     };
     let summarized = summary::summarize_matching(&log, top, range, &Control::default())
-        .and_then(|summary| Ok((summary, excluded_in(&[&log], range)?)));
+        .and_then(|summary| Ok((summary, excluded_in(&[&log], range)?)))
+        .and_then(|(summary, excluded)| {
+            let symptoms = shape
+                .symptoms
+                .then(|| symptoms::find(&[(file_name_of(path), &log)], range))
+                .transpose()?;
+            Ok((summary, excluded, symptoms))
+        });
     match summarized {
-        Ok((mut result, excluded)) => {
+        Ok((mut result, excluded, symptoms)) => {
             let codes = codes_in(
                 result
                     .problem_patterns
@@ -2571,6 +2645,7 @@ fn summarize_one(
                     several: false,
                     gaps: &result.gaps,
                     other_gaps: result.other_gaps,
+                    symptoms: symptoms.as_deref(),
                     patterns: result
                         .problem_patterns
                         .iter()
@@ -2598,6 +2673,7 @@ fn summarize_one(
                     result,
                     codes,
                     excluded,
+                    symptoms,
                 },
                 common.pretty,
             ))

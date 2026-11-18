@@ -713,6 +713,7 @@ version = "0.10.0"
 dependencies = [
  "accesskit",
  "png",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
