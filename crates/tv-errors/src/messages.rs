@@ -156,8 +156,8 @@ fn module(table: Table) -> Option<HMODULE> {
     address.map(|address| HMODULE(std::ptr::with_exposed_provenance_mut(address)))
 }
 
-/// Says whether a table's DLL could be loaded, for tests and diagnostics.
-#[cfg(test)]
+/// Says whether a table's DLL could be loaded, or CMTrace read: for the hint
+/// that CMTrace has ConfigMgr's text, and for tests.
 pub(crate) fn is_available(table: Table) -> bool {
     match table {
         Table::System => true,
