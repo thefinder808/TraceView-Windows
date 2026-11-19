@@ -359,6 +359,18 @@ impl Tab {
         }
     }
 
+    /// The title split so its tab can shorten the file name and keep the
+    /// machine whole: ("WUAHandler.log", " (SRV01)"). The second part is
+    /// empty for a log on this PC, or a merged tab.
+    pub fn title_parts(&self) -> (String, String) {
+        if let [path] = self.paths.as_slice() {
+            if let (Some(name), Some(machine)) = (path.file_name(), machine(path)) {
+                return (name.to_string_lossy().into_owned(), format!(" ({machine})"));
+            }
+        }
+        (self.title(), String::new())
+    }
+
     pub fn document(&self) -> Option<&Document> {
         match &self.content {
             Content::Ready(document) => Some(document),
@@ -1149,5 +1161,28 @@ mod tests {
             tab.title(),
             "WUAHandler.log (SRV01) + WUAHandler.log (SRV02)"
         );
+    }
+
+    #[test]
+    fn a_tabs_title_parts_split_off_its_machine() {
+        let parts = |paths: &[&str]| {
+            let tab = Tab {
+                paths: paths.iter().map(PathBuf::from).collect(),
+                ..Tab::open(Vec::new(), Vec::new(), &Waker::detached())
+            };
+            let (title, suffix) = tab.title_parts();
+            assert_eq!(format!("{title}{suffix}"), tab.title());
+            (title, suffix)
+        };
+        let remote = r"\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log";
+        assert_eq!(
+            parts(&[remote]),
+            ("WUAHandler.log".to_string(), " (SRV01)".to_string())
+        );
+        assert_eq!(
+            parts(&[r"C:\Logs\a.log"]),
+            ("a.log".to_string(), String::new())
+        );
+        assert_eq!(parts(&[remote, remote]).1, "");
     }
 }
