@@ -10,7 +10,7 @@
 use super::app::readable_size;
 use super::places::{FolderJob, LogEntry, Place};
 use super::settings::Settings;
-use super::tab::file_name;
+use super::tab::{display_name, file_name};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -307,7 +307,7 @@ impl Home {
     pub fn title(&self) -> String {
         self.folder.as_ref().map_or_else(
             || "TraceView".to_string(),
-            |folder| folder_name(&folder.path),
+            |folder| display_name(&folder.path),
         )
     }
 
