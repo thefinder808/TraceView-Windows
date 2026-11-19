@@ -177,6 +177,8 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | ULS: Office Click-to-Run and SharePoint | `11/11/2026 13:24:09.703⇥OFFICEC2 (0x8cf8)⇥0x6a00⇥⇥Activity⇥bjtcw⇥Medium⇥msg` | Tab-separated, with the date month first. The category is the component, the process the source. `Unexpected` is an error, `Monitorable` and `High` notices, `Medium` information and `Verbose` debug |
 | WiX Burn and the Visual Studio installer | `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg` | The process and thread are the thread. The letter of Burn's message code is the level: `i` information, `w` a warning, `e` an error. The Visual Studio installer writes no code, so its words decide |
 | W3C extended: IIS and Windows Firewall | `2026-11-18 14:05:09 10.0.0.5 GET /SMS_MP/.sms_aut MPLIST 80 - 10.0.0.9 … 500 0 0 15` | Read by the columns the `#Fields:` line names. The rest of the row after the date and time is the message, and the client's address the source. IIS: the page is the component, a 5xx status an error and 4xx a warning, except 401, the challenge every Windows-authenticated request gets first. Its times are UTC, so rows say `+00:00`. Windows Firewall: the action is the component, `DROP` and `INFO-EVENTS-LOST` warnings, and the process ID the thread. Its `#Time Format: Local` keeps its times local |
+| Group Policy debug logs, such as `gpsvc.log` | `GPSVC(188c.25d8) 2026-01-30 11:13:17:216 ProcessGPOs(Machine): msg` | The name before the brackets is the component, and the process and thread IDs the thread. Windows 11 added the date in late 2025, and the month and day can be one digit. Older rows give only a time of day, which stays at the start of the message, as it can't be placed on a timeline. The words decide the level, except that `Verbose` isn't debug |
+| Netlogon, `netlogon.log` | `01/31 13:56:53 [LOGON] [2632] CONTOSO: SamLogon: … Returns 0xC000006A` | Year from the file's date. The category is the component, and the number some versions write after it the thread. `[CRITICAL]` is an error, and a request that returns an NTSTATUS error, `Returns 0xC…`, such as a failed logon, a warning |
 | Classic syslog | `Apr 23 14:25:00 host proc[1]: msg` | Year from the file's date |
 | Dated syslog | `2026-03-08 13:46:47-07 host proc[1]: msg` | |
 | Bracketed timestamp | `[2026-04-19 19:54:24.115] [info] msg` | |
@@ -186,7 +188,7 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | Custom | Defined by a pattern in `traceview.toml` or Tools > Log formats | One row per line |
 | Anything else | Bare text | Severity from keywords |
 
-Not yet supported, from testing against real logs and the Mac app's list: JSON lines, CSV, and `netlogon.log` and `gpsvc.log`, whose debug logging is off by default. In `setupapi` logs, rows inside a section have no time. `DirectX.log`'s `MM/DD/YY` dates aren't parsed, so its rows have no time.
+Not yet supported, from testing against real logs and the Mac app's list: JSON lines and CSV. `netlogon.log` and `gpsvc.log` were written from Microsoft's published examples, as their debug logging is off by default and turning it on changes the PC's settings. In `setupapi` logs, rows inside a section have no time. `DirectX.log`'s `MM/DD/YY` dates aren't parsed, so its rows have no time.
 
 ## Command line
 

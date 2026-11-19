@@ -312,6 +312,44 @@ pub fn parse_month_first(bytes: &[u8]) -> Option<Stamp> {
     parse_year_last(bytes, false)
 }
 
+/// Reads the date and time Group Policy's debug logs write, as in
+/// `2026-01-30 11:13:17:216`, given as its two words. The month and day can
+/// be one digit, as in `2026-1-30`.
+pub fn parse_group_policy(date: &[u8], time: &[u8]) -> Option<Stamp> {
+    let mut parts = date.split(|byte| *byte == b'-');
+    let mut next = |most: usize| -> Option<u32> {
+        let part = parts
+            .next()
+            .filter(|part| (1..=most).contains(&part.len()))?;
+        digits(part, 0, part.len())
+    };
+    let (year, month, day) = (next(4)?, next(2)?, next(2)?);
+    if year < 1000 || parts.next().is_some() {
+        return None;
+    }
+    let (seconds, millis) = parse_time_of_day(time)?;
+    Stamp::from_parts(
+        year as i32,
+        month,
+        day,
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60,
+        millis,
+    )
+}
+
+/// Reads Netlogon's `01/31 13:56:53`, given as its two words. It has no year,
+/// so that comes from the file's date, as for syslog.
+pub fn parse_netlogon(date: &[u8], time: &[u8], hint: YearHint) -> Option<Stamp> {
+    if date.len() != 5 || date[2] != b'/' || time.len() != 8 {
+        return None;
+    }
+    let (month, day) = (digits(date, 0, 2)?, digits(date, 3, 2)?);
+    let (hour, minute, second, _, _) = clock(time, 0)?;
+    Stamp::from_parts(hint.year_for(month), month, day, hour, minute, second, 0)
+}
+
 /// Reads PowerShell's `20261118154047`, which a transcript's `Start time:`
 /// gives.
 pub fn parse_compact(bytes: &[u8]) -> Option<Stamp> {

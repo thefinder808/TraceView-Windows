@@ -738,13 +738,17 @@ fn plain_fields<'a>(line: &'a [u8], context: &ParseContext) -> Fields<'a> {
         return fields;
     }
     let parsed = if first.is_ascii_digit() {
-        dated_fields(text).or_else(|| uls_fields(text))
+        dated_fields(text)
+            .or_else(|| netlogon_fields(text, context))
+            .or_else(|| uls_fields(text))
     } else if *first == b'{' {
         reporting_events_fields(text)
     } else if *first == b'[' {
         bracketed_fields(text)
     } else if first.is_ascii_alphabetic() {
-        syslog_fields(text, context).or_else(|| logfmt_fields(text))
+        group_policy_fields(text)
+            .or_else(|| syslog_fields(text, context))
+            .or_else(|| logfmt_fields(text))
     } else {
         None
     };
@@ -804,6 +808,84 @@ fn syslog_fields<'a>(text: &'a [u8], context: &ParseContext) -> Option<Fields<'a
     Some(Fields {
         stamp: Some(stamp),
         component: name,
+        ..Fields::message_only(message, level)
+    })
+}
+
+/// Group Policy's debug logs, such as `gpsvc.log`:
+/// `GPSVC(188c.25d8) 2026-01-30 11:13:17:216 ProcessGPOs(Machine): message`.
+/// The name before the brackets is the component, and the process and thread
+/// IDs inside them the thread. Windows 11 added the date in late 2025. Older
+/// rows give only a time of day, which can't be placed on a timeline, so it's
+/// left at the start of their message.
+fn group_policy_fields(text: &[u8]) -> Option<Fields<'_>> {
+    let open = memchr::memchr(b'(', &text[..text.len().min(17)])?;
+    let name = &text[..open];
+    if name.is_empty() || !name.iter().all(u8::is_ascii_alphabetic) {
+        return None;
+    }
+    let close = open + memchr::memchr(b')', &text[open..])?;
+    let ids = &text[open + 1..close];
+    let (process, thread) = ids.split_at(memchr::memchr(b'.', ids)?);
+    let is_id = |id: &[u8]| (1..=8).contains(&id.len()) && id.iter().all(u8::is_ascii_hexdigit);
+    if !is_id(process) || !is_id(&thread[1..]) {
+        return None;
+    }
+    let rest = text[close + 1..].strip_prefix(b" ")?;
+    let (first, after) = split_word(rest).unwrap_or((rest, &b""[..]));
+    let (stamp, message) = if first.contains(&b'-') {
+        let (time, message) = split_word(after).unwrap_or((after, &b""[..]));
+        (Some(time::parse_group_policy(first, time)?), message)
+    } else {
+        time::parse_time_of_day(first)?;
+        (None, rest)
+    };
+    let message = trim_spaces(message);
+    // The whole log is verbose output, so rows such as `Verbose output to
+    // eventlog requested` aren't debug.
+    let level = match level::detect(message) {
+        Level::Debug => Level::Info,
+        found => found,
+    };
+    Some(Fields {
+        stamp,
+        component: name,
+        thread: ids,
+        ..Fields::message_only(message, level)
+    })
+}
+
+/// Netlogon's debug log, `netlogon.log`:
+/// `01/31 13:56:53 [LOGON] [2632] CONTOSO: SamLogon: ... Returns 0xC000006A`.
+/// The category is the component, and the number some versions write after
+/// it the thread. `[CRITICAL]` rows are errors, and a request that returns an
+/// NTSTATUS error, `0xC…`, such as a failed logon, is a warning.
+fn netlogon_fields<'a>(text: &'a [u8], context: &ParseContext) -> Option<Fields<'a>> {
+    let (date, rest) = split_word(text)?;
+    let (time, rest) = split_word(rest).unwrap_or((rest, &b""[..]));
+    let stamp = time::parse_netlogon(date, time, context.year_hint)?;
+    let bracketed = |text: &'a [u8], wanted: fn(&u8) -> bool| -> Option<(&'a [u8], &'a [u8])> {
+        let inside = text.strip_prefix(b"[")?;
+        let close = memchr::memchr(b']', &inside[..inside.len().min(24)])?;
+        let word = &inside[..close];
+        (!word.is_empty() && word.iter().all(wanted))
+            .then(|| (word, skip_spaces(&inside[close + 1..])))
+    };
+    let is_category = |byte: &u8| byte.is_ascii_uppercase() || *byte == b'_';
+    let (component, rest) = bracketed(rest, is_category).unwrap_or((&b""[..], rest));
+    let (thread, message) = bracketed(rest, u8::is_ascii_digit).unwrap_or((&b""[..], rest));
+    let message = trim_spaces(message);
+    let level = if component == b"CRITICAL" {
+        Level::Error
+    } else if memmem::find(message, b"Returns 0xC").is_some() {
+        Level::Warning
+    } else {
+        level::detect(message)
+    };
+    Some(Fields {
+        stamp: Some(stamp),
+        component,
+        thread,
         ..Fields::message_only(message, level)
     })
 }
@@ -1957,5 +2039,87 @@ mod tests {
             let _ = plain(row);
             let _ = fields(Format::Sccm, row.as_bytes(), &CONTEXT);
         }
+    }
+
+    #[test]
+    fn group_policy_rows_have_their_time_service_and_ids() {
+        let parsed =
+            plain("GPSVC(188c.25d8) 2026-01-30 11:13:17:216 ProcessGPOs(Machine): Verbose output to eventlog requested.");
+        assert_eq!(stamp_text(&parsed), "2026-01-30T11:13:17.216");
+        assert_eq!(parsed.component, b"GPSVC");
+        assert_eq!(parsed.thread, b"188c.25d8");
+        assert_eq!(
+            parsed.message,
+            b"ProcessGPOs(Machine): Verbose output to eventlog requested."
+        );
+        assert_eq!(parsed.level, Level::Info);
+
+        // The month and day can be one digit, and other Group Policy logs
+        // write the same way.
+        let parsed = plain("GPSVC(4b4.5dc) 2026-1-30 07:43:27:860 ProcessGPO(Machine):");
+        assert_eq!(stamp_text(&parsed), "2026-01-30T07:43:27.860");
+        let parsed = plain("GPMC(5ac.8f0) 2026-01-30 11:13:47:878 Opening the GPO failed");
+        assert_eq!(parsed.component, b"GPMC");
+        assert_eq!(parsed.level, Level::Error);
+
+        // Before the date was added, a row's time of day stays in its message.
+        let parsed = plain("GPSVC(1a4.230) 08:41:26:451 ProcessGPOs(User): Processing ended.");
+        assert_eq!(parsed.stamp, None);
+        assert_eq!(parsed.component, b"GPSVC");
+        assert_eq!(parsed.thread, b"1a4.230");
+        assert_eq!(
+            parsed.message,
+            b"08:41:26:451 ProcessGPOs(User): Processing ended."
+        );
+
+        // Other text with brackets isn't taken for it.
+        for row in [
+            "Function(arg) returned 5",
+            "GPSVC(xyz.1) 2026-01-30 11:13:17:216 a",
+            "GPSVC(1a4.230) later today",
+            "GPSVC(1a4.230)2026-01-30 11:13:17:216 a",
+        ] {
+            assert_ne!(plain(row).component, b"GPSVC", "{row}");
+        }
+    }
+
+    #[test]
+    fn netlogon_rows_have_their_time_category_and_thread() {
+        let parsed = plain(
+            "01/31 13:56:53 [SESSION] CONTOSO: NlSetStatusClientSession: Set connection status to 0",
+        );
+        // The year is the file's, as for syslog.
+        assert_eq!(stamp_text(&parsed), "2026-01-31T13:56:53.000");
+        assert_eq!(parsed.component, b"SESSION");
+        assert_eq!(parsed.thread, b"");
+        assert_eq!(
+            parsed.message,
+            b"CONTOSO: NlSetStatusClientSession: Set connection status to 0"
+        );
+        assert_eq!(parsed.level, Level::Info);
+
+        // Later versions write a thread, and a failed request is a warning.
+        let parsed = plain(
+            r"11/18 08:44:11 [LOGON] [2632] CONTOSO: SamLogon: Transitive Network logon of CONTOSO\pat from WKS01 Returns 0xC000006A",
+        );
+        assert_eq!(stamp_text(&parsed), "2025-11-18T08:44:11.000");
+        assert_eq!(parsed.component, b"LOGON");
+        assert_eq!(parsed.thread, b"2632");
+        assert_eq!(parsed.level, Level::Warning);
+        assert_eq!(
+            plain("11/18 08:44:11 [LOGON] [2632] CONTOSO: SamLogon: Returns 0x0").level,
+            Level::Info
+        );
+
+        let parsed = plain("01/31 13:56:53 [CRITICAL] NlDiscoverDc: Cannot find DC.");
+        assert_eq!(parsed.level, Level::Error);
+        let parsed = plain("01/31 13:56:53 NO_CLIENT_SITE: WKS01 10.0.0.5");
+        assert_eq!(parsed.component, b"");
+        assert_eq!(parsed.message, b"NO_CLIENT_SITE: WKS01 10.0.0.5");
+        assert!(parsed.stamp.is_some());
+
+        // A date that can't be one isn't taken for it.
+        assert_eq!(plain("13/31 13:56:53 [LOGON] text").stamp, None);
+        assert_eq!(plain("01/31 13:56 [LOGON] text").component, b"");
     }
 }
