@@ -7,6 +7,7 @@ mod file_types;
 mod input;
 pub mod metrics;
 mod shell;
+pub mod time_zone;
 mod user_path;
 mod window;
 

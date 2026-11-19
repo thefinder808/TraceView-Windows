@@ -7,7 +7,7 @@ use crate::index::{self, Layout, RowArrays};
 use crate::level::Level;
 use crate::parse::{self, Fields, Format, Hint, ParseContext};
 use crate::reader::{self, Source};
-use crate::time::YearHint;
+use crate::time::{self, YearHint};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io;
@@ -160,15 +160,22 @@ fn detect_layout(
         Some(_) => Format::Custom,
         None => parse::detect_format(text),
     };
+    let hint = match format {
+        Format::Plain => parse::hint_for(text),
+        Format::Sccm | Format::Custom => Hint::None,
+    };
+    // A log in UTC is indexed in this PC's time zone, so an index cached in
+    // another zone is rebuilt.
+    let format_key = match (&custom, hint) {
+        (Some(custom), _) => custom.key(),
+        (None, Hint::W3c(columns)) if columns.utc => time::local_zone_key(),
+        (None, _) => 0,
+    };
     let layout = Layout {
         encoding,
         format,
         body_offset,
-        format_key: custom.as_ref().map_or(0, |custom| custom.key()),
-    };
-    let hint = match format {
-        Format::Plain => parse::hint_for(text),
-        Format::Sccm | Format::Custom => Hint::None,
+        format_key,
     };
     Ok((layout, custom, hint))
 }
@@ -427,12 +434,13 @@ impl LogFile {
         parse::fields(self.layout.format, text, &self.context)
     }
 
-    /// The offset from UTC a row's time was written in, as minutes east of
-    /// UTC, when the row or its log says. A W3C log, such as IIS's, writes
-    /// UTC unless it says otherwise.
+    /// The offset from UTC a row's time is in, as minutes east of UTC, when
+    /// the row or its log says. A W3C log, such as IIS's, writes UTC unless it
+    /// says otherwise, and its times are shown in this PC's time zone, so
+    /// that zone's offset at the row's time is given.
     pub fn utc_offset(&self, text: &[u8]) -> Option<i32> {
         match self.context.hint {
-            Hint::W3c(columns) if columns.utc => Some(0),
+            Hint::W3c(columns) if columns.utc => parse::w3c_offset(text, columns),
             Hint::W3c(_) => None,
             _ => parse::utc_offset(self.layout.format, text),
         }

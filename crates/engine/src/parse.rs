@@ -6,7 +6,7 @@
 
 use crate::custom::CustomFormat;
 use crate::level::{self, Level};
-use crate::time::{self, Stamp, YearHint};
+use crate::time::{self, Stamp, YearHint, Zone};
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -85,6 +85,9 @@ pub struct W3cFields {
     /// W3C times are UTC unless `#Time Format: Local` says otherwise, as
     /// Windows Firewall's does.
     pub utc: bool,
+    /// The zone UTC times are shown in, so they line up with other logs'
+    /// local times: this PC's, except in tests.
+    pub zone: Zone,
 }
 
 impl W3cFields {
@@ -226,6 +229,18 @@ pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
             }
         }
     }
+}
+
+/// For a W3C log written in UTC, the offset its row's time was shown in, as
+/// minutes east of UTC, so a row says which zone its time is in.
+pub fn w3c_offset(row: &[u8], columns: W3cFields) -> Option<i32> {
+    let text = trim_spaces(trim_line_ending(row));
+    let as_written = W3cFields {
+        zone: Zone::Fixed(0),
+        ..columns
+    };
+    let utc = w3c_fields(text, as_written).stamp?;
+    Some(columns.zone.offset_at(utc))
 }
 
 /// The offset from UTC in an SCCM time such as `10:23:01.442+360`, whose bias
@@ -649,13 +664,21 @@ const W3C_COLUMNS: usize = 48;
 /// the thread. The client's address is the source, and `-` is empty. Other
 /// rows aren't judged by their words, as pages and paths would mislead.
 fn w3c_fields(text: &[u8], columns: W3cFields) -> Fields<'_> {
+    // A UTC time is shown in the log's zone, which is this PC's.
+    let shown = |stamp: Option<Stamp>| {
+        if columns.utc {
+            stamp.and_then(|stamp| columns.zone.from_utc(stamp))
+        } else {
+            stamp
+        }
+    };
     if let Some(directive) = text.strip_prefix(b"#") {
         let stamp = directive
             .strip_prefix(b"Date:")
             .and_then(|date| time::parse_iso(skip_spaces(date)))
             .map(|parsed| parsed.stamp);
         return Fields {
-            stamp,
+            stamp: shown(stamp),
             ..Fields::message_only(text, Level::Info)
         };
     }
@@ -697,7 +720,7 @@ fn w3c_fields(text: &[u8], columns: W3cFields) -> Fields<'_> {
         _ => text,
     };
     Fields {
-        stamp,
+        stamp: shown(stamp),
         level,
         component: column(columns.page)
             .or(column(columns.action))
@@ -1670,6 +1693,38 @@ mod tests {
 
     fn display(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// A W3C log's hint, shown six hours behind UTC, as in US Central time.
+    fn in_central_time(head: &str) -> (Hint, W3cFields) {
+        let Hint::W3c(columns) = hint_for(head.as_bytes()) else {
+            panic!("not a W3C log");
+        };
+        let columns = W3cFields {
+            zone: Zone::Fixed(-360),
+            ..columns
+        };
+        (Hint::W3c(columns), columns)
+    }
+
+    #[test]
+    fn iis_times_are_shown_in_the_logs_zone() {
+        let (hint, columns) = in_central_time(IIS_HEAD);
+        let row = "2026-11-18 04:05:09 10.0.0.5 GET /SMS_MP/.sms_aut MPLIST 80 - 10.0.0.9 SMS+CCM+5.0 - 200 0 0 15";
+        // Early in the morning in UTC is the evening before.
+        assert_eq!(stamp_text(&hinted(hint, row)), "2026-11-17T22:05:09.000");
+        assert_eq!(w3c_offset(row.as_bytes(), columns), Some(-360));
+        let directive = hinted(hint, "#Date: 2026-11-18 00:00:01");
+        assert_eq!(stamp_text(&directive), "2026-11-17T18:00:01.000");
+        assert_eq!(w3c_offset(b"#Fields: date time", columns), None);
+
+        // Windows Firewall writes local times, which stay as written.
+        let (hint, _) = in_central_time(FIREWALL_HEAD);
+        let dropped = hinted(hint, "2026-11-18 09:30:12 DROP TCP 10.0.0.9 10.0.0.5 51234 445 52 S 123456 0 64240 - - - RECEIVE 4");
+        assert_eq!(stamp_text(&dropped), "2026-11-18T09:30:12.000");
+
+        // With no zone set, as in tests, UTC stays UTC.
+        assert_eq!(Zone::Local.offset_at(Stamp::from_seconds(0)), 0);
     }
 
     #[test]

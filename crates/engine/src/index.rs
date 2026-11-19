@@ -32,8 +32,9 @@ pub struct Layout {
     pub format: Format,
     /// Where text starts, after any byte order mark.
     pub body_offset: u64,
-    /// Which custom format definition the rows were read with, or 0 for a
-    /// built-in format, so an index is never reused after a pattern changes.
+    /// Which custom format definition the rows were read with, so an index
+    /// is never reused after a pattern changes. For a log in UTC, it's this
+    /// PC's time zone instead, which its times are indexed in. Otherwise 0.
     pub format_key: u64,
 }
 

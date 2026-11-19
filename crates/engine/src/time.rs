@@ -1,7 +1,11 @@
 //! Timestamps as the log wrote them. Time zones are read but not applied, so
-//! values are wall-clock time and only compare correctly within one zone.
+//! values are wall-clock time and only compare correctly within one zone. The
+//! exception is a log written in UTC, such as IIS's, whose times are shown in
+//! this PC's time zone, so they line up with the local times of other logs.
 
+use std::cell::Cell;
 use std::fmt;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Days from 1970-01-01 to 2000-01-01.
@@ -42,6 +46,81 @@ impl YearHint {
             self.year
         }
     }
+}
+
+/// This PC's time zone, which the app supplies at startup, as the engine has
+/// no `unsafe` code with which to ask Windows. Without one, as in tests, UTC
+/// times stay UTC.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalZone {
+    /// Minutes east of UTC at a moment, given in seconds since 1970 in UTC.
+    pub offset_at: fn(i64) -> i32,
+    /// Changes with the zone, so indexes cached in another zone are rebuilt.
+    pub key: u64,
+}
+
+static LOCAL_ZONE: OnceLock<LocalZone> = OnceLock::new();
+
+/// Sets this PC's time zone, once, before any log is opened.
+pub fn set_local_zone(zone: LocalZone) {
+    let _ = LOCAL_ZONE.set(zone);
+}
+
+/// Identifies this PC's time zone, or 0 if none was set.
+pub fn local_zone_key() -> u64 {
+    LOCAL_ZONE.get().map_or(0, |zone| zone.key)
+}
+
+/// The time zone a log written in UTC is shown in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zone {
+    /// This PC's, as Windows' rules give it at each moment, so daylight
+    /// saving time is right.
+    #[default]
+    Local,
+    /// A fixed offset, in minutes east of UTC, for tests.
+    Fixed(i32),
+}
+
+impl Zone {
+    /// The offset from UTC, in minutes east, at a moment in UTC.
+    pub fn offset_at(self, utc: Stamp) -> i32 {
+        match self {
+            Zone::Fixed(minutes) => minutes,
+            Zone::Local => local_offset_at(utc.seconds),
+        }
+    }
+
+    /// A time in UTC as this zone's wall-clock time.
+    pub fn from_utc(self, utc: Stamp) -> Option<Stamp> {
+        let seconds = i64::from(utc.seconds) + i64::from(self.offset_at(utc)) * 60;
+        Some(Stamp {
+            seconds: u32::try_from(seconds).ok()?,
+            millis: utc.millis,
+        })
+    }
+}
+
+/// Asks for this PC's offset once per quarter hour of log time on each thread.
+/// Rows mostly come in time order, and offsets change only on a quarter hour,
+/// so a log of millions of rows asks a few thousand times.
+fn local_offset_at(seconds: u32) -> i32 {
+    thread_local! {
+        static LAST: Cell<Option<(u32, i32)>> = const { Cell::new(None) };
+    }
+    let Some(zone) = LOCAL_ZONE.get() else {
+        return 0;
+    };
+    let quarter = seconds / 900;
+    LAST.with(|last| match last.get() {
+        Some((cached, offset)) if cached == quarter => offset,
+        _ => {
+            let unix = i64::from(quarter) * 900 + EPOCH_DAYS * 86_400;
+            let offset = (zone.offset_at)(unix).clamp(-14 * 60, 14 * 60);
+            last.set(Some((quarter, offset)));
+            offset
+        }
+    })
 }
 
 /// Howard Hinnant's days-from-civil algorithm: days since 1970-01-01.

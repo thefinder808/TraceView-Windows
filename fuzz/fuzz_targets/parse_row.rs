@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use std::sync::{Arc, OnceLock};
 use tv_engine::parse::{self, Format, Hint, ParseContext, W3cFields};
 use tv_engine::summary::normalize;
-use tv_engine::time::{self, YearHint};
+use tv_engine::time::{self, YearHint, Zone};
 use tv_engine::CustomFormat;
 
 const HINT: YearHint = YearHint { year: 2026, month: 6 };
@@ -51,6 +51,8 @@ const HINTED: [ParseContext; 4] = [
             client: Some(5),
             process: Some(47),
             utc: true,
+            // Far enough behind UTC that a time early on 2000-01-01 can't be shown.
+            zone: Zone::Fixed(-12 * 60),
         }),
     },
 ];

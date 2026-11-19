@@ -13,6 +13,12 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Logs written in UTC, such as IIS's, are shown in this PC's time zone,
+    // so they line up with other logs.
+    tv_engine::time::set_local_zone(tv_engine::time::LocalZone {
+        offset_at: tv_platform::time_zone::offset_at,
+        key: tv_platform::time_zone::key(),
+    });
 
     #[cfg(feature = "bench")]
     if args.first().is_some_and(|arg| arg == "--gui-bench") {
