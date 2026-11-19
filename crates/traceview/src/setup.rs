@@ -23,8 +23,9 @@ const MARK: &str = "written-by: traceview setup";
 /// What agents read up front to decide whether the skill fits a task.
 const DESCRIPTION: &str = "Investigate Windows logs, such as ConfigMgr (SCCM) client and site \
     server logs, Intune Management Extension, Windows Update, CBS, DISM, setup, Windows Installer \
-    (MSI), PowerShell transcript, IIS and Windows Firewall logs, with the TraceView command line. \
-    Use when asked why an install, update, deployment or policy failed, or to find errors in .log \
+    (MSI), PowerShell transcript, IIS, Windows Firewall, Group Policy (gpsvc) and Netlogon logs, \
+    with the TraceView command line. Use when asked why an install, update, deployment, policy or \
+    logon failed, or to find errors in .log \
     or .lo_ files or a folder of logs.";
 const UNDO: &str =
     "To undo it, choose Tools > Remove AI agent setup, or run `traceview setup --remove`.";

@@ -96,6 +96,8 @@ fuzz_target!(|data: &[u8]| {
     let _ = time::parse_any(data, HINT, true);
     let (split_a, split_b) = data.split_at(data.len() / 2);
     let _ = time::parse_sccm(split_a, split_b);
+    let _ = time::parse_group_policy(split_a, split_b);
+    let _ = time::parse_netlogon(split_a, split_b, HINT);
     if let Ok(text) = std::str::from_utf8(data) {
         let _ = time::parse_user_time(text);
     }

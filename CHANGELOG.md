@@ -14,6 +14,9 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - Office's Click-to-Run logs, such as `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's, in the ULS format, have their time, level, category, thread and process. `Unexpected` is an error, and `Monitorable` and `High` are notices. Before, each whole row was the message, with no time.
 - WiX Burn's logs, from the Visual C++ and .NET installers, and the Visual Studio installer's, such as `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg`, have their time and thread, and Burn's `i`, `w` and `e` codes are their levels. Before, they had no time.
 - IIS logs, such as `u_ex261118.log` from a ConfigMgr management or distribution point, and Windows Firewall's `pfirewall.log` are read by the columns their `#Fields:` line names. Each row has its time and the client's address. For IIS, the page asked for is the component, a 5xx status is an error and a 4xx a warning, except 401, which every Windows-authenticated request gets first, and times say they're UTC. For the firewall, the action is the component, and `DROP` is a warning. Before, rows had a time but nothing else.
+- Group Policy's debug log, `gpsvc.log`, has its time, its service, such as `GPSVC`, as the component, and its process and thread IDs as the thread, as do Group Policy's other debug logs written the same way. Windows 11 added dates to these logs in late 2025. Older rows give only a time of day, which can't be placed on a timeline, so it stays at the start of the message. Before, each whole row was the message.
+- `netlogon.log` has its time, with the year from the file's date, its category, such as `LOGON`, as the component, and the thread some versions write. `[CRITICAL]` rows are errors, and a request that returns an NTSTATUS error, such as a failed logon's `Returns 0xC000006A`, is a warning. Before, each whole row was the message, with no time.
+- Both were written from Microsoft's published examples, as their debug logging is off by default.
 - `setupapi.dev.log` goes by its `!!!` and `!` markers, so `Error Control = 1` is no longer an error, and a failed `[Exit status: FAILURE(…)]` is. Sections' starts and ends have times, and the short name before a colon, such as `dvi`, is the component.
 - Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
 
@@ -36,7 +39,7 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 **AI agents**
 
-- The skill `traceview setup` writes tells agents it's for site server, Windows Installer, PowerShell transcript, IIS and Windows Firewall logs too, as agents choose a skill by its description. Run `traceview setup` again to update it.
+- The skill `traceview setup` writes tells agents it's for site server, Windows Installer, PowerShell transcript, IIS, Windows Firewall, Group Policy and Netlogon logs too, and for failed logons, as agents choose a skill by its description. Run `traceview setup` again to update it.
 - `traceview setup` also adds TraceView's skill for GitHub Copilot, in `%USERPROFILE%\.copilot\skills\traceview`, when `%USERPROFILE%\.copilot` exists. `traceview setup --remove` takes it back.
 
 ## 0.11.0
