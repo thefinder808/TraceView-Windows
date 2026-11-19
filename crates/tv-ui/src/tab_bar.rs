@@ -3,6 +3,7 @@
 use crate::canvas::{Align, Canvas, FontRole, TextStyle};
 use crate::geometry::{Point, Rect};
 use crate::input::{Event, MouseButton};
+use crate::list_view::elide;
 use crate::theme::Theme;
 
 pub const BAR_HEIGHT: f32 = 28.0;
@@ -171,8 +172,9 @@ impl TabBar {
                 theme.secondary_text
             };
             let label = Rect::new(text_left, rect.top, close.left - 4.0, rect.bottom);
+            let title = elide(canvas, &tab.title, label.width(), FontRole::Ui);
             canvas.push_clip(label);
-            canvas.text(&tab.title, label, UI_LEFT, text_color);
+            canvas.text(&title, label, UI_LEFT, text_color);
             canvas.pop_clip();
             let close_color = if self.hovered_close == Some(index) {
                 canvas.fill_rect(close, theme.hover_background);
@@ -284,5 +286,20 @@ mod tests {
         bar.draw(&mut canvas, BAR, &tabs(), 0, &Theme::CLASSIC);
         assert!(canvas.texts().contains(&"PolicyAgent.log"));
         assert!(canvas.clips_balance());
+    }
+
+    #[test]
+    fn a_title_too_long_for_its_tab_ends_in_an_ellipsis() {
+        let bar = arranged();
+        let mut canvas = RecordingCanvas::new();
+        bar.draw(&mut canvas, BAR, &tabs(), 0, &Theme::CLASSIC);
+        let long = canvas
+            .texts()
+            .into_iter()
+            .find(|text| text.starts_with('x'))
+            .unwrap()
+            .to_string();
+        assert!(long.ends_with('\u{2026}'), "{long}");
+        assert!(long.len() < 300);
     }
 }

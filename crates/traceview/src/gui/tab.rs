@@ -17,7 +17,7 @@ use super::settings::Settings;
 use super::watch::{Applied, Watcher};
 use std::collections::BTreeSet;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
@@ -232,6 +232,29 @@ pub fn file_name(path: &Path) -> String {
     )
 }
 
+/// The machine whose share a path is on, such as SRV01 for
+/// `\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log`. None for this PC's own drives.
+pub fn machine(path: &Path) -> Option<String> {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => {
+            Some(server.to_string_lossy().into_owned())
+        }
+        _ => None,
+    }
+}
+
+/// The name a log or folder is shown by: its file name, plus the machine it's
+/// on when that's another PC, as in `WUAHandler.log (SRV01)`.
+pub fn display_name(path: &Path) -> String {
+    match (path.file_name(), machine(path)) {
+        (Some(name), Some(machine)) => format!("{} ({machine})", name.to_string_lossy()),
+        _ => file_name(path),
+    }
+}
+
 fn open_logs(
     paths: &[PathBuf],
     formats: &[Arc<CustomFormat>],
@@ -329,9 +352,9 @@ impl Tab {
 
     pub fn title(&self) -> String {
         match self.paths.as_slice() {
-            [path] => file_name(path),
-            [first, second] => format!("{} + {}", file_name(first), file_name(second)),
-            [first, rest @ ..] => format!("{} + {} more", file_name(first), rest.len()),
+            [path] => display_name(path),
+            [first, second] => format!("{} + {}", display_name(first), display_name(second)),
+            [first, rest @ ..] => format!("{} + {} more", display_name(first), rest.len()),
             [] => String::new(),
         }
     }
@@ -441,7 +464,7 @@ impl Tab {
                 row,
                 file: document
                     .is_merged()
-                    .then(|| file_name(&document.sources[source].path)),
+                    .then(|| display_name(&document.sources[source].path)),
             });
         document.request(visible);
         let wake = waker.clone();
@@ -895,7 +918,7 @@ impl Tab {
                 document
                     .sources
                     .iter()
-                    .map(|source| file_name(&source.path))
+                    .map(|source| display_name(&source.path))
                     .collect()
             }),
             order: document.order.clone(),
@@ -1093,5 +1116,38 @@ mod tests {
         assert_eq!(tab(&["C:\\logs\\a.log"]).title(), "a.log");
         assert_eq!(tab(&["a.log", "b.log"]).title(), "a.log + b.log");
         assert_eq!(tab(&["a.log", "b.log", "c.log"]).title(), "a.log + 2 more");
+    }
+
+    #[test]
+    fn a_log_on_another_pc_is_named_with_its_machine() {
+        let name = |path: &str| display_name(Path::new(path));
+        assert_eq!(
+            name(r"\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log"),
+            "WUAHandler.log (SRV01)"
+        );
+        assert_eq!(
+            name(r"\\?\UNC\srv02.contoso.com\Logs\a.log"),
+            "a.log (srv02.contoso.com)"
+        );
+        assert_eq!(
+            name(r"C:\Windows\CCM\Logs\WUAHandler.log"),
+            "WUAHandler.log"
+        );
+        assert_eq!(name(r"\\?\C:\Logs\a.log"), "a.log");
+        // A share's root has no file name, and its path already names the
+        // machine.
+        assert_eq!(name(r"\\SRV01\c$\"), r"\\SRV01\c$\");
+
+        let tab = Tab {
+            paths: vec![
+                PathBuf::from(r"\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log"),
+                PathBuf::from(r"\\SRV02\c$\Windows\CCM\Logs\WUAHandler.log"),
+            ],
+            ..Tab::open(Vec::new(), Vec::new(), &Waker::detached())
+        };
+        assert_eq!(
+            tab.title(),
+            "WUAHandler.log (SRV01) + WUAHandler.log (SRV02)"
+        );
     }
 }

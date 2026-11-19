@@ -47,6 +47,7 @@ These become automated checks, like the engine's limits.
 - **The sidebar can collapse to nothing.** With every extra hidden, the window is a tab bar and a grid, which is CMTrace's whole appeal.
 - **The sidebar's Windows section replaces the Mac's Console-style browser.** It lists the usual log folders that exist on this machine: `CCM\Logs`, Intune Management Extension, `Logs\CBS`, `Logs\DISM`, `Panther`, `INF\setupapi.*`. It's a list of locations, not a scan, so it adds nothing to launch time.
 - **A "Nearby" section lists other logs in the same folder.** Troubleshooting usually means hopping between neighboring logs.
+- **A log on another PC is named with its machine,** as `WUAHandler.log (SRV01)` for `\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log`. This shows in its tab, the title bar, the sidebar, a merged tab's details pane and File column, and a folder's start page, since admins often have the same log open from several machines. The machine is the server named in the path, so a mapped drive letter isn't traced back to its machine. A title too long for its tab ends in "…".
 
 ### Window frame
 
