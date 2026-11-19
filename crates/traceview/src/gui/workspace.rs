@@ -3437,9 +3437,13 @@ impl Workspace {
     fn tab_labels(&self) -> Vec<TabLabel> {
         self.tabs
             .iter()
-            .map(|tab| TabLabel {
-                title: tab.title(),
-                live: tab.following && !tab.is_paused() && tab.document().is_some(),
+            .map(|tab| {
+                let (title, suffix) = tab.title_parts();
+                TabLabel {
+                    title,
+                    suffix,
+                    live: tab.following && !tab.is_paused() && tab.document().is_some(),
+                }
             })
             .collect()
     }
