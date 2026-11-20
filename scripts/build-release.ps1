@@ -1,6 +1,8 @@
 # Builds traceview.exe for x64 and ARM64, then packages each in a zip with
-# its licenses, plus SHA256SUMS.txt, all in dist\. With no switches it does
-# both, unsigned, for trying a release build locally:
+# its licenses, and also on its own, as TraceView-<version>-<arch>.exe, which
+# is what auto-updates download, plus SHA256SUMS.txt for all of them, all in
+# dist\. With no switches it does both, unsigned, for trying a release build
+# locally:
 #
 #   pwsh -File scripts/build-release.ps1
 #
@@ -90,10 +92,14 @@ foreach ($arch in $targets.Keys) {
     Compress-Archive -Path (Join-Path $folder '*') -DestinationPath $zip
     Remove-Item $folder -Recurse -Force
     $sums.Add(('{0}  {1}' -f (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path $zip -Leaf)))
+    # The EXE on its own, for auto-updates, which then never unpack a zip.
+    $single = Join-Path $dist "$name.exe"
+    Copy-Item $exe $single -Force
+    $sums.Add(('{0}  {1}' -f (Get-FileHash $single -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path $single -Leaf)))
 }
 # The format sha256sum -c reads.
 [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), ($sums -join "`n") + "`n")
-"Wrote $((Get-ChildItem $dist -Filter *.zip).Name -join ', ') and SHA256SUMS.txt in $dist"
+"Wrote $((Get-ChildItem $dist -File | Where-Object Extension -in '.zip', '.exe').Name -join ', ') and SHA256SUMS.txt in $dist"
 if ($notes) {
     [IO.File]::WriteAllText((Join-Path $dist 'release-notes.md'), ($notes -join "`n").Trim() + "`n")
     "Wrote release-notes.md from CHANGELOG.md's $version section"

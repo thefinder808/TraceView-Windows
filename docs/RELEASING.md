@@ -6,7 +6,7 @@ Pushing a tag like `v0.9.0` runs [`release.yml`](../.github/workflows/release.ym
 2. **Release**, in the `release` environment, once you approve it:
    - sign both EXEs with Azure Artifact Signing;
    - check each signature and its timestamp;
-   - zip each EXE with `LICENSE` and `THIRD-PARTY-NOTICES.txt`, and write `SHA256SUMS.txt`;
+   - zip each EXE with `LICENSE` and `THIRD-PARTY-NOTICES.txt`, copy each EXE on its own as `TraceView-<version>-<arch>.exe`, which auto-updates download, and write `SHA256SUMS.txt` for all four;
    - create a **draft** GitHub release with those files, and the `CHANGELOG.md` section as its notes.
 
 Nothing is published until the draft is checked and published by hand. A release is never made unsigned: if signing isn't set up, the run stops.

@@ -25,7 +25,7 @@ It's one signed EXE with nothing to install, so it can be copied to a USB stick 
 
 ## Download
 
-Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a zip for x64 PCs, one for ARM64 PCs, and `SHA256SUMS.txt`.
+Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a zip for x64 PCs, one for ARM64 PCs, and `SHA256SUMS.txt`. From 0.13, each EXE is there on its own too, for updates to download.
 
 1. **Unzip it** anywhere and run `traceview.exe`. Nothing is installed.
 2. **Check the signature** if you like: Properties > Digital Signatures should show *Nathaniel Graham*, verified by Microsoft.

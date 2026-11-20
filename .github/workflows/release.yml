@@ -108,8 +108,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           $version = $env:TAG.TrimStart('v')
-          # Only these are downloads. The notes come from CHANGELOG.md.
-          $files = @(Get-ChildItem dist -File | Where-Object { $_.Extension -eq '.zip' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object FullName)
+          # Only these are downloads: the zips, each signed EXE on its own for
+          # auto-updates, and their checksums. The notes come from CHANGELOG.md.
+          $files = @(Get-ChildItem dist -File | Where-Object { $_.Extension -in '.zip', '.exe' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object FullName)
           # A full release, even before 1.0, so it shows on the repository's front
           # page as the latest. Pre-releases are left out there. The README and
           # the notes say TraceView is a beta.
