@@ -344,6 +344,7 @@ The viewer keeps the copy `traceview setup` installs up to date. The command lin
 - **The swap:** the download is written beside the installed copy, then held open, allowing others to read or rename it but not change it, while it's checked again and renamed into place. Windows lets a running EXE be renamed but not replaced, so the installed copy is first renamed to `traceview.exe.old`, which a later launch deletes. If putting the new one in place fails, the old one is renamed back.
 - **What it says:** in the status bar, only when there's news. A check someone asked for says how it went in a box, including why nothing changed.
 - **Turning it off:** Help > Check for updates automatically, the `check_for_updates` setting, or a `DisableUpdates` DWORD under `SOFTWARE\Policies\TraceView` in `HKEY_LOCAL_MACHINE` or `HKEY_CURRENT_USER`, read at launch.
+- **Tried for real:** the first update, from 0.13.0 to 0.13.1 on 2026-11-20, installed the release's EXE byte for byte over the copy setup installed, from Help > Check for updates, seconds after the release was published.
 
 ## Open questions
 
@@ -352,4 +353,3 @@ The viewer keeps the copy `traceview setup` installs up to date. The command lin
 - **ConfigMgr and Windows Update error text away from ConfigMgr.** CMTrace's text covers clients and site servers. A PC with neither, such as one that logs were copied to, gets it only from a copy of `CMTrace.exe` put in TraceView's folder, and a console's `srsresources.dll` hasn't been tested.
 - **Time zones,** which merging files from different zones will need. IIS logs, which are in UTC, are shown in this PC's zone, but a ConfigMgr log from a server in another zone still shows that server's clock.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.
-- **The first real update.** Updates arrived in 0.13, so the first time a release is installed over another is the release after it. Until then, the swap and Windows' checks have been tested with a Windows EXE signed inside the file standing in for TraceView.
