@@ -73,6 +73,7 @@ fuzz_target!(|data: &[u8]| {
     for (format, context) in [
         (Format::Plain, &PLAIN),
         (Format::Sccm, &PLAIN),
+        (Format::Event, &PLAIN),
         (Format::Custom, custom()),
         (Format::Plain, &HINTED[0]),
         (Format::Plain, &HINTED[1]),

@@ -144,6 +144,7 @@ impl LogKind {
         match self.format {
             Format::Plain => "plain".to_string(),
             Format::Sccm => "sccm".to_string(),
+            Format::Event => "event".to_string(),
             Format::Custom => format!("custom:{}", self.name.to_lowercase()),
         }
     }
@@ -152,6 +153,7 @@ impl LogKind {
     pub fn called(&self) -> String {
         match self.format {
             Format::Sccm => "SCCM logs".to_string(),
+            Format::Event => "event logs".to_string(),
             Format::Plain => "other logs".to_string(),
             Format::Custom => format!("{} logs", self.name),
         }
@@ -184,7 +186,7 @@ pub fn defaults(format: Format) -> Vec<ColumnSpec> {
             column,
             width: column.default_width(),
             shown: match column {
-                Column::Thread => format == Format::Sccm,
+                Column::Thread => matches!(format, Format::Sccm | Format::Event),
                 Column::Source => false,
                 _ => true,
             },

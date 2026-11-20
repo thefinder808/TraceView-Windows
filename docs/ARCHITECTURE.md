@@ -171,6 +171,7 @@ Theme files reload as a set when any of them changes. The menu lists them again,
 | Format | Example | Notes |
 |---|---|---|
 | SCCM / CMTrace | `<![LOG[msg]LOG]!><time="..." ...>` | Multi-line entries are one row |
+| Windows events, as TraceView writes them | `␞2026-11-20 09:51:57.123-06:00⇥Error⇥Disk⇥7⇥SRV01⇥msg` | `Format::Event`. Each row starts with a record separator, U+001E, which is taken out of events' own text when it's written, so a message can take several lines and a crafted event can't start a row of its own. The provider is the component, the event ID the thread, and the computer the source. The levels are Event Viewer's, and Verbose is debug. Searches cover the provider, ID, computer and message |
 | CBS and DISM | `2026-04-23 14:25:00, Info  CBS  msg` | Windows servicing logs |
 | Windows Update `ReportingEvents.log` | `{GUID}⇥2026-11-02 15:37:25:598-0500⇥…⇥Failure⇥Software Synchronization⇥msg` | Tab-separated, UTF-16. The operation is the component, the program that asked the thread, the event's name the source, and `Failure` an error. A colon comes before the milliseconds |
 | ConfigMgr site server | `msg  $$<SMS_EXECUTIVE><11-18-2026 09:30:12.123+300><thread=5112 (0x13F8)>` | As CMTrace reads them. There's no level, so the words decide. The part from `$$<` on isn't searched, as SCCM's attributes aren't |

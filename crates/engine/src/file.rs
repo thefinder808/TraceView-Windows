@@ -162,7 +162,7 @@ fn detect_layout(
     };
     let hint = match format {
         Format::Plain => parse::hint_for(text),
-        Format::Sccm | Format::Custom => Hint::None,
+        Format::Sccm | Format::Custom | Format::Event => Hint::None,
     };
     // A log in UTC is indexed in this PC's time zone, so an index cached in
     // another zone is rebuilt.
@@ -321,6 +321,7 @@ impl LogFile {
         match (self.layout.format, self.custom_format()) {
             (Format::Custom, Some(custom)) => custom.name(),
             (Format::Sccm, _) => "SCCM",
+            (Format::Event, _) => "Event log",
             _ => "Text",
         }
     }
@@ -723,6 +724,32 @@ mod tests {
             ),
             (Level::Warning, None)
         );
+    }
+
+    #[test]
+    fn an_event_log_has_a_row_per_event_whatever_its_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("System.log");
+        fs::write(
+            &path,
+            "\u{1E}2026-11-20 09:51:57.123-06:00\tInformation\tService Control Manager\t7036\tSRV01\tThe Print Spooler service entered the running state.\n\
+             \u{1E}2026-11-20 09:52:03.000-06:00\tError\tDisk\t7\tSRV01\tThe device has a bad block.\nSecond line.\n\n\
+             \u{1E}2026-11-20 09:53:00.500-06:00\tCritical\tKernel-Power\t41\tSRV01\tThe system rebooted.\n",
+        )
+        .unwrap();
+        let log = open_uncached(&path);
+        assert_eq!(log.format(), Format::Event);
+        assert_eq!(log.format_name(), "Event log");
+        assert_eq!(log.rows(), 3);
+        let rows = all_rows(&log);
+        let mut scratch = Vec::new();
+        let second = log.text(&rows[1], &mut scratch).to_vec();
+        let fields = log.fields(&second);
+        assert_eq!(fields.message, b"The device has a bad block.\nSecond line.");
+        assert_eq!(fields.thread, b"7");
+        assert_eq!(log.level(1), Level::Error);
+        assert_eq!(log.level(2), Level::Critical);
+        assert_eq!(log.utc_offset(&second), Some(-360));
     }
 
     #[test]
