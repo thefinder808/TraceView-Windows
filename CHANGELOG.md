@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.13.0
+
+TraceView now keeps itself up to date. The copy that setup installs checks GitHub once a day and installs newer signed releases in the background, after checking each one the way Windows does and that it comes from the same publisher. Still a beta, tested on Windows 11.
 
 **Updates**
 
