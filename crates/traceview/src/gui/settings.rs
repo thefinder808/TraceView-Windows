@@ -62,6 +62,9 @@ pub struct Settings {
     pub formats: Vec<FormatSetting>,
     /// Arrangements of panes saved under a name, after the built-in ones.
     pub layouts: Vec<LayoutSetting>,
+    /// Checks GitHub once a day for a newer version, and installs it over
+    /// the copy `traceview setup` installed.
+    pub check_for_updates: bool,
 }
 
 /// Which panes show, saved under a name.
@@ -164,6 +167,7 @@ impl Default for Settings {
             keys: BTreeMap::new(),
             formats: Vec::new(),
             layouts: Vec::new(),
+            check_for_updates: true,
         }
     }
 }

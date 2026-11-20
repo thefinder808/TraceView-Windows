@@ -507,6 +507,15 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** the folder dialog, dropping a folder, and Narrator reading the start page.
 
+## After 0.12.0
+
+**Updates,** for the copy `traceview setup` installs. [ARCHITECTURE.md](ARCHITECTURE.md#updates) has how they work, and [SECURITY.md](../SECURITY.md) what's checked.
+
+- **The Help menu** gains What's new, which opens the release notes of a newer version once one is installed or out, and of this one before that; Check for updates; and Check for updates automatically, a checkmark. When an administrator turns updates off, the last two are dimmed.
+- **News goes in the status bar,** as other notices do: a version installed for next time, or one out for a copy that doesn't update itself. An automatic check that finds nothing, or can't reach GitHub, says nothing.
+- **A check someone asked for answers in a box,** including when the copy is up to date, isn't a signed release, or was turned off by an administrator, and why a download was refused.
+- **Updates install without asking,** and take effect at the next launch, so nothing changes under an open window. Asking first was the other choice. Installing won because an update can only put a newer, checked build from the same publisher in place of the copy setup installed.
+
 ## Milestones
 
 | Milestone | Delivers | Done when |

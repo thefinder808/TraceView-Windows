@@ -26,6 +26,7 @@ use super::tab::{file_name, with_commas, Tab};
 use super::themes::{self, FileTheme};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel, ThemesResponse};
 use crate::setup;
+use crate::updates;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
@@ -124,6 +125,11 @@ pub mod command {
     pub const REMOVE_AGENT_SETUP_CONFIRMED: u32 = 79;
     /// Empties the find box, as its × does. It's in no menu.
     pub const CLEAR_FIND: u32 = 80;
+    pub const CHECK_UPDATES: u32 = 81;
+    /// Turns the daily update check on or off.
+    pub const AUTO_UPDATES: u32 = 82;
+    /// Opens the release notes of a newer version, or this one's.
+    pub const WHATS_NEW: u32 = 83;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -651,6 +657,13 @@ pub struct Workspace {
     exporting: Option<Exporting>,
     notice: Option<String>,
     scale: f32,
+    /// An update check running in the background, and whether someone asked
+    /// for it.
+    updating: Option<(Receiver<updates::Outcome>, bool)>,
+    /// A newer version: installed for next time, or out for this copy.
+    newer: Option<String>,
+    /// Whether an administrator turned updates off, read at launch.
+    updates_by_policy: bool,
 }
 
 fn checked(mut item: MenuItem, is_checked: bool) -> MenuItem {
@@ -665,6 +678,19 @@ fn enabled(mut item: MenuItem, is_enabled: bool) -> MenuItem {
         *enabled = is_enabled;
     }
     item
+}
+
+/// Text that starts with a capital letter and ends with a full stop.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut sentence: String = chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    if !sentence.ends_with('.') {
+        sentence.push('.');
+    }
+    sentence
 }
 
 /// What Help > About TraceView says.
@@ -763,6 +789,9 @@ impl Workspace {
             waker,
             hwnd,
             copying: None,
+            updating: None,
+            newer: None,
+            updates_by_policy: false,
             exporting: None,
             notice: None,
             scale: 1.0,
@@ -1259,7 +1288,25 @@ impl Workspace {
             },
             Menu {
                 title: "Help".to_string(),
-                items: vec![item("About TraceView", command::ABOUT)],
+                items: vec![
+                    match &self.newer {
+                        Some(version) => item(&format!("What's new in {version}"), command::WHATS_NEW),
+                        None => item("What's new", command::WHATS_NEW),
+                    },
+                    enabled(
+                        item("Check for updates", command::CHECK_UPDATES),
+                        self.updating.is_none() && !self.updates_by_policy,
+                    ),
+                    enabled(
+                        checked(
+                            item("Check for updates automatically", command::AUTO_UPDATES),
+                            self.settings.check_for_updates && !self.updates_by_policy,
+                        ),
+                        !self.updates_by_policy,
+                    ),
+                    MenuItem::Separator,
+                    item("About TraceView", command::ABOUT),
+                ],
             },
         ]
     }
@@ -1593,6 +1640,22 @@ impl Workspace {
                 title: "About TraceView".to_string(),
                 text: about_text(),
             }),
+            command::CHECK_UPDATES => self.check_for_updates(true),
+            command::AUTO_UPDATES => {
+                if !self.updates_by_policy {
+                    self.settings.check_for_updates = !self.settings.check_for_updates;
+                    self.save_settings();
+                }
+            }
+            command::WHATS_NEW => {
+                let version = self
+                    .newer
+                    .clone()
+                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+                if !tv_platform::open_web_page(&updates::release_page(&version)) {
+                    self.notice = Some("The release's page couldn't be opened".to_string());
+                }
+            }
             command::SAVE_PRESET => {
                 let has_filter = self.active_tab().is_some_and(|tab| {
                     !tab.filter_field.text().trim().is_empty() || tab.chip.is_some()
@@ -2512,6 +2575,79 @@ impl Workspace {
             colors.map(|colors| themes::keep("Windows contrast", Theme::contrast(&colors)));
     }
 
+    /// At launch: reads whether an administrator turned updates off, and
+    /// starts the daily check.
+    pub fn start_update_checks(&mut self) {
+        self.updates_by_policy = tv_platform::updates::turned_off_by_policy();
+        self.check_for_updates(false);
+    }
+
+    /// Checks for a newer version on a background thread. One someone asked
+    /// for says how it went, whatever happens.
+    fn check_for_updates(&mut self, manual: bool) {
+        if self.updating.is_some() {
+            return;
+        }
+        let automatic = self.settings.check_for_updates;
+        let (sender, receiver) = channel();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(updates::check(manual, automatic));
+            waker.wake();
+        });
+        self.updating = Some((receiver, manual));
+        if manual {
+            self.notice = Some("Checking for updates...".to_string());
+        }
+    }
+
+    /// Says how an update check went: in a box if someone asked for it, and
+    /// otherwise in the status bar, only when there's news.
+    fn updated(&mut self, outcome: updates::Outcome, manual: bool, commands: &mut Commands) {
+        use updates::Outcome;
+        let text = match outcome {
+            Outcome::Quiet => None,
+            Outcome::UpToDate => Some(format!(
+                "TraceView {} is the latest version.",
+                env!("CARGO_PKG_VERSION")
+            )),
+            Outcome::Installed(version) => {
+                let text = format!(
+                    "TraceView {version} is installed, and starts the next time you open TraceView. Help > What's new in {version} shows what changed."
+                );
+                self.newer = Some(version);
+                Some(text)
+            }
+            Outcome::Available(version) => {
+                let text = format!(
+                    "TraceView {version} is out. Only the copy that Tools > Set up for AI agents installs updates itself, so Help > What's new in {version} opens its page, to download it."
+                );
+                self.newer = Some(version);
+                Some(text)
+            }
+            Outcome::TurnedOffByPolicy => {
+                Some("Your organization has turned off updates for TraceView.".to_string())
+            }
+            Outcome::NotSigned => Some(
+                "This copy of TraceView isn't a signed release, such as one built from source, so it doesn't update itself."
+                    .to_string(),
+            ),
+            Outcome::Failed(error) => Some(sentence(&error)),
+        };
+        let Some(text) = text else {
+            return;
+        };
+        if manual {
+            self.notice = None;
+            commands.push(Command::ShowMessage {
+                title: "Updates".to_string(),
+                text,
+            });
+        } else {
+            self.notice = Some(text);
+        }
+    }
+
     /// Whether `.log` files are registered to open with some other copy of
     /// TraceView, as when a portable one was moved.
     fn registered_elsewhere(&self) -> bool {
@@ -3164,6 +3300,17 @@ impl Workspace {
                 Ok((rows, name)) => format!("Exported {} rows to {name}", with_commas(rows)),
                 Err(error) => format!("Couldn't export: {error}"),
             });
+        }
+        if let Some((receiver, manual)) = &self.updating {
+            let manual = *manual;
+            match receiver.try_recv() {
+                Ok(outcome) => {
+                    self.updating = None;
+                    self.updated(outcome, manual, commands);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.updating = None,
+            }
         }
         if let Some(copying) = &self.copying {
             match copying.try_recv() {
@@ -4797,6 +4944,45 @@ mod tests {
         assert!(text.starts_with(&format!("TraceView {}\n", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("MIT License"));
         assert!(text.contains("traceview --licenses"));
+    }
+
+    #[test]
+    fn help_checks_for_updates_and_says_why_this_copy_doesnt_update() {
+        let mut workspace = workspace();
+        assert_eq!(
+            tools_item(&workspace, command::CHECK_UPDATES),
+            ("Check for updates".to_string(), true)
+        );
+        assert_eq!(tools_item(&workspace, command::WHATS_NEW).0, "What's new");
+        // The daily check is on unless the menu turns it off.
+        assert!(workspace.settings.check_for_updates);
+        let mut commands = Commands::default();
+        workspace.run_command(command::AUTO_UPDATES, &mut commands);
+        assert!(!workspace.settings.check_for_updates);
+
+        // Tests run unsigned, so a check someone asks for says this copy
+        // doesn't update itself, without going online.
+        workspace.run_command(command::CHECK_UPDATES, &mut commands);
+        assert!(
+            !tools_item(&workspace, command::CHECK_UPDATES).1,
+            "one check runs at a time"
+        );
+        let started = std::time::Instant::now();
+        let text = loop {
+            let mut commands = Commands::default();
+            workspace.woken(&mut commands);
+            let shown = commands.iter().find_map(|command| match command {
+                Command::ShowMessage { title, text } if title == "Updates" => Some(text.clone()),
+                _ => None,
+            });
+            if let Some(text) = shown {
+                break text;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(20));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(text.contains("isn't a signed release"), "{text}");
+        assert!(tools_item(&workspace, command::CHECK_UPDATES).1);
     }
 
     #[test]

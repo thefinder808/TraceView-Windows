@@ -171,7 +171,7 @@ pub struct Plan {
 }
 
 /// Whether two paths are the same file, or files with the same bytes.
-fn same_file(first: &Path, second: &Path) -> bool {
+pub(crate) fn same_file(first: &Path, second: &Path) -> bool {
     if first
         .to_string_lossy()
         .eq_ignore_ascii_case(&second.to_string_lossy())

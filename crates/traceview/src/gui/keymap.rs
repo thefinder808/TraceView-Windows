@@ -192,6 +192,9 @@ pub fn commands() -> Vec<(u32, String, &'static str)> {
             "",
         ),
         (command::REMOVE_AGENT_SETUP, "remove_agent_setup", ""),
+        (command::WHATS_NEW, "whats_new", ""),
+        (command::CHECK_UPDATES, "check_for_updates", ""),
+        (command::AUTO_UPDATES, "automatic_updates", ""),
         (command::ABOUT, "about", ""),
     ]
     .into_iter()

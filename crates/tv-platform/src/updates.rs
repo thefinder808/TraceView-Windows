@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::Path;
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, HWND, INVALID_HANDLE_VALUE};
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
     WinHttpQueryOption, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
@@ -28,6 +28,9 @@ use windows::Win32::Security::WinTrust::{
 };
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+};
+use windows::Win32::System::Registry::{
+    RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
 };
 
 /// How long a download may go without progress before it gives up.
@@ -343,6 +346,36 @@ fn trust_error(result: i32) -> String {
         0x800B_0109 => "its signature doesn't lead to a root Windows trusts".to_string(),
         code => format!("Windows doesn't trust its signature (0x{code:08X})"),
     }
+}
+
+/// Where an administrator can turn updates off, for the PC or for one user,
+/// as Group Policy and Intune set policies.
+pub const POLICY_KEY: &str = r"SOFTWARE\Policies\TraceView";
+/// A DWORD under [`POLICY_KEY`], which turns updates off when it isn't 0.
+pub const POLICY_VALUE: &str = "DisableUpdates";
+
+/// Whether an administrator turned updates off, under `HKEY_LOCAL_MACHINE`
+/// or `HKEY_CURRENT_USER`.
+pub fn turned_off_by_policy() -> bool {
+    [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER]
+        .into_iter()
+        .any(|root| {
+            let (mut value, mut size) = (0u32, size_of::<u32>() as u32);
+            // SAFETY: the strings outlive the call, and the buffer is a live u32
+            // whose size is given.
+            let status = unsafe {
+                RegGetValueW(
+                    root,
+                    &HSTRING::from(POLICY_KEY),
+                    &HSTRING::from(POLICY_VALUE),
+                    RRF_RT_REG_DWORD,
+                    None,
+                    Some((&mut value as *mut u32).cast()),
+                    Some(&mut size),
+                )
+            };
+            status == ERROR_SUCCESS && value != 0
+        })
 }
 
 /// The major, minor and patch numbers in a file's version resource.
