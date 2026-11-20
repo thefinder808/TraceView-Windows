@@ -9,6 +9,7 @@ mod file_types;
 mod input;
 pub mod metrics;
 mod shell;
+pub mod shortcuts;
 pub mod time_zone;
 pub mod updates;
 mod user_path;
@@ -16,7 +17,10 @@ mod window;
 
 pub use console::{prepare_console_for_gui, ConsoleOutcome};
 pub use drives::mapped_drive;
-pub use file_types::{registered_file_types, FILE_TYPES};
+pub use file_types::{
+    open_default_apps, register_file_types, registered_file_types, unregister_file_types,
+    FileTypes, FILE_TYPES,
+};
 pub use shell::{clipboard_text, open_web_page, show_error, show_folder};
 pub use user_path::UserPath;
 pub use window::{run, Command, Commands, Cursor, Handler, WindowContext, WindowOptions};

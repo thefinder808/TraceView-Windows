@@ -51,6 +51,8 @@ pub enum Choice {
     Folder(PathBuf),
     /// Leaves the folder, or the page when it's shown over open logs.
     Back,
+    /// Installs this copy, which runs from somewhere else.
+    Install,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -331,20 +333,25 @@ impl Home {
     }
 
     /// Lists what's current. Cheap enough to run every frame. `shortcuts` are
-    /// those for opening a log and a folder, to show on the buttons.
+    /// those for opening a log and a folder, to show on the buttons, and
+    /// `offer_install` adds a button to install this copy.
     pub fn rebuild(
         &mut self,
         settings: &Settings,
         places: &[Place],
         theme: &Theme,
         shortcuts: [String; 2],
+        offer_install: bool,
     ) {
         let [open_log, open_folder] = shortcuts;
         let first = match self.folder {
             Some(_) => ("Back", "Esc".to_string(), Choice::Back),
             None => ("Open log...", open_log, Choice::OpenLog),
         };
-        let wanted = [first, ("Open folder...", open_folder, Choice::OpenFolder)];
+        let mut wanted = vec![first, ("Open folder...", open_folder, Choice::OpenFolder)];
+        if offer_install && self.folder.is_none() {
+            wanted.push(("Install TraceView...", String::new(), Choice::Install));
+        }
         self.buttons = wanted
             .into_iter()
             .zip(
@@ -606,7 +613,7 @@ mod tests {
     }
 
     fn laid_out(home: &mut Home, settings: &Settings, places: &[Place]) {
-        home.rebuild(settings, places, &Theme::DARK, shortcuts());
+        home.rebuild(settings, places, &Theme::DARK, shortcuts(), false);
         home.arrange(AREA, &mut RecordingCanvas::new());
     }
 
@@ -692,6 +699,22 @@ mod tests {
         assert!(buttons[0].right < buttons[1].left);
         let escape = home.handle(Event::KeyDown(Key::Escape, Modifiers::default()));
         assert_eq!(escape.chosen, Some(Choice::Back));
+        assert_eq!(
+            home.buttons().len(),
+            2,
+            "an installed copy offers no install"
+        );
+    }
+
+    #[test]
+    fn a_copy_run_from_elsewhere_offers_to_install_itself() {
+        let mut home = Home::default();
+        home.rebuild(&Settings::default(), &[], &Theme::DARK, shortcuts(), true);
+        home.arrange(AREA, &mut RecordingCanvas::new());
+        let (label, rect) = (home.buttons()[2].label, home.buttons()[2].rect);
+        assert_eq!(label, "Install TraceView...");
+        assert!(home.buttons()[1].rect.right < rect.left);
+        assert_eq!(click(&mut home, center(rect)).chosen, Some(Choice::Install));
     }
 
     #[test]

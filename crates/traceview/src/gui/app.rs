@@ -94,6 +94,13 @@ impl App {
             workspace.use_settings(settings, store, problem);
             workspace.file_types = tv_platform::registered_file_types();
             workspace.start_update_checks();
+            // A copy run from somewhere else, such as Downloads, offers to
+            // install itself on the start page.
+            workspace.offer_install =
+                match (crate::setup::Places::current(), std::env::current_exe()) {
+                    (Ok(places), Ok(exe)) => !places.is_installed_copy(&exe),
+                    _ => false,
+                };
         }
         renderer.set_fonts(workspace.fonts());
         if let Some(path) = path {

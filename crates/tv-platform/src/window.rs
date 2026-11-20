@@ -114,9 +114,10 @@ pub enum Command {
     SetCursor(Cursor),
     /// Leaves the title bar's colors to Windows, as a contrast theme needs.
     DefaultCaptionColors,
-    /// Registers this EXE for `.log` files, for this user, or takes that back.
-    /// The handler hears how it went.
-    SetFileTypes(bool),
+    /// Registers this EXE for `.log` files, for this user, then opens Default
+    /// apps at TraceView, or with none, takes the registration back. The
+    /// handler hears how it went.
+    SetFileTypes(Option<PathBuf>),
     /// Shows a message in a standard Windows box, in front of the window.
     ShowMessage {
         title: String,
@@ -347,11 +348,11 @@ impl State {
                     let _ = unsafe { SetWindowTextW(self.hwnd.get(), &HSTRING::from(title)) };
                 }
                 Command::SetClipboard(text) => shell::set_clipboard_text(self.hwnd.get(), &text),
-                Command::SetFileTypes(register) => {
-                    let done = if register {
-                        file_types::register_file_types()
-                    } else {
-                        file_types::unregister_file_types()
+                Command::SetFileTypes(exe) => {
+                    let done = match exe {
+                        Some(exe) => file_types::register_file_types(&exe)
+                            .map(|()| file_types::open_default_apps()),
+                        None => file_types::unregister_file_types(),
                     };
                     let outcome = done
                         .map(|()| file_types::registered_file_types())

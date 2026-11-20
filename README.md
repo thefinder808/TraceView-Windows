@@ -27,7 +27,7 @@ It's one signed EXE with nothing to install, so it can be copied to a USB stick 
 
 Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a zip for x64 PCs, one for ARM64 PCs, and `SHA256SUMS.txt`. From 0.13, each EXE is there on its own too, for updates to download.
 
-1. **Unzip it** anywhere and run `traceview.exe`. Nothing is installed.
+1. **Unzip it** anywhere and run `traceview.exe`. Nothing is installed until you ask.
 2. **Check the signature** if you like: Properties > Digital Signatures should show *Nathaniel Graham*, verified by Microsoft.
 3. **Check the download** against `SHA256SUMS.txt`, if you like:
 
@@ -37,9 +37,20 @@ Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a
 
    The hash it prints should match that zip's line in `SHA256SUMS.txt`. PowerShell prints it in capitals, but the letters are the same.
 
+## Installing
+
+To install it, choose Install TraceView... on the start page, or Tools > Install TraceView..., or run `.\traceview.exe install` from the EXE's folder. It says what it will change and asks first. For your Windows account only, and with no administrator rights, it:
+
+- copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, where it keeps itself up to date;
+- adds it to the Start menu, so typing TraceView in Start opens it;
+- adds that folder to your PATH, so `traceview` works in new terminals;
+- lets it open `.log`, `.lo_` and `.evtx` files, then opens Windows' Default apps page at TraceView. Windows doesn't let a program make itself the default, so choose TraceView there for each kind of file it should open. Right-clicking a log, then Open with > Choose another app > TraceView > Always, does the same for one kind.
+
+Tools > Uninstall TraceView..., or `traceview setup --remove`, takes it all back.
+
 ## Updates
 
-The copy that Tools > Set up for AI agents, or `traceview setup`, installs in `%LOCALAPPDATA%\Programs\TraceView` keeps itself up to date. Once a day, and when you choose Help > Check for updates, the viewer looks for a newer release on GitHub and installs it in the background. The new version starts the next time you open TraceView, and Help > What's new shows what changed.
+The copy that installing, or setting up for AI agents, puts in `%LOCALAPPDATA%\Programs\TraceView` keeps itself up to date. Once a day, and when you choose Help > Check for updates, the viewer looks for a newer release on GitHub and installs it in the background. The new version starts the next time you open TraceView, and Help > What's new shows what changed.
 
 A download is used only once it matches the release's `SHA256SUMS.txt`, Windows trusts its signature, it's signed by the same publisher as the copy that's running, and the version inside it is the one listed. Only a newer version is ever installed. The command line never checks, so a command an AI agent is running is never interrupted.
 
@@ -86,7 +97,7 @@ Every shortcut here can be changed, and any command can be given one, in Tools >
 - **Logs TraceView doesn't know** can be taught to it in Tools > Log formats, with a regex whose named groups say where the time, level, component, thread, source and message are.
 - **Layouts:** View > Layout: CMTrace hides everything but the grid and details pane, and Layout: Everything shows every pane. View > Save layout as... names the panes you have open, to switch back to later.
 - **Themes:** View > Edit theme changes any color of the theme in use, with the window recoloring as you type. Editing a built-in theme makes a copy, saved as a small file in the `themes` folder. Copy a file into that folder to share a theme.
-- **Double-clicking `.log` files:** Tools > Use TraceView for .log files... offers TraceView for `.log` and `.lo_` files, for your Windows account only, then opens Windows' Default apps page to choose it.
+- **Double-clicking `.log` files:** [Installing](#installing) offers TraceView for `.log`, `.lo_` and `.evtx` files and opens Windows' Default apps page to choose it. Tools > Use TraceView for .log files... does just that part, for the installed copy if there is one.
 
 ## Settings and portable copies
 
@@ -213,11 +224,11 @@ To set it up, choose Tools > Set up for AI agents..., or run this from the EXE's
 
 It says what it will change and asks first. For your Windows account only, and with no administrator rights, it:
 
-- copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`;
+- copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, and adds it to the Start menu;
 - adds that folder to your PATH, so `traceview` works in new terminals;
 - adds a skill for each of Claude Code, Codex, the ChatGPT app and GitHub Copilot that's installed. A skill tells the agent when and how to use TraceView, and the agent only reads it in full when a task is about logs.
 
-Then restart your agent apps and terminals, unzip a PC's logs, and ask about them. To update TraceView, run setup again from the newer EXE. `traceview setup --remove`, or Tools > Remove AI agent setup..., undoes it all.
+Then restart your agent apps and terminals, unzip a PC's logs, and ask about them. To update TraceView, run setup again from the newer EXE. `traceview setup --remove`, or Tools > Uninstall TraceView..., undoes it all.
 
 For any other agent, `traceview setup --print` or Tools > Copy instructions for AI agents gives the instructions to paste into its instructions file, such as `AGENTS.md`. Setup never edits those files itself.
 
@@ -247,16 +258,16 @@ It only writes:
 
 - its settings and themes, in `%APPDATA%\TraceView` or beside a portable copy;
 - an index cache for logs of 64 MB or more, so they open faster the next time, in `%LOCALAPPDATA%\TraceView\indexes`. It holds row positions, levels and times, never log text, and is capped at 2 GiB;
-- registry entries under `HKEY_CURRENT_USER`, only if you choose Tools > Use TraceView for .log files;
-- a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, that folder on your PATH, and a skill file for each AI agent found, only if you choose Tools > Set up for AI agents or run `traceview setup`. Updates replace that copy, keeping the one before as `traceview.exe.old` until the next launch;
+- registry entries under `HKEY_CURRENT_USER` that let it open `.log`, `.lo_` and `.evtx` files, only if you install it or choose Tools > Use TraceView for .log files;
+- a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, a Start menu shortcut in `%APPDATA%\Microsoft\Windows\Start Menu\Programs`, and that folder on your PATH, only if you install it or set it up for AI agents, which also writes a skill file for each AI agent found. Updates replace that copy, keeping the one before as `traceview.exe.old` until the next launch;
 - `%LOCALAPPDATA%\TraceView\update-checked`, an empty file whose time says when it last checked for updates;
 - a temporary text copy of each event log it reads, in `%TEMP%\TraceView`. The viewer deletes it when its tab closes. The command line deletes it as soon as it's open, which Windows finishes when the command ends. One left by a crash is cleared a day later.
 
 ## Removing it
 
-1. If you used Tools > Use TraceView for .log files, choose Tools > Stop using TraceView for .log files first.
-2. If you set it up for AI agents, choose Tools > Remove AI agent setup..., or run `traceview setup --remove`.
-3. Delete `traceview.exe`.
+1. If you installed it, or set it up for AI agents, choose Tools > Uninstall TraceView..., or run `traceview setup --remove`. That deletes the installed copy, its Start menu shortcut, PATH entry and file types, and the skills it wrote.
+2. If you used Tools > Use TraceView for .log files with a copy you didn't install, choose Tools > Stop using TraceView for .log files.
+3. Delete any `traceview.exe` you unzipped.
 4. Delete `%APPDATA%\TraceView` and `%LOCALAPPDATA%\TraceView`.
 
 ## Building from source

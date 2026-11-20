@@ -1,5 +1,5 @@
 //! Registers TraceView, for this Windows user only, as a program that opens
-//! `.log` and `.lo_` files, and takes that back. Windows doesn't let a program
+//! `.log`, `.lo_` and `.evtx` files, and takes that back. Windows doesn't let a program
 //! make itself the default, so after registering, Windows' Default apps page
 //! opens at TraceView for the person to pick it. Nothing here runs unless
 //! they ask, and it needs no administrator rights: every key is under
@@ -17,8 +17,8 @@ use windows::Win32::UI::Shell::{SHChangeNotify, ShellExecuteW, SHCNE_ASSOCCHANGE
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 /// The file types TraceView offers to open. `.lo_` is how SCCM names a log
-/// it has rotated.
-pub const FILE_TYPES: [&str; 2] = [".log", ".lo_"];
+/// it has rotated, and `.evtx` is a saved Windows event log.
+pub const FILE_TYPES: [&str; 3] = [".log", ".lo_", ".evtx"];
 const PROG_ID: &str = "TraceView.Log";
 const APP_NAME: &str = "TraceView";
 /// Where everything goes under `HKEY_CURRENT_USER`. Tests use a key of their own.
@@ -210,12 +210,16 @@ fn announce() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
-/// Registers this EXE for [`FILE_TYPES`], then opens Default apps at
-/// TraceView, where the person can make it the default.
-pub fn register_file_types() -> io::Result<()> {
-    let exe = std::env::current_exe()?;
-    register_under(ROOT, &exe)?;
+/// Registers `exe` for [`FILE_TYPES`], replacing any copy registered before.
+pub fn register_file_types(exe: &Path) -> io::Result<()> {
+    register_under(ROOT, exe)?;
     announce();
+    Ok(())
+}
+
+/// Opens Windows' Default apps page at TraceView, where the person can make
+/// it the default, as Windows doesn't let a program do that itself.
+pub fn open_default_apps() {
     // SAFETY: the strings outlive the call, and no parent window is needed.
     // Windows 10 opens Default apps itself, without going to TraceView.
     unsafe {
@@ -228,7 +232,6 @@ pub fn register_file_types() -> io::Result<()> {
             SW_SHOWNORMAL,
         );
     }
-    Ok(())
 }
 
 /// Takes the registration back. A file type whose default was TraceView
@@ -242,6 +245,69 @@ pub fn unregister_file_types() -> io::Result<()> {
 /// The EXE this user's registration opens, if TraceView is registered.
 pub fn registered_file_types() -> Option<PathBuf> {
     registered_under(ROOT)
+}
+
+/// Where TraceView's file types are registered: the real place, or for
+/// tests a key of their own, removed when dropped, as `UserPath` does.
+pub struct FileTypes {
+    root: String,
+}
+
+/// Where tests' registrations go.
+const TESTS: &str = r"Software\TraceView tests";
+
+impl FileTypes {
+    pub fn current() -> Self {
+        Self {
+            root: ROOT.to_string(),
+        }
+    }
+
+    /// A registration of its own, so tests never touch the real one.
+    pub fn for_tests(name: &str) -> Self {
+        Self {
+            root: format!(r"{TESTS}\FileTypes {name} {}", std::process::id()),
+        }
+    }
+
+    fn is_real(&self) -> bool {
+        self.root == ROOT
+    }
+
+    /// Registers `exe` for [`FILE_TYPES`], replacing any copy registered
+    /// before.
+    pub fn register(&self, exe: &Path) -> io::Result<()> {
+        register_under(&self.root, exe)?;
+        if self.is_real() {
+            announce();
+        }
+        Ok(())
+    }
+
+    pub fn unregister(&self) -> io::Result<()> {
+        unregister_under(&self.root)?;
+        if self.is_real() {
+            announce();
+        }
+        Ok(())
+    }
+
+    /// The EXE registered, if TraceView is.
+    pub fn registered(&self) -> Option<PathBuf> {
+        registered_under(&self.root)
+    }
+}
+
+impl Drop for FileTypes {
+    fn drop(&mut self) {
+        if self.is_real() {
+            return;
+        }
+        // SAFETY: the string outlives the call.
+        unsafe {
+            let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(self.root.as_str()));
+        }
+    }
 }
 
 #[cfg(test)]

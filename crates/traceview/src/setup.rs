@@ -1,6 +1,8 @@
-//! Sets TraceView up for AI agents, for this Windows user only, and takes that
-//! back. Setting up copies this EXE to a folder of its own, puts that folder on
-//! the user's PATH, and writes a skill for each agent found. Claude Code reads
+//! Installs TraceView, or sets it up for AI agents, for this Windows user
+//! only, and takes that back. Both copy this EXE to a folder of its own, add
+//! it to the Start menu and put that folder on the user's PATH. Installing
+//! also registers it for `.log`, `.lo_` and `.evtx` files, and setting up for
+//! agents writes a skill for each agent found. Claude Code reads
 //! skills from `%USERPROFILE%\.claude\skills`, Codex and the ChatGPT app from
 //! `%USERPROFILE%\.agents\skills`, and GitHub Copilot from
 //! `%USERPROFILE%\.copilot\skills`. All follow the Agent Skills standard, so the
@@ -8,13 +10,15 @@
 //!
 //! Nothing here runs unless asked, by `traceview setup` or the Tools menu, and
 //! both say what will change first. No administrator rights are needed.
-//! Removing takes back only what setup wrote: a skill TraceView didn't write is
-//! left alone, as is anything else in the folders.
+//! Removing takes back both: a skill TraceView didn't write is left alone, as
+//! is anything else in the folders, and a Start menu shortcut is deleted only
+//! if it opens the installed copy.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use tv_platform::UserPath;
+use tv_platform::shortcuts;
+use tv_platform::{FileTypes, UserPath, FILE_TYPES};
 
 const SKILL_NAME: &str = "traceview";
 /// Marks a skill file as TraceView's, so setup can update it and removal
@@ -28,15 +32,44 @@ const DESCRIPTION: &str = "Investigate Windows logs, such as ConfigMgr (SCCM) cl
     deployment, policy or logon failed, or to find errors in .log, .lo_ or .evtx files or a folder \
     of logs.";
 const UNDO: &str =
-    "To undo it, choose Tools > Remove AI agent setup, or run `traceview setup --remove`.";
+    "To undo it, choose Tools > Uninstall TraceView, or run `traceview setup --remove`.";
+/// What the Start menu shortcut says about TraceView.
+const SHORTCUT_DESCRIPTION: &str = "A fast log viewer for Windows, in the spirit of CMTrace";
+
+/// What setting up is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    /// TraceView itself, for opening logs from Start and Explorer.
+    Install,
+    /// AI agents, which run its command line.
+    Agents,
+}
+
+/// Whether two paths name the same file, however they're written.
+fn same_path(first: &Path, second: &Path) -> bool {
+    first
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&second.to_string_lossy())
+}
+
+/// The file types, as `.log, .lo_ and .evtx`.
+pub(crate) fn file_types_text() -> String {
+    match FILE_TYPES.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => FILE_TYPES.join(""),
+    }
+}
 
 /// Where setup puts things for this user.
 pub struct Places {
     pub home: PathBuf,
     pub local_app_data: PathBuf,
+    /// `%APPDATA%`, which holds this user's Start menu.
+    pub app_data: PathBuf,
     /// Codex's own folder, when moved from `%USERPROFILE%\.codex`.
     pub codex_home: Option<PathBuf>,
     pub path: UserPath,
+    pub file_types: FileTypes,
 }
 
 impl Places {
@@ -50,9 +83,26 @@ impl Places {
         Ok(Self {
             home: folder("USERPROFILE")?,
             local_app_data: folder("LOCALAPPDATA")?,
+            app_data: folder("APPDATA")?,
             codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
             path: UserPath::current(),
+            file_types: FileTypes::current(),
         })
+    }
+
+    /// TraceView's shortcut in this user's Start menu.
+    pub fn shortcut(&self) -> PathBuf {
+        self.app_data
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("TraceView.lnk")
+    }
+
+    /// Whether `exe` is the installed copy.
+    pub fn is_installed_copy(&self, exe: &Path) -> bool {
+        same_path(exe, &self.installed_exe())
     }
 
     /// The folder TraceView is copied to, the one put on PATH.
@@ -164,12 +214,17 @@ enum SkillState {
 
 /// What setting up would change.
 pub struct Plan {
+    purpose: Purpose,
     this_exe: PathBuf,
     installed: PathBuf,
     folder: PathBuf,
     copy: bool,
     replaces: bool,
+    /// Whether the Start menu shortcut needs making or pointing at the copy.
+    shortcut: bool,
     on_path: bool,
+    /// Whether the file types need registering for the copy.
+    file_types: bool,
     skills: Vec<(&'static str, PathBuf, SkillState)>,
 }
 
@@ -189,11 +244,14 @@ pub(crate) fn same_file(first: &Path, second: &Path) -> bool {
     }
 }
 
-pub fn plan(places: &Places, this_exe: &Path) -> Plan {
+pub fn plan(places: &Places, this_exe: &Path, purpose: Purpose) -> Plan {
     let installed = places.installed_exe();
     let text = skill(&installed);
-    let skills = places
-        .agents()
+    let agents = match purpose {
+        Purpose::Agents => places.agents(),
+        Purpose::Install => Vec::new(),
+    };
+    let skills = agents
         .into_iter()
         .map(|(agent, file)| {
             let state = match fs::read_to_string(&file) {
@@ -205,10 +263,14 @@ pub fn plan(places: &Places, this_exe: &Path) -> Plan {
             (agent, file, state)
         })
         .collect();
+    let opens_copy = |exe: Option<PathBuf>| exe.is_some_and(|exe| same_path(&exe, &installed));
     Plan {
+        purpose,
         this_exe: this_exe.to_path_buf(),
         copy: !same_file(this_exe, &installed),
         replaces: installed.is_file(),
+        shortcut: !opens_copy(shortcuts::shortcut_target(&places.shortcut())),
+        file_types: purpose == Purpose::Install && !opens_copy(places.file_types.registered()),
         installed,
         folder: places.folder(),
         on_path: places.path.contains(&places.folder()),
@@ -220,7 +282,9 @@ impl Plan {
     /// Whether there's nothing left to do.
     pub fn is_done(&self) -> bool {
         !self.copy
+            && !self.shortcut
             && self.on_path
+            && !self.file_types
             && self
                 .skills
                 .iter()
@@ -236,11 +300,35 @@ impl Plan {
             (true, false) => format!("- Copy TraceView to {folder}"),
             (true, true) => format!("- Replace the copy of TraceView in {folder} with this one"),
         });
+        lines.push(if self.shortcut {
+            "- Add it to the Start menu, so typing TraceView in Start opens it".to_string()
+        } else {
+            "- It's already in the Start menu".to_string()
+        });
         lines.push(if self.on_path {
             "- That folder is already on your PATH".to_string()
         } else {
             "- Add that folder to your PATH, so `traceview` works in new terminals".to_string()
         });
+        if self.purpose == Purpose::Install {
+            let types = file_types_text();
+            lines.push(if self.file_types {
+                format!("- Let it open {types} files")
+            } else {
+                format!("- It already opens {types} files")
+            });
+            lines.push(
+                "- Then open Windows' Default apps page at TraceView, where you can choose it as \
+                 the default for those files, as Windows doesn't let a program do that itself"
+                    .to_string(),
+            );
+            let intro = if self.is_done() {
+                "TraceView is already installed, for your Windows account only:"
+            } else {
+                "TraceView will install itself, for your Windows account only:"
+            };
+            return format!("{intro}\n\n{}\n\n{UNDO}", lines.join("\n"));
+        }
         for (agent, file, state) in &self.skills {
             lines.push(match state {
                 SkillState::New => format!("- Add its skill for {agent}, in {}", file.display()),
@@ -280,12 +368,33 @@ impl Plan {
                 format!("- Copied TraceView to {folder}")
             });
         }
+        if self.shortcut {
+            shortcuts::create_shortcut(&places.shortcut(), &self.installed, SHORTCUT_DESCRIPTION)
+                .map_err(|error| format!("Couldn't add TraceView to the Start menu: {error}"))?;
+            done.push("- Added it to the Start menu".to_string());
+        }
         if !self.on_path {
             places
                 .path
                 .add(&self.folder)
                 .map_err(|error| format!("Couldn't add {folder} to your PATH: {error}"))?;
             done.push("- Added it to your PATH".to_string());
+        }
+        if self.file_types {
+            places
+                .file_types
+                .register(&self.installed)
+                .map_err(|error| format!("Couldn't register it for files: {error}"))?;
+            done.push(format!("- It now opens {} files", file_types_text()));
+        }
+        if self.purpose == Purpose::Install {
+            if done.is_empty() {
+                return Ok("TraceView was already installed.".to_string());
+            }
+            return Ok(format!(
+                "TraceView is installed.\n\n{}\n\nType TraceView in Start to open it. In Default apps, choose it for each kind of file it should open. {UNDO}",
+                done.join("\n")
+            ));
         }
         let text = skill(&self.installed);
         for (agent, file, state) in &self.skills {
@@ -348,15 +457,24 @@ pub struct Removal {
     installed: Option<PathBuf>,
     /// Whether this EXE is the installed one, which can't delete itself.
     running_it: bool,
+    /// The Start menu shortcut, if it opens the installed copy.
+    shortcut: Option<PathBuf>,
     on_path: bool,
+    /// Whether TraceView is registered for file types.
+    file_types: bool,
     skills: Vec<(&'static str, PathBuf)>,
 }
 
 pub fn removal(places: &Places, this_exe: &Path) -> Removal {
     let installed = places.installed_exe();
     let ours = |file: &Path| fs::read_to_string(file).is_ok_and(|text| text.contains(MARK));
+    let shortcut = places.shortcut();
+    let opens_copy =
+        shortcuts::shortcut_target(&shortcut).is_some_and(|target| same_path(&target, &installed));
     Removal {
         folder: places.folder(),
+        shortcut: opens_copy.then_some(shortcut),
+        file_types: places.file_types.registered().is_some(),
         running_it: installed.is_file()
             && this_exe
                 .to_string_lossy()
@@ -373,15 +491,26 @@ pub fn removal(places: &Places, this_exe: &Path) -> Removal {
 
 impl Removal {
     pub fn is_empty(&self) -> bool {
-        self.installed.is_none() && !self.on_path && self.skills.is_empty()
+        self.installed.is_none()
+            && self.shortcut.is_none()
+            && !self.on_path
+            && !self.file_types
+            && self.skills.is_empty()
     }
 
     pub fn describe(&self) -> String {
         if self.is_empty() {
-            return "TraceView isn't set up for AI agents, so there's nothing to remove."
+            return "TraceView isn't installed or set up for AI agents, so there's nothing to \
+                    remove."
                 .to_string();
         }
         let mut lines = Vec::new();
+        if self.shortcut.is_some() {
+            lines.push("- Take it out of the Start menu".to_string());
+        }
+        if self.file_types {
+            lines.push(format!("- Stop it opening {} files", file_types_text()));
+        }
         if self.on_path {
             lines.push(format!("- Take {} off your PATH", self.folder.display()));
         }
@@ -392,7 +521,7 @@ impl Removal {
             lines.push(format!("- Delete {}", installed.display()));
         }
         format!(
-            "TraceView will undo its AI agent setup:\n\n{}",
+            "TraceView will remove itself from your Windows account:\n\n{}",
             lines.join("\n")
         )
     }
@@ -400,6 +529,18 @@ impl Removal {
     /// Takes everything back, and says what was done.
     pub fn apply(&self, places: &Places) -> Result<String, String> {
         let mut done = Vec::new();
+        if let Some(shortcut) = &self.shortcut {
+            fs::remove_file(shortcut)
+                .map_err(|error| format!("Couldn't delete {}: {error}", shortcut.display()))?;
+            done.push("- Took it out of the Start menu".to_string());
+        }
+        if self.file_types {
+            places
+                .file_types
+                .unregister()
+                .map_err(|error| format!("Couldn't unregister it for files: {error}"))?;
+            done.push(format!("- It no longer opens {} files", file_types_text()));
+        }
         if self.on_path {
             places.path.remove(&self.folder).map_err(|error| {
                 format!(
@@ -423,7 +564,7 @@ impl Removal {
         }
         let _ = fs::remove_dir(&self.folder);
         Ok(format!(
-            "TraceView's AI agent setup is removed.\n\n{}",
+            "TraceView is removed from your Windows account.\n\n{}",
             done.join("\n")
         ))
     }
@@ -480,8 +621,10 @@ mod tests {
             places: Places {
                 home,
                 local_app_data: dir.path().join("local"),
+                app_data: dir.path().join("roaming"),
                 codex_home: None,
                 path: UserPath::for_tests(name),
+                file_types: FileTypes::for_tests(name),
             },
             exe,
             _dir: dir,
@@ -495,7 +638,7 @@ mod tests {
     #[test]
     fn setting_up_installs_adds_to_path_and_writes_each_skill() {
         let Fixture { places, exe, _dir } = fixture("set up", &[".claude", ".codex", ".copilot"]);
-        let plan = plan(&places, &exe);
+        let plan = plan(&places, &exe, Purpose::Agents);
         assert!(!plan.is_done());
         let described = plan.describe();
         assert!(described.contains("Copy TraceView to"), "{described}");
@@ -532,7 +675,7 @@ mod tests {
             "GitHub Copilot reads user skills from .copilot"
         );
 
-        let again = super::plan(&places, &exe);
+        let again = super::plan(&places, &exe, Purpose::Agents);
         assert!(again.is_done());
         assert!(again.describe().starts_with("TraceView is already set up"));
     }
@@ -540,18 +683,18 @@ mod tests {
     #[test]
     fn only_agents_found_get_a_skill() {
         let Fixture { places, exe, _dir } = fixture("one agent", &[".claude"]);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         assert!(skill_at(&places, 0).is_file());
         assert!(!skill_at(&places, 1).exists());
         assert!(!skill_at(&places, 2).exists());
 
         let Fixture { places, exe, _dir } = fixture("copilot only", &[".copilot"]);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         assert!(skill_at(&places, 2).is_file());
         assert!(!skill_at(&places, 0).exists());
 
         let Fixture { places, exe, _dir } = fixture("no agents", &[]);
-        let plan = plan(&places, &exe);
+        let plan = plan(&places, &exe, Purpose::Agents);
         assert!(plan.describe().contains("no skills are added"));
     }
 
@@ -565,7 +708,7 @@ mod tests {
         let moved = places.local_app_data.join("codex");
         fs::create_dir_all(&moved).unwrap();
         places.codex_home = Some(moved);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         assert!(skill_at(&places, 1).is_file());
     }
 
@@ -575,7 +718,7 @@ mod tests {
         let theirs = skill_at(&places, 0);
         fs::create_dir_all(theirs.parent().unwrap()).unwrap();
         fs::write(&theirs, "---\nname: traceview\ndescription: Mine\n---\n").unwrap();
-        let plan = plan(&places, &exe);
+        let plan = plan(&places, &exe, Purpose::Agents);
         assert!(plan.describe().contains("as TraceView didn't write it"));
         plan.apply(&places).unwrap();
         assert!(fs::read_to_string(&theirs).unwrap().contains("Mine"));
@@ -588,11 +731,11 @@ mod tests {
     #[test]
     fn a_newer_exe_replaces_the_installed_one_and_updates_skills() {
         let Fixture { places, exe, _dir } = fixture("update", &[".claude"]);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         fs::write(&exe, b"a newer program").unwrap();
         let skill = skill_at(&places, 0);
         fs::write(&skill, format!("old text\n{MARK}\n")).unwrap();
-        let plan = plan(&places, &exe);
+        let plan = plan(&places, &exe, Purpose::Agents);
         let described = plan.describe();
         assert!(described.contains("Replace the copy"), "{described}");
         assert!(described.contains("Update its skill for Claude Code"));
@@ -615,7 +758,7 @@ mod tests {
     #[test]
     fn removing_takes_back_everything_setup_did() {
         let Fixture { places, exe, _dir } = fixture("remove", &[".claude", ".codex", ".copilot"]);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         let removal = removal(&places, &exe);
         let described = removal.describe();
         assert!(described.contains("Take"), "{described}");
@@ -633,10 +776,71 @@ mod tests {
     }
 
     #[test]
+    fn installing_adds_a_start_menu_shortcut_and_registers_file_types() {
+        let Fixture { places, exe, _dir } = fixture("install", &[".claude"]);
+        let plan = plan(&places, &exe, Purpose::Install);
+        assert!(!plan.is_done());
+        let described = plan.describe();
+        assert!(
+            described.starts_with("TraceView will install itself"),
+            "{described}"
+        );
+        assert!(described.contains("Add it to the Start menu"));
+        assert!(described.contains("Let it open .log, .lo_ and .evtx files"));
+        assert!(described.contains("Default apps"));
+        assert!(!described.contains("skill"), "installing writes no skills");
+
+        let report = plan.apply(&places).unwrap();
+        assert!(report.contains("- Added it to the Start menu"), "{report}");
+        assert!(report.contains("- It now opens .log"), "{report}");
+        let target = shortcuts::shortcut_target(&places.shortcut()).unwrap();
+        assert!(same_path(&target, &places.installed_exe()));
+        let registered = places.file_types.registered().unwrap();
+        assert!(same_path(&registered, &places.installed_exe()));
+        assert!(places.path.contains(&places.folder()));
+        assert!(!skill_at(&places, 0).exists());
+
+        let again = super::plan(&places, &exe, Purpose::Install);
+        assert!(again.is_done());
+        assert!(again
+            .describe()
+            .starts_with("TraceView is already installed"));
+        // Setting up for agents afterwards only adds what's missing.
+        let agents = super::plan(&places, &exe, Purpose::Agents);
+        assert!(agents.describe().contains("It's already in the Start menu"));
+
+        let removal = removal(&places, &exe);
+        let described = removal.describe();
+        assert!(
+            described.contains("Take it out of the Start menu"),
+            "{described}"
+        );
+        assert!(described.contains("Stop it opening .log"), "{described}");
+        removal.apply(&places).unwrap();
+        assert!(!places.shortcut().exists());
+        assert_eq!(places.file_types.registered(), None);
+        assert!(super::removal(&places, &exe).is_empty());
+    }
+
+    #[test]
+    fn a_start_menu_shortcut_to_something_else_is_left_alone() {
+        let Fixture { places, exe, _dir } = fixture("other shortcut", &[]);
+        shortcuts::create_shortcut(&places.shortcut(), &exe, "Someone else's").unwrap();
+        assert!(super::removal(&places, &exe).is_empty());
+        assert!(places.shortcut().exists());
+        // Installing points it at the installed copy.
+        plan(&places, &exe, Purpose::Install)
+            .apply(&places)
+            .unwrap();
+        let target = shortcuts::shortcut_target(&places.shortcut()).unwrap();
+        assert!(same_path(&target, &places.installed_exe()));
+    }
+
+    #[test]
     fn instructions_point_at_the_installed_copy_once_there_is_one() {
         let Fixture { places, exe, _dir } = fixture("instructions", &[]);
         assert_eq!(places.exe_for_agents(&exe), exe);
-        plan(&places, &exe).apply(&places).unwrap();
+        plan(&places, &exe, Purpose::Agents).apply(&places).unwrap();
         assert_eq!(places.exe_for_agents(&exe), places.installed_exe());
         let text = instructions(&places.installed_exe());
         assert!(text.contains("traceview summarize <folder>"));
