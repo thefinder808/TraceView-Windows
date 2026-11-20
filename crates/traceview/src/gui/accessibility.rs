@@ -219,7 +219,7 @@ fn columns_nodes(panel: &ColumnsPanel, scale: f32, nodes: &mut Vec<(NodeId, Node
         let mut node = Node::new(Role::ListBoxOption);
         node.set_label(format!(
             "{}, {}",
-            spec.column.label(),
+            spec.label(),
             columns_panel::describe(spec)
         ));
         node.set_selected(panel.selected() == index);

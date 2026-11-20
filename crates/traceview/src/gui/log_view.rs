@@ -102,6 +102,8 @@ enum Drag {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Placed {
     column: Column,
+    /// The header's title, which can depend on the log's format.
+    title: &'static str,
     left: f32,
     /// Where its text stops. The last column runs to the grid's edge.
     right: f32,
@@ -214,6 +216,7 @@ impl LogView {
             let right = left + spec.width * char_width;
             self.placed.push(Placed {
                 column: spec.column,
+                title: spec.title(),
                 left,
                 right,
                 natural_right: right,
@@ -683,7 +686,7 @@ impl LogView {
         canvas.push_clip(header);
         for placed in &self.placed {
             canvas.text(
-                placed.column.title(),
+                placed.title,
                 cell(placed.left, placed.right),
                 GRID_LEFT,
                 theme.primary_text,

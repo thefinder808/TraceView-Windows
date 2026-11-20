@@ -175,6 +175,9 @@ fn folder_name(path: &Path) -> String {
 }
 
 fn parent_label(path: &Path) -> String {
+    if crate::events::log_name(path).is_some() {
+        return "Event log on this PC".to_string();
+    }
     path.parent()
         .map_or_else(String::new, |folder| folder.display().to_string())
 }

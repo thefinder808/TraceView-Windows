@@ -15,6 +15,7 @@ use super::rules::RuleSet;
 use super::search::{self, Matches, Target};
 use super::settings::Settings;
 use super::watch::{Applied, Watcher};
+use crate::events;
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -37,6 +38,9 @@ pub struct Source {
     /// Bookmarked rows of this file.
     pub bookmarks: BTreeSet<u32>,
     watcher: Watcher,
+    /// For an event log, its temporary copy, which goes when the tab closes,
+    /// and for one of this PC's logs, what adds new events to it.
+    _feed: Option<events::Feed>,
 }
 
 /// Merging again after live tail changed a file of a merged tab.
@@ -155,7 +159,7 @@ impl Document {
 }
 
 struct Opened {
-    logs: Vec<(LogFile, OpenStats)>,
+    logs: Vec<(LogFile, OpenStats, Option<events::Feed>)>,
     order: Option<Vec<MergedRow>>,
 }
 
@@ -227,6 +231,9 @@ impl RowSource for TabRows<'_> {
 }
 
 pub fn file_name(path: &Path) -> String {
+    if let Some(name) = events::log_name(path) {
+        return name.to_string();
+    }
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -304,10 +311,23 @@ fn open_logs(
 ) -> io::Result<Opened> {
     let mut logs = Vec::with_capacity(paths.len());
     for path in paths {
-        logs.push(LogFile::open_with_formats(path, formats, progress)?);
+        logs.push(match events::source(path) {
+            Some(source) => {
+                let copy = events::convert(source, progress).map_err(io::Error::other)?;
+                let feed = events::Feed::new(copy, events::log_name(path).map(String::from));
+                // An event log's copy is read as itself: no custom format,
+                // and no index cache for a file that's gone when it closes.
+                let (log, stats) = LogFile::open_with(&feed.path(), None, &[], &AtomicU64::new(0))?;
+                (log, stats, Some(feed))
+            }
+            None => {
+                let (log, stats) = LogFile::open_with_formats(path, formats, progress)?;
+                (log, stats, None)
+            }
+        });
     }
     let order = if logs.len() > 1 {
-        let refs: Vec<&LogFile> = logs.iter().map(|(log, _)| log).collect();
+        let refs: Vec<&LogFile> = logs.iter().map(|(log, _, _)| log).collect();
         Some(merge_logs(&refs, &Control::default()).map_err(io::Error::other)?)
     } else {
         None
@@ -346,8 +366,10 @@ impl Tab {
     /// Opens one log, or merges several, reading each with a custom format if
     /// one suits it.
     pub fn open(paths: Vec<PathBuf>, formats: Vec<Arc<CustomFormat>>, waker: &Waker) -> Self {
+        // Event logs count events read, not bytes, so they're left out.
         let size = paths
             .iter()
+            .filter(|path| events::source(path).is_none())
             .map(|path| std::fs::metadata(path).map_or(0, |metadata| metadata.len()))
             .sum();
         let bytes_done = Arc::new(AtomicU64::new(0));
@@ -568,7 +590,7 @@ impl Tab {
                         .logs
                         .into_iter()
                         .zip(&self.paths)
-                        .map(|((log, stats), path)| {
+                        .map(|((log, stats, feed), path)| {
                             let log: SharedLog = Arc::new(RwLock::new(log));
                             let wake = waker.clone();
                             let mut cache = RowCache::new(log.clone(), move || wake.wake());
@@ -580,6 +602,7 @@ impl Tab {
                                 bookmarks: settings.bookmarks_for(path),
                                 log,
                                 stats,
+                                _feed: feed,
                             }
                         })
                         .collect();
@@ -1069,6 +1092,10 @@ impl Tab {
     /// Status text for this tab.
     pub fn status(&self) -> String {
         let document = match &self.content {
+            Content::Opening(opening) if opening.size == 0 => {
+                let events = opening.bytes_done.load(Ordering::Relaxed) as usize;
+                return format!("Reading {}: {} events", self.title(), with_commas(events));
+            }
             Content::Opening(opening) => {
                 let done = opening.bytes_done.load(Ordering::Relaxed).min(opening.size);
                 return format!(

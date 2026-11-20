@@ -507,6 +507,17 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** the folder dialog, dropping a folder, and Narrator reading the start page.
 
+## Event logs
+
+[ARCHITECTURE.md](ARCHITECTURE.md#event-logs) has how events are read.
+
+- **File > Open event log...** opens the command palette on this PC's event logs, sorted by name, leaving out debug and analytic logs, which hold events only while tracing. Typing narrows the list, as for fonts and shortcuts. A saved `.evtx` file opens like any log, and the Open dialog's log filter takes `.evtx` too.
+- **A named log is a tab like any other.** Its title is the log's name, the sidebar and start page describe it as an event log on this PC, and it's kept among recent logs, so it opens again from there.
+- **Columns are named as in Event Viewer:** Source for the provider, Event ID, and Computer, which is hidden at first. Source and Event ID start wider than other logs' Component and Thread, as providers' names are long. The names come from each column spec, which knows its log's format, so the grid, the columns editor and screen readers all use them.
+- **Opening shows a count of events,** as "Reading System: 12,345 events", since an event log has no size in bytes to show a percentage of.
+- **One of this PC's logs is followed:** every two seconds a thread adds new events to its copy, and the tab's live tail shows them as it does new lines in any log. A saved `.evtx` file isn't followed.
+- **The copy goes with the tab.** Closing the tab stops the thread and deletes the copy.
+
 ## After 0.12.0
 
 **Updates,** for the copy `traceview setup` installs. [ARCHITECTURE.md](ARCHITECTURE.md#updates) has how they work, and [SECURITY.md](../SECURITY.md) what's checked.
