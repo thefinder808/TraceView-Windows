@@ -225,6 +225,18 @@ In the ChatGPT app, ask in Codex, which runs commands on your PC.
 
 What you give an AI service leaves your PC, and logs hold user, machine and server names. Summaries and filtered queries send much less of that than whole logs.
 
+## Event logs
+
+The command line reads Windows event logs too: a saved `.evtx` file, including one on another PC's share, or one of this PC's logs by the name Event Viewer gives it.
+
+```powershell
+traceview summarize eventlog:System
+traceview query eventlog:Microsoft-Windows-TaskScheduler/Operational --min-level error
+traceview query \\SRV01\c$\Windows\System32\winevt\Logs\Application.evtx --text "Application Error"
+```
+
+Each event is a row with its time in this PC's time zone, its level, its provider as the component, its event ID as the thread and its computer as the source. Messages are the ones Event Viewer shows, from the message files of the software installed on this PC. An event this PC has no message for shows its own values instead. Logs this PC lets you read in Event Viewer work without administrator rights, but the files under `C:\Windows\System32\winevt\Logs` need them.
+
 ## Privacy
 
 TraceView sends no telemetry and has no accounts, and your logs stay on your PC. The only thing it connects to is GitHub, to check for updates: once a day, and when you choose Help > Check for updates, the viewer asks for the latest release's `SHA256SUMS.txt`, and downloads a newer `traceview.exe` if there is one. GitHub sees this PC's address and the version of TraceView asking, as it would for any download. While checking a signature, Windows may also ask the certificate's authority, Microsoft, whether it was revoked, as it does before running a downloaded program. The command line never connects. [Updates](#updates) says how to turn checks off.
@@ -235,7 +247,8 @@ It only writes:
 - an index cache for logs of 64 MB or more, so they open faster the next time, in `%LOCALAPPDATA%\TraceView\indexes`. It holds row positions, levels and times, never log text, and is capped at 2 GiB;
 - registry entries under `HKEY_CURRENT_USER`, only if you choose Tools > Use TraceView for .log files;
 - a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, that folder on your PATH, and a skill file for each AI agent found, only if you choose Tools > Set up for AI agents or run `traceview setup`. Updates replace that copy, keeping the one before as `traceview.exe.old` until the next launch;
-- `%LOCALAPPDATA%\TraceView\update-checked`, an empty file whose time says when it last checked for updates.
+- `%LOCALAPPDATA%\TraceView\update-checked`, an empty file whose time says when it last checked for updates;
+- a temporary text copy of each event log it reads, in `%TEMP%\TraceView`, deleted as soon as it's open, which Windows finishes when TraceView closes it. One left by a crash is cleared a day later.
 
 ## Removing it
 
