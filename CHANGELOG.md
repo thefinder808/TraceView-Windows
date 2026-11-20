@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.15.0
+
+Installing TraceView properly: one step adds it to the Start menu, puts it on your PATH, lets it open `.log`, `.lo_` and `.evtx` files and opens Windows' Default apps page to make it their default. And setup logs with blank lines between entries no longer show an empty row after each. Still a beta, tested on Windows 11.
 
 **Installing**
 
