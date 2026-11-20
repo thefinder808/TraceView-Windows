@@ -45,11 +45,21 @@ pub enum Purpose {
     Agents,
 }
 
-/// Whether two paths name the same file, however they're written.
+/// Whether two paths name the same file, however they're written. A folder
+/// can be written with its short 8.3 name, as `RUNNER~1`, where a shortcut
+/// keeps the long one, so paths that differ as text are compared as Windows
+/// resolves them.
 fn same_path(first: &Path, second: &Path) -> bool {
-    first
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&second.to_string_lossy())
+    let same_text = |first: &Path, second: &Path| {
+        first
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&second.to_string_lossy())
+    };
+    same_text(first, second)
+        || matches!(
+            (fs::canonicalize(first), fs::canonicalize(second)),
+            (Ok(first), Ok(second)) if same_text(&first, &second)
+        )
 }
 
 /// The file types, as `.log, .lo_ and .evtx`.
