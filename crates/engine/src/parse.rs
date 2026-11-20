@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 const SCCM_START: &[u8] = b"<![LOG[";
 const SCCM_END: &[u8] = b"]LOG]!>";
+/// Starts each row of an event log as TraceView writes it, a record
+/// separator that event text can't hold, as it's taken out when written.
+pub const EVENT_START: u8 = 0x1E;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,6 +25,11 @@ pub enum Format {
     Sccm = 1,
     /// A format defined by a pattern, which the parse context carries.
     Custom = 2,
+    /// A Windows event log, as TraceView writes one from `.evtx` or a named
+    /// log: each row starts with [`EVENT_START`], then its time, level,
+    /// provider, event ID and computer, separated by tabs, then its message,
+    /// which can take several lines.
+    Event = 3,
 }
 
 impl Format {
@@ -30,6 +38,7 @@ impl Format {
             0 => Some(Format::Plain),
             1 => Some(Format::Sccm),
             2 => Some(Format::Custom),
+            3 => Some(Format::Event),
             _ => None,
         }
     }
@@ -191,6 +200,9 @@ pub fn fields<'a>(format: Format, row: &'a [u8], context: &ParseContext) -> Fiel
         Format::Sccm => {
             sccm_fields(line).unwrap_or_else(|| Fields::message_only(line, level::detect(line)))
         }
+        Format::Event => {
+            event_fields(line).unwrap_or_else(|| Fields::message_only(line, Level::Info))
+        }
         // A line the pattern doesn't match is shown whole, with its level
         // from its words, as plain text with no time would be.
         Format::Custom => context
@@ -213,6 +225,14 @@ pub fn utc_offset(format: Format, row: &[u8]) -> Option<i32> {
             let message = sccm_message(line)?;
             let attributes = &line[SCCM_START.len() + message.len() + SCCM_END.len()..];
             bias_offset(sccm_attribute(attributes, b"time=\""))
+        }
+        Format::Event => {
+            time::parse_iso(
+                line.strip_prefix(&[EVENT_START])?
+                    .split(|byte| *byte == b'\t')
+                    .next()?,
+            )?
+            .zone
         }
         Format::Plain | Format::Custom => {
             let line = trim_spaces(line);
@@ -267,11 +287,20 @@ pub fn searchable(format: Format, row: &[u8]) -> &[u8] {
         Format::Plain => server_parts(trim_spaces(line)).map_or(line, |server| server.message),
         Format::Custom => line,
         Format::Sccm => sccm_message(line).unwrap_or(line),
+        // The provider, event ID, computer and message, but not the time or
+        // level, which time and level filters cover.
+        Format::Event => event_parts(line).map_or(line, |parts| parts.searched),
     }
 }
 
-/// Treats a file as SCCM when its start holds a complete entry.
+/// Treats a file as an event log when it starts with an event row, and as
+/// SCCM when its start holds a complete entry.
 pub fn detect_format(head: &[u8]) -> Format {
+    let event = event_parts(trim_line_ending(head))
+        .is_some_and(|parts| time::parse_iso(parts.time).is_some());
+    if event {
+        return Format::Event;
+    }
     let has_start = head.starts_with(SCCM_START) || memmem::find(head, b"\n<![LOG[").is_some();
     if has_start && memmem::find(head, SCCM_END).is_some() {
         Format::Sccm
@@ -347,6 +376,66 @@ fn sccm_fields(line: &[u8]) -> Option<Fields<'_>> {
         thread: sccm_attribute(attributes, b"thread=\""),
         source: sccm_attribute(attributes, b"file=\""),
         message,
+    })
+}
+
+/// The parts of an event row.
+struct EventParts<'a> {
+    time: &'a [u8],
+    level: &'a [u8],
+    provider: &'a [u8],
+    id: &'a [u8],
+    computer: &'a [u8],
+    message: &'a [u8],
+    /// Everything from the provider on.
+    searched: &'a [u8],
+}
+
+fn event_parts(line: &[u8]) -> Option<EventParts<'_>> {
+    let body = line.strip_prefix(&[EVENT_START])?;
+    let mut fields = body.splitn(6, |byte| *byte == b'\t');
+    let time = fields.next()?;
+    let level = fields.next()?;
+    let provider = fields.next()?;
+    // Two tabs came before the provider, or there'd be none.
+    let searched = &body[time.len() + level.len() + 2..];
+    let id = fields.next()?;
+    let computer = fields.next()?;
+    let message = fields.next().unwrap_or_default();
+    let end = message
+        .iter()
+        .rposition(|byte| !matches!(byte, b'\r' | b'\n'))
+        .map_or(0, |last| last + 1);
+    let message = &message[..end];
+    Some(EventParts {
+        time,
+        level,
+        provider,
+        id,
+        computer,
+        message,
+        searched,
+    })
+}
+
+/// A Windows event's row. Its levels are Event Viewer's, and Verbose is
+/// debug.
+fn event_fields(line: &[u8]) -> Option<Fields<'_>> {
+    let parts = event_parts(line)?;
+    let level = match parts.level {
+        b"Critical" => Level::Critical,
+        b"Error" => Level::Error,
+        b"Warning" => Level::Warning,
+        b"Verbose" => Level::Debug,
+        _ => Level::Info,
+    };
+    Some(Fields {
+        stamp: time::parse_iso(parts.time).map(|parsed| parsed.stamp),
+        level,
+        component: parts.provider,
+        thread: parts.id,
+        source: parts.computer,
+        message: parts.message,
     })
 }
 
@@ -2176,5 +2265,67 @@ mod tests {
         // A date that can't be one isn't taken for it.
         assert_eq!(plain("13/31 13:56:53 [LOGON] text").stamp, None);
         assert_eq!(plain("01/31 13:56 [LOGON] text").component, b"");
+    }
+
+    #[test]
+    fn event_rows_have_their_provider_id_and_computer() {
+        let row = "\u{1E}2026-11-20 09:51:57.123-06:00\tWarning\tService Control Manager\t7036\tSRV01\tThe service entered\nthe stopped state.\n";
+        let parsed = fields(Format::Event, row.as_bytes(), &CONTEXT);
+        assert_eq!(stamp_text(&parsed), "2026-11-20T09:51:57.123");
+        assert_eq!(parsed.level, Level::Warning);
+        assert_eq!(parsed.component, b"Service Control Manager");
+        assert_eq!(parsed.thread, b"7036");
+        assert_eq!(parsed.source, b"SRV01");
+        assert_eq!(parsed.message, b"The service entered\nthe stopped state.");
+        assert_eq!(utc_offset(Format::Event, row.as_bytes()), Some(-360));
+        // Searches cover the provider, ID, computer and message, but not the
+        // time or the level's word.
+        let searched = display(searchable(Format::Event, row.as_bytes()));
+        assert!(
+            searched.starts_with("Service Control Manager\t7036"),
+            "{searched}"
+        );
+        assert!(!searched.contains("Warning"));
+
+        for (word, level) in [
+            ("Critical", Level::Critical),
+            ("Error", Level::Error),
+            ("Information", Level::Info),
+            ("Verbose", Level::Debug),
+            ("Something new", Level::Info),
+        ] {
+            let row = format!("\u{1E}2026-11-20 09:51:57-06:00\t{word}\tP\t1\tPC\tmessage");
+            assert_eq!(
+                fields(Format::Event, row.as_bytes(), &CONTEXT).level,
+                level,
+                "{word}"
+            );
+        }
+        // A cut-off row reads without panicking or guessing.
+        let cut = fields(
+            Format::Event,
+            "\u{1E}2026-11-20 09:51:57\tError".as_bytes(),
+            &CONTEXT,
+        );
+        assert_eq!(cut.stamp, None);
+        assert_eq!(cut.level, Level::Info);
+    }
+
+    #[test]
+    fn only_a_file_starting_with_an_event_row_is_an_event_log() {
+        let event = "\u{1E}2026-11-20 09:51:57.123-06:00\tError\tDisk\t7\tSRV01\tBad block.\n";
+        assert_eq!(detect_format(event.as_bytes()), Format::Event);
+        assert_eq!(
+            detect_format(b"\x1Enot a time\tError\tDisk\t7\tSRV01\tx"),
+            Format::Plain
+        );
+        assert_eq!(
+            detect_format(b"\x1E2026-11-20 09:51:57\tError"),
+            Format::Plain
+        );
+        assert_eq!(
+            detect_format(b"2026-11-20 09:51:57 \x1E text"),
+            Format::Plain
+        );
     }
 }

@@ -26,6 +26,12 @@ const CONTEXT: ParseContext = ParseContext {
 const SYNTAX: &[&str] = &[
     "\n",
     "\r\n",
+    // Event log rows, as TraceView writes them.
+    "\u{1E}",
+    "\u{1E}2026-11-20 09:51:57.123-06:00\t",
+    "Error\t",
+    "\t7036\t",
+    "\t",
     "<![LOG[",
     "]LOG]!>",
     "<time=\"10:23:01.442+000\" ",
@@ -211,7 +217,7 @@ fn check_log(bytes: &[u8]) -> Result<(), TestCaseError> {
 proptest! {
     #[test]
     fn parsing_any_row_never_panics(row in any_log()) {
-        for format in [Format::Plain, Format::Sccm] {
+        for format in [Format::Plain, Format::Sccm, Format::Event] {
             let fields = parse::fields(format, &row, &CONTEXT);
             let _ = parse::searchable(format, &row);
             let mut template = Vec::new();

@@ -235,6 +235,7 @@ fn scan_with_sizes(
     let separator = match layout.format {
         Format::Plain | Format::Custom => encoding.encode_ascii(b"\n"),
         Format::Sccm => encoding.encode_ascii(b"\n<![LOG["),
+        Format::Event => encoding.encode_ascii(&[b'\n', crate::parse::EVENT_START]),
     };
     let scanner = Scanner {
         source,
