@@ -3,6 +3,7 @@
 //! API calls and `unsafe` code live here, with the rest in `tv-render`.
 
 mod console;
+mod drives;
 mod file_types;
 mod input;
 pub mod metrics;
@@ -13,6 +14,7 @@ mod user_path;
 mod window;
 
 pub use console::{prepare_console_for_gui, ConsoleOutcome};
+pub use drives::mapped_drive;
 pub use file_types::{registered_file_types, FILE_TYPES};
 pub use shell::{clipboard_text, open_web_page, show_error, show_folder};
 pub use user_path::UserPath;

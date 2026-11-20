@@ -20,7 +20,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
+use std::time::{Duration, Instant};
 use tv_engine::merge::{self, MergedRow};
 use tv_engine::overview as counting;
 use tv_engine::{CacheUse, Change, Control, CustomFormat, Level, LogFile, OpenStats};
@@ -233,8 +234,21 @@ pub fn file_name(path: &Path) -> String {
 }
 
 /// The machine whose share a path is on, such as SRV01 for
-/// `\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log`. None for this PC's own drives.
+/// `\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log`, or for a path on a drive
+/// mapped to that share, such as `Z:\Windows\CCM\Logs\WUAHandler.log`. None
+/// for this PC's own drives.
 pub fn machine(path: &Path) -> Option<String> {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => mapped_machine(letter),
+        _ => server(path),
+    }
+}
+
+/// The server a `\\SRV01\share` path names.
+fn server(path: &Path) -> Option<String> {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
         return None;
     };
@@ -244,6 +258,34 @@ pub fn machine(path: &Path) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// How long a drive letter's mapping is used before it's looked up again.
+const MAPPING_LIFE: Duration = Duration::from_secs(30);
+
+/// When a drive letter was looked up, and the machine it's mapped to.
+type Mapping = Option<(Instant, Option<String>)>;
+
+/// The machine a drive letter is mapped to, such as SRV01 for a `Z:` mapped
+/// to `\\SRV01\c$`. Titles are drawn with every frame, so each letter is
+/// looked up at most every 30 seconds, which also notices a drive mapped or
+/// changed while TraceView runs.
+fn mapped_machine(letter: u8) -> Option<String> {
+    static MAPPED: Mutex<[Mapping; 26]> = Mutex::new([const { None }; 26]);
+    let index = usize::from(letter.to_ascii_uppercase().checked_sub(b'A')?);
+    if index >= 26 {
+        return None;
+    }
+    let mut mapped = MAPPED.lock().unwrap_or_else(PoisonError::into_inner);
+    let entry = &mut mapped[index];
+    if entry
+        .as_ref()
+        .is_none_or(|(looked_up, _)| looked_up.elapsed() >= MAPPING_LIFE)
+    {
+        let machine = tv_platform::mapped_drive(letter).and_then(|share| server(Path::new(&share)));
+        *entry = Some((Instant::now(), machine));
+    }
+    entry.as_ref().and_then(|(_, machine)| machine.clone())
 }
 
 /// The name a log or folder is shown by: its file name, plus the machine it's
@@ -1146,6 +1188,9 @@ mod tests {
             "WUAHandler.log"
         );
         assert_eq!(name(r"\\?\C:\Logs\a.log"), "a.log");
+        // A drive mapped to a share is named by the share's server.
+        assert_eq!(server(Path::new(r"\\SRV01\c$")), Some("SRV01".to_string()));
+        assert_eq!(server(Path::new(r"C:\Logs")), None);
         // A share's root has no file name, and its path already names the
         // machine.
         assert_eq!(name(r"\\SRV01\c$\"), r"\\SRV01\c$\");
