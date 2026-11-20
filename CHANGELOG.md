@@ -2,28 +2,26 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.12.0
+
+Many more of the logs admins open, read with their times and levels: Windows Installer, PowerShell transcripts, IIS, whose UTC times are shown in local time, Windows Firewall, Group Policy, Netlogon, ConfigMgr site servers and more. Tabs name the machine a remote log is on, and a selected last row follows a live log. Still a beta, tested on Windows 11.
 
 **Reading logs**
 
-- ConfigMgr site server logs, such as `sitecomp.log` and `distmgr.log`, are read in the `$$<` format CMTrace also reads, with each row's time, offset from UTC, component and thread. Before, each whole row was the message, with no time.
-- `WindowsUpdate.log`, as `Get-WindowsUpdateLog` writes it, has its component, thread ID and process ID in the Component, Thread and Source columns. Before, a colon early in a message made the IDs and the component read as one component, such as `51540 Misc UUS`, and summaries split one problem into several patterns because the IDs' widths vary.
-- winget's logs have their level and component, from the `<I> [CORE]` after each time.
 - Windows Installer verbose logs, from `msiexec /l*v`, have times: each row's time of day on the date its `=== Logging started:` line gives. `MSI (s)` is the component, the process and thread the thread, and `Return value 3`, an action that failed, is an error. Before, no row had a time.
 - PowerShell transcripts mark error records as errors, from Windows PowerShell and PowerShell 7, such as `Get-Item : Cannot find path…` and its `+ CategoryInfo` lines. Their `Start time:` and `Command start time:` lines have times. Before, only `WARNING:` and `VERBOSE:` had a level.
-- Office's Click-to-Run logs, such as `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's, in the ULS format, have their time, level, category, thread and process. `Unexpected` is an error, and `Monitorable` and `High` are notices. Before, each whole row was the message, with no time.
-- WiX Burn's logs, from the Visual C++ and .NET installers, and the Visual Studio installer's, such as `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg`, have their time and thread, and Burn's `i`, `w` and `e` codes are their levels. Before, they had no time.
 - IIS logs, such as `u_ex261118.log` from a ConfigMgr management or distribution point, and Windows Firewall's `pfirewall.log` are read by the columns their `#Fields:` line names. Each row has its time and the client's address. For IIS, the page asked for is the component, a 5xx status is an error and a 4xx a warning, except 401, which every Windows-authenticated request gets first. For the firewall, the action is the component, and `DROP` is a warning. Before, rows had a time but nothing else.
 - IIS logs' times, which IIS writes in UTC, are shown in this PC's time zone, with its daylight saving time, as Event Viewer shows times. So IIS rows line up with ConfigMgr's and other logs' local times in a merged tab, `trace` and time filters, rather than sitting hours away. The command line gives each row's offset, such as `2026-11-18T08:05:09.000-06:00`, and the row's text still has the time IIS wrote. An IIS log from a server in another time zone is shown in this PC's. Indexes of IIS logs of 64 MB or more are rebuilt when the PC's time zone changes.
 - Group Policy's debug log, `gpsvc.log`, has its time, its service, such as `GPSVC`, as the component, and its process and thread IDs as the thread, as do Group Policy's other debug logs written the same way. Windows 11 added dates to these logs in late 2025. Older rows give only a time of day, which can't be placed on a timeline, so it stays at the start of the message. Before, each whole row was the message.
 - `netlogon.log` has its time, with the year from the file's date, its category, such as `LOGON`, as the component, and the thread some versions write. `[CRITICAL]` rows are errors, and a request that returns an NTSTATUS error, such as a failed logon's `Returns 0xC000006A`, is a warning. Before, each whole row was the message, with no time.
 - Both were written from Microsoft's published examples, as their debug logging is off by default.
+- ConfigMgr site server logs, such as `sitecomp.log` and `distmgr.log`, are read in the `$$<` format CMTrace also reads, with each row's time, offset from UTC, component and thread. Before, each whole row was the message, with no time.
+- `WindowsUpdate.log`, as `Get-WindowsUpdateLog` writes it, has its component, thread ID and process ID in the Component, Thread and Source columns. Before, a colon early in a message made the IDs and the component read as one component, such as `51540 Misc UUS`, and summaries split one problem into several patterns because the IDs' widths vary.
 - `setupapi.dev.log` goes by its `!!!` and `!` markers, so `Error Control = 1` is no longer an error, and a failed `[Exit status: FAILURE(…)]` is. Sections' starts and ends have times, and the short name before a colon, such as `dvi`, is the component.
+- Office's Click-to-Run logs, such as `%TEMP%\<PC>-20261111-1324.log`, and SharePoint's, in the ULS format, have their time, level, category, thread and process. `Unexpected` is an error, and `Monitorable` and `High` are notices. Before, each whole row was the message, with no time.
+- WiX Burn's logs, from the Visual C++ and .NET installers, and the Visual Studio installer's, such as `[0A1C:0B2C][2026-11-18T12:31:32]i001: msg`, have their time and thread, and Burn's `i`, `w` and `e` codes are their levels. Before, they had no time.
+- winget's logs have their level and component, from the `<I> [CORE]` after each time.
 - Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
-
-**Command line**
-
-- Summaries count a template at each level apart, so a pattern's count is how many rows it had at its level. Before, a template that was only sometimes an error, such as a CBS row raised by its HRESULT, was one pattern at its worst level that counted every row, information included. IIS requests, whose status sets the level, would otherwise all have counted as errors.
 
 **Viewer**
 
@@ -33,15 +31,19 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - A log opened from another PC, such as `\\SRV01\c$\Windows\CCM\Logs\WUAHandler.log`, is named with its machine, as `WUAHandler.log (SRV01)`. This shows in its tab, the title bar and the sidebar, in a merged tab's details pane and exported File column, and on a folder's start page. Before, the same log open from several machines looked the same everywhere but the sidebar. A title too long for its tab now ends in "…", rather than being cut off mid-letter. The file name is shortened first, so a machine such as `(NYCLAP100234)` stays whole, since machines often differ only in their last digits.
 - Tabs shrink to share the window's width when there are more than fit, widest first, as in a browser. Before, the later tabs ran off the window's right edge, where only Ctrl+Tab, Ctrl+K or the sidebar reached them. A tab never gets narrower than before, so a great many tabs can still run off the edge.
 
-**Error Lookup**
+**Command line**
 
-- On a PC without CMTrace, such as one logs are copied to, 27 common ConfigMgr codes, such as 0x87D00324, get a short explanation in TraceView's own words, with `TraceView` as its source, rather than no text. The 21 named servicing codes, such as 0x800F0991, get one too. Any other ConfigMgr code says that a copy of `CMTrace.exe` beside `traceview.exe` gives its text, in `lookup`, summaries and the Error Lookup window. Windows' and CMTrace's own text still comes first wherever they have it.
-- A ConfigMgr code with no text reads as a ConfigMgr code, rather than as a plain HRESULT.
+- Summaries count a template at each level apart, so a pattern's count is how many rows it had at its level. Before, a template that was only sometimes an error, such as a CBS row raised by its HRESULT, was one pattern at its worst level that counted every row, information included. IIS requests, whose status sets the level, would otherwise all have counted as errors.
 
 **AI agents**
 
 - The skill `traceview setup` writes tells agents it's for site server, Windows Installer, PowerShell transcript, IIS, Windows Firewall, Group Policy and Netlogon logs too, and for failed logons, as agents choose a skill by its description. Run `traceview setup` again to update it.
 - `traceview setup` also adds TraceView's skill for GitHub Copilot, in `%USERPROFILE%\.copilot\skills\traceview`, when `%USERPROFILE%\.copilot` exists. `traceview setup --remove` takes it back.
+
+**Error Lookup**
+
+- On a PC without CMTrace, such as one logs are copied to, 27 common ConfigMgr codes, such as 0x87D00324, get a short explanation in TraceView's own words, with `TraceView` as its source, rather than no text. The 21 named servicing codes, such as 0x800F0991, get one too. Any other ConfigMgr code says that a copy of `CMTrace.exe` beside `traceview.exe` gives its text, in `lookup`, summaries and the Error Lookup window. Windows' and CMTrace's own text still comes first wherever they have it.
+- A ConfigMgr code with no text reads as a ConfigMgr code, rather than as a plain HRESULT.
 
 ## 0.11.0
 
