@@ -8,6 +8,7 @@ mod input;
 pub mod metrics;
 mod shell;
 pub mod time_zone;
+pub mod updates;
 mod user_path;
 mod window;
 
