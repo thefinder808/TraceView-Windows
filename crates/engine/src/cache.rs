@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 /// Version 3 added the custom format key, and version 4 reads the times and
 /// levels of Windows Update's ReportingEvents.log, so older entries are
 /// rebuilt once. Later versions each read more formats' times and levels,
-/// most recently version 10, Windows event logs as TraceView writes them.
-const MAGIC: &[u8; 8] = b"TVIDX10\0";
+/// and version 11 makes a blank line part of the row before it.
+const MAGIC: &[u8; 8] = b"TVIDX11\0";
 const HEADER_LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 4 + 8;
 const BYTES_PER_ROW: u64 = 5 + 1 + 4;
 /// The cache's size limit. The oldest entries go first when it's exceeded.

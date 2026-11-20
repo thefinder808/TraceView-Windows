@@ -193,8 +193,13 @@ impl Scanner<'_> {
             let row_end = next.map_or(buffer.len(), |found| found + self.newline_len);
             let raw = &buffer[position..row_end];
             let text = self.layout.encoding.to_utf8(raw, scratch);
-            let fields = parse::fields(self.layout.format, text, self.context);
-            rows.push(read_start + position as u64, fields.level, fields.stamp);
+            // A blank line, as some logs write between entries, joins the row
+            // before it rather than being a row of its own. Rows end where
+            // the next begins, so leaving it out does that.
+            if !is_blank(text) {
+                let fields = parse::fields(self.layout.format, text, self.context);
+                rows.push(read_start + position as u64, fields.level, fields.stamp);
+            }
             if next.is_none() {
                 debug_assert!(at_file_end || row_end >= end_in_buffer);
                 break;
@@ -203,6 +208,12 @@ impl Scanner<'_> {
         }
         Ok(rows)
     }
+}
+
+/// Whether a line holds nothing but spaces and line breaks.
+fn is_blank(text: &[u8]) -> bool {
+    text.iter()
+        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
 }
 
 /// Reads and analyzes rows from `from` to `len` in parallel. `from` must be the
@@ -344,12 +355,49 @@ mod tests {
         scan_bytes(bytes, Encoding::Utf8, Format::Plain, 0, chunk_size, 8).1
     }
 
+    fn blank(bytes: &[u8]) -> bool {
+        bytes
+            .iter()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    }
+
+    /// Rows rejoin into all of the input after the blank lines at its start,
+    /// which belong to no row, and each row starts with a line that isn't
+    /// blank.
+    fn covers(rows: &[Vec<u8>], bytes: &[u8]) -> bool {
+        let joined = rows.concat();
+        let skipped = bytes.len() - joined.len().min(bytes.len());
+        bytes[skipped..] == joined[..]
+            && blank(&bytes[..skipped])
+            && rows.iter().all(|row| {
+                let first = row.split_inclusive(|byte| *byte == b'\n').next();
+                !blank(first.unwrap_or_default())
+            })
+    }
+
+    /// Lines as rows, with each blank line joined to the row before it.
+    fn folded(
+        lines: impl Iterator<Item = Vec<u8>>,
+        is_blank: impl Fn(&[u8]) -> bool,
+    ) -> Vec<Vec<u8>> {
+        let mut rows: Vec<Vec<u8>> = Vec::new();
+        for line in lines {
+            match rows.last_mut() {
+                Some(last) if is_blank(&line) => last.extend(line),
+                None if is_blank(&line) => {}
+                _ => rows.push(line),
+            }
+        }
+        rows
+    }
+
     #[test]
     fn chunk_size_never_changes_plain_rows() {
         let log = b"one\r\n\nthree error\nfour";
         let expected = plain_rows(log, 1024);
-        assert_eq!(expected.len(), 4);
-        assert_eq!(expected[1], b"\n");
+        assert_eq!(expected.len(), 3);
+        // The blank line is part of the row before it.
+        assert_eq!(expected[0], b"one\r\n\n");
         for chunk_size in 1..log.len() {
             assert_eq!(
                 plain_rows(log, chunk_size),
@@ -453,7 +501,7 @@ mod tests {
             chunk_size in 1usize..64,
         ) {
             let rows = plain_rows(&bytes, chunk_size);
-            prop_assert_eq!(rows.concat(), bytes.clone());
+            prop_assert!(covers(&rows, &bytes));
             prop_assert_eq!(rows, plain_rows(&bytes, 4096));
         }
 
@@ -462,11 +510,8 @@ mod tests {
             bytes in proptest::collection::vec(prop_oneof![Just(b'\n'), Just(b'\r'), Just(b'a')], 0..300),
             chunk_size in 1usize..32,
         ) {
-            let expected: Vec<Vec<u8>> = bytes
-                .split_inclusive(|byte| *byte == b'\n')
-                .map(<[u8]>::to_vec)
-                .collect();
-            prop_assert_eq!(plain_rows(&bytes, chunk_size), expected);
+            let lines = bytes.split_inclusive(|byte| *byte == b'\n').map(<[u8]>::to_vec);
+            prop_assert_eq!(plain_rows(&bytes, chunk_size), folded(lines, blank));
         }
 
         #[test]
@@ -485,7 +530,7 @@ mod tests {
             let bytes = pieces.concat();
             let scan = |size| scan_bytes(&bytes, Encoding::Utf8, Format::Sccm, 0, size, 4096).1;
             let rows = scan(chunk_size);
-            prop_assert_eq!(rows.concat(), bytes.clone());
+            prop_assert!(covers(&rows, &bytes));
             prop_assert_eq!(rows, scan(4096));
         }
 
@@ -500,10 +545,12 @@ mod tests {
             let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
             let scan = |size| scan_bytes(&bytes, Encoding::Utf16Le, Format::Plain, 0, size, 4096).1;
             let rows = scan(chunk_units * 2);
-            prop_assert_eq!(rows.concat(), bytes.clone());
-            prop_assert_eq!(rows.len(), units
-                .split_inclusive(|unit| *unit == 0x000A)
-                .count());
+            let lines = units.split_inclusive(|unit| *unit == 0x000A);
+            let expected = folded(
+                lines.map(|line| line.iter().flat_map(|unit| unit.to_le_bytes()).collect()),
+                |line| line.chunks(2).all(|unit| unit == [0x0A, 0x00]),
+            );
+            prop_assert_eq!(rows, expected);
         }
     }
 }

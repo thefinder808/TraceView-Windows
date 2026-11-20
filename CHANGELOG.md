@@ -2,6 +2,12 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Reading logs**
+
+- A blank line is part of the row before it, rather than a row of its own. Some Windows setup logs, such as `setupact.log` with the compatibility appraiser's rows, showed an empty row after every row, from blank lines between entries or a line feed before each carriage return. Row numbers now count entries, not lines, in such logs. Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.
+
 ## 0.14.0
 
 Windows event logs, in the viewer and the command line: saved `.evtx` files, including ones on other PCs' shares, and this PC's own logs, followed live, with the messages and column names Event Viewer shows. Still a beta, tested on Windows 11.
