@@ -309,9 +309,14 @@ pub fn detect_format(head: &[u8]) -> Format {
     }
 }
 
+/// A row without the line breaks and spaces that end it, including any
+/// blank lines it took in.
 fn trim_line_ending(row: &[u8]) -> &[u8] {
-    let line = row.strip_suffix(b"\n").unwrap_or(row);
-    line.strip_suffix(b"\r").unwrap_or(line)
+    let end = row
+        .iter()
+        .rposition(|byte| !matches!(byte, b'\r' | b'\n' | b' ' | b'\t'))
+        .map_or(0, |last| last + 1);
+    &row[..end]
 }
 
 fn is_space(byte: u8) -> bool {

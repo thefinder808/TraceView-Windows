@@ -1030,6 +1030,53 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_line_joins_the_row_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = [
+            "2026-11-20 14:07:40, Info                  CONX   aeinv: TRACE,first",
+            "2026-11-20 14:12:30, Error                 CONX   Appraiser: ERROR,second",
+            "2026-11-20 14:12:31, Info                  CONX   Appraiser: TRACE,third",
+        ];
+        // Blank lines between entries, and line feeds before carriage
+        // returns, as some setup logs have, read as one row an entry.
+        for (name, between) in [("blank.log", "\r\n\r\n"), ("lf-cr.log", "\n\r\n")] {
+            let path = dir.path().join(name);
+            fs::write(
+                &path,
+                format!("\r\n{}{between}  \r\n", entries.join(between)),
+            )
+            .unwrap();
+            let log = open_uncached(&path);
+            assert_eq!(log.rows(), 3, "{name}");
+            assert_eq!(log.level(1), Level::Error, "{name}");
+            let rows = all_rows(&log);
+            let mut scratch = Vec::new();
+            let last = log.text(&rows[2], &mut scratch).to_vec();
+            let fields = log.fields(&last);
+            assert_eq!(fields.message, b"Appraiser: TRACE,third", "{name}");
+            assert!(fields.stamp.is_some(), "{name}");
+        }
+
+        // A file of nothing but blank lines has no rows.
+        let path = dir.path().join("empty.log");
+        fs::write(&path, "\r\n \r\n\r\n").unwrap();
+        assert_eq!(open_uncached(&path).rows(), 0);
+
+        // Blank lines written while it's followed join the row before too.
+        let path = dir.path().join("live.log");
+        fs::write(&path, format!("{}\r\n", entries[0])).unwrap();
+        let mut log = open_uncached(&path);
+        let_clock_tick();
+        append(&path, format!("\r\n{}\r\n\r\n", entries[1]).as_bytes());
+        assert_eq!(
+            log.refresh(&AtomicU64::new(0)).unwrap(),
+            Change::Appended { new_rows: 1 }
+        );
+        assert_eq!(log.rows(), 2);
+        assert_eq!(log.level(1), Level::Error);
+    }
+
+    #[test]
     fn refresh_finishes_a_partly_written_row() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("live.log");
