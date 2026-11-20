@@ -2,6 +2,20 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Updates**
+
+- The copy that Tools > Set up for AI agents, or `traceview setup`, installs keeps itself up to date. Once a day, and from Help > Check for updates, the viewer asks GitHub for the latest release, and installs a newer TraceView in the background, which starts the next time you open it. Help > What's new shows what changed.
+- A download is installed only once it matches the release's `SHA256SUMS.txt`, Windows trusts its signature, it's signed by the same publisher as the copy that's running, and the version inside it is the one listed. Only newer full releases are taken. The command line never checks, so a command an AI agent is running is never interrupted.
+- A copy kept anywhere else is told about a new version, and Help > What's new in that version opens its page. A copy that isn't a signed release, such as one built from source, never checks.
+- Help > Check for updates automatically turns the daily check off. An administrator can turn checks off for a PC, or one user, with a `DisableUpdates` DWORD of `1` under `SOFTWARE\Policies\TraceView`, as Group Policy and Intune can set.
+- This is the first time TraceView connects to the internet. GitHub sees this PC's address and TraceView's version, and nothing else is sent. Checking a signature can also have Windows ask Microsoft, which issued the certificate, whether it was revoked. The README's Privacy section says so.
+
+**Releases**
+
+- Each release also has its two signed EXEs on their own, listed in `SHA256SUMS.txt`, for updates to download.
+
 ## 0.12.0
 
 Many more of the logs admins open, read with their times and levels: Windows Installer, PowerShell transcripts, IIS, whose UTC times are shown in local time, Windows Firewall, Group Policy, Netlogon, ConfigMgr site servers and more. Tabs name the machine a remote log is on, and a selected last row follows a live log. Still a beta, tested on Windows 11.

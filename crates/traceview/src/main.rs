@@ -7,6 +7,7 @@ mod cli;
 mod gui;
 mod setup;
 mod symptoms;
+mod updates;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

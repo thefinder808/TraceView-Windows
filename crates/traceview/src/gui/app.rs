@@ -93,6 +93,7 @@ impl App {
             let (store, settings, problem) = Store::open(settings::location());
             workspace.use_settings(settings, store, problem);
             workspace.file_types = tv_platform::registered_file_types();
+            workspace.start_update_checks();
         }
         renderer.set_fonts(workspace.fonts());
         if let Some(path) = path {

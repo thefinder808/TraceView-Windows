@@ -40,6 +40,8 @@ crates/
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
                 contrast themes, per-user file type registration, the user's PATH (user_path.rs),
                 and the time zone's offset at a moment, for logs written in UTC (time_zone.rs).
+                updates.rs downloads with WinHTTP, hashes with BCrypt and checks signatures with
+                WinVerifyTrust, for auto-updates
                 The window class asks for double-clicks, which reach the app as a press and then a
                 DoubleClick event, so code that only wants presses sees every one
   tv-errors/    Error Lookup: finds codes in text and asks Windows what they mean. Its only unsafe code is in messages.rs.
@@ -51,6 +53,7 @@ crates/
     cli.rs        query, summarize, trace, lookup and setup
     symptoms.rs   summarize --symptoms: signs of trouble ConfigMgr logs at info level
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
+    updates.rs    auto-updates: checks GitHub, checks a download and swaps it in
     gui/          app (connects the window and renderer to the workspace)
                   workspace (menus, tabs, focus, layout, input routing, and the
                   find and pause buttons, which run the same commands as F3,
@@ -330,6 +333,17 @@ The goal is one engine with several front ends in the same EXE:
 - Access is limited to folders the tech allows.
 - Agent control of the GUI is opt-in.
 
+## Updates
+
+The viewer keeps the copy `traceview setup` installs up to date. The command line never checks, so a command an agent is running is never touched, and a copy that isn't a signed release never checks at all.
+
+- **When:** once a day at launch, on a background thread, and from Help > Check for updates. The time of the last daily check is an empty file's time, `%LOCALAPPDATA%\TraceView\update-checked`, so a check that fails isn't tried again at every launch. A day here is 20 hours, so opening TraceView at about the same time each day still checks daily.
+- **What it asks for:** `releases/latest/download/SHA256SUMS.txt` on GitHub. That never gives a draft or a pre-release, and isn't held to the API's limit of 60 requests an hour, which a whole office behind one address could reach. The release's EXE for this PC, `TraceView-<version>-<arch>.exe`, is downloaded only if it's newer. Releases publish their EXEs on their own, so TraceView never unpacks a zip. Downloads go through WinHTTP, which uses the PC's proxy settings and Windows' TLS, so no networking or TLS crate is built in.
+- **What's checked:** the final address is GitHub's, the SHA-256 matches, Windows trusts the signature, the signer's subject and root match the running copy's, and the version resource matches the listed version. [SECURITY.md](../SECURITY.md) has the full list.
+- **The swap:** the download is written beside the installed copy, then held open, allowing others to read or rename it but not change it, while it's checked again and renamed into place. Windows lets a running EXE be renamed but not replaced, so the installed copy is first renamed to `traceview.exe.old`, which a later launch deletes. If putting the new one in place fails, the old one is renamed back.
+- **What it says:** in the status bar, only when there's news. A check someone asked for says how it went in a box, including why nothing changed.
+- **Turning it off:** Help > Check for updates automatically, the `check_for_updates` setting, or a `DisableUpdates` DWORD under `SOFTWARE\Policies\TraceView` in `HKEY_LOCAL_MACHINE` or `HKEY_CURRENT_USER`, read at launch.
+
 ## Open questions
 
 - **The GUI** is designed in [GUI-DESIGN.md](GUI-DESIGN.md), including how one EXE serves both the CLI and GUI.
@@ -337,4 +351,4 @@ The goal is one engine with several front ends in the same EXE:
 - **ConfigMgr and Windows Update error text away from ConfigMgr.** CMTrace's text covers clients and site servers. A PC with neither, such as one that logs were copied to, gets it only from a copy of `CMTrace.exe` put in TraceView's folder, and a console's `srsresources.dll` hasn't been tested.
 - **Time zones,** which merging files from different zones will need. IIS logs, which are in UTC, are shown in this PC's zone, but a ConfigMgr log from a server in another zone still shows that server's clock.
 - **Index memory.** 10 bytes per row is simple, but timestamps could be packed further if large logs need it.
-- **Auto-updates,** planned for 0.13, as 0.12.0 shipped without them. TraceView never connects to the internet today, as the README promises, so this needs: a clear way to turn it off, including for managed and offline PCs, and the README's privacy section changed to say so; a download used only once it's signed by the same publisher as the running EXE and matches `SHA256SUMS.txt`; only full releases, and never a downgrade; only the copy `traceview setup` installed updated, swapped in by renaming, as Windows locks a running EXE; and never an update in the middle of a command an agent is running.
+- **The first real update.** Updates arrived in 0.13, so the first time a release is installed over another is the release after it. Until then, the swap and Windows' checks have been tested with a Windows EXE signed inside the file standing in for TraceView.

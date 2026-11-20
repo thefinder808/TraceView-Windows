@@ -58,6 +58,27 @@ pub fn show_folder(folder: &Path) -> bool {
     result.0 as isize > 32
 }
 
+/// Opens a web page in the default browser. Only `https://github.com/`
+/// addresses are opened, as nothing else in TraceView needs one. Returns
+/// false if it couldn't be opened.
+pub fn open_web_page(url: &str) -> bool {
+    if !url.starts_with("https://github.com/") {
+        return false;
+    }
+    // SAFETY: the strings outlive the call, and no parent window is needed.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    result.0 as isize > 32
+}
+
 /// Reports a problem when there may be no console to report it on.
 pub fn show_error(message: &str) {
     // SAFETY: both strings outlive the call, and no parent window is needed.

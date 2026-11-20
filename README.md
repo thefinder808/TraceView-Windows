@@ -37,6 +37,16 @@ Each [release](https://github.com/thefinder808/TraceView-Windows/releases) has a
 
    The hash it prints should match that zip's line in `SHA256SUMS.txt`. PowerShell prints it in capitals, but the letters are the same.
 
+## Updates
+
+The copy that Tools > Set up for AI agents, or `traceview setup`, installs in `%LOCALAPPDATA%\Programs\TraceView` keeps itself up to date. Once a day, and when you choose Help > Check for updates, the viewer looks for a newer release on GitHub and installs it in the background. The new version starts the next time you open TraceView, and Help > What's new shows what changed.
+
+A download is used only once it matches the release's `SHA256SUMS.txt`, Windows trusts its signature, it's signed by the same publisher as the copy that's running, and the version inside it is the one listed. Only a newer version is ever installed. The command line never checks, so a command an AI agent is running is never interrupted.
+
+A copy kept anywhere else is told about a new version but not replaced. A copy that isn't a signed release, such as one built from source, never checks.
+
+To turn the daily check off, uncheck Help > Check for updates automatically. To turn checks off for everyone on a PC, set a DWORD named `DisableUpdates` to `1` under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TraceView`, as Group Policy or Intune can. Under `HKEY_CURRENT_USER`, it turns them off for one user.
+
 ## Using it
 
 The start page opens recent logs and folders, and this PC's usual log folders, such as ConfigMgr's and Intune's, with one click. You can also open a log from File > Open or Ctrl+O, drop files on the window, or pass one on the command line, here from the EXE's folder in PowerShell:
@@ -217,12 +227,15 @@ What you give an AI service leaves your PC, and logs hold user, machine and serv
 
 ## Privacy
 
-TraceView never connects to the internet: no telemetry, no accounts, no update checks. Your logs stay on your PC. It only writes:
+TraceView sends no telemetry and has no accounts, and your logs stay on your PC. The only thing it connects to is GitHub, to check for updates: once a day, and when you choose Help > Check for updates, the viewer asks for the latest release's `SHA256SUMS.txt`, and downloads a newer `traceview.exe` if there is one. GitHub sees this PC's address and the version of TraceView asking, as it would for any download. While checking a signature, Windows may also ask the certificate's authority, Microsoft, whether it was revoked, as it does before running a downloaded program. The command line never connects. [Updates](#updates) says how to turn checks off.
+
+It only writes:
 
 - its settings and themes, in `%APPDATA%\TraceView` or beside a portable copy;
 - an index cache for logs of 64 MB or more, so they open faster the next time, in `%LOCALAPPDATA%\TraceView\indexes`. It holds row positions, levels and times, never log text, and is capped at 2 GiB;
 - registry entries under `HKEY_CURRENT_USER`, only if you choose Tools > Use TraceView for .log files;
-- a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, that folder on your PATH, and a skill file for each AI agent found, only if you choose Tools > Set up for AI agents or run `traceview setup`.
+- a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, that folder on your PATH, and a skill file for each AI agent found, only if you choose Tools > Set up for AI agents or run `traceview setup`. Updates replace that copy, keeping the one before as `traceview.exe.old` until the next launch;
+- `%LOCALAPPDATA%\TraceView\update-checked`, an empty file whose time says when it last checked for updates.
 
 ## Removing it
 
