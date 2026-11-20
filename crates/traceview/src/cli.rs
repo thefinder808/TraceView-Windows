@@ -45,6 +45,12 @@ A summary counts a log's rotated copies, such as AppEnforce.lo_ and
 AppEnforce-20261020-123456.log, as part of AppEnforce.log. It lists the longest
 gaps of a day or more with no rows in any log, as when a PC was off.
 
+Windows event logs can be read too: a saved .evtx file, or one of this PC's
+logs by the name Event Viewer gives it, as eventlog:System, eventlog:Application
+or eventlog:Microsoft-Windows-TaskScheduler/Operational. Each event is a row
+with its time in this PC's time zone, its level, its provider as the component,
+its event ID as the thread and its computer as the source.
+
 Choosing logs:
   --recurse            Read the logs in subfolders too
   --current-only       Skip rotated copies when reading a folder
@@ -885,6 +891,14 @@ fn open_log(
     no_cache: bool,
     formats: &[Arc<CustomFormat>],
 ) -> Result<(LogFile, OpenStats), Failure> {
+    if let Some(source) = crate::events::source(path) {
+        return crate::events::open(source, path).map_err(|message| {
+            (
+                "open_failed",
+                format!("couldn't read {}: {message}", path.display()),
+            )
+        });
+    }
     let progress = AtomicU64::new(0);
     let opened = if no_cache {
         LogFile::open_with(path, None, formats, &progress)

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod events;
 mod gui;
 mod setup;
 mod symptoms;

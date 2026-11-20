@@ -330,6 +330,13 @@ impl LogFile {
         &self.path
     }
 
+    /// Shows the log under another path, as for an event log read from a
+    /// temporary copy. A refresh looks for the file at the path shown, so
+    /// it's only for logs that aren't followed.
+    pub fn show_as(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     pub fn rows(&self) -> usize {
         self.rows.rows()
     }

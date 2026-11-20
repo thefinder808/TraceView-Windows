@@ -2,6 +2,14 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Reading logs**
+
+- The command line reads Windows event logs: a saved `.evtx` file, including one on another PC's share, or one of this PC's logs by the name Event Viewer gives it, such as `eventlog:System` or `eventlog:Microsoft-Windows-TaskScheduler/Operational`. Each event is a row with its time in this PC's time zone, its level, its provider as the component, its event ID as the thread and its computer as the source, with the message Event Viewer shows. So `query`, `summarize` and `trace` work on event logs as on any other, and can merge them with ConfigMgr's logs by time. The System log of 53,000 events on a 24-thread PC reads in under 2 seconds.
+- Each event log is read through a temporary copy in `%TEMP%\TraceView`, which is deleted as soon as it's open, so logs such as Security don't stay behind in your profile.
+- The AI agent skill says event logs can be read this way. Run `traceview setup` again to update it.
+
 ## 0.13.1
 
 The first release that 0.13's copies install by themselves. A log on a mapped network drive is now named with its machine. Still a beta, tested on Windows 11.

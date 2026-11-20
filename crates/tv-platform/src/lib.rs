@@ -4,6 +4,7 @@
 
 mod console;
 mod drives;
+pub mod events;
 mod file_types;
 mod input;
 pub mod metrics;

@@ -41,6 +41,7 @@ crates/
                 contrast themes, per-user file type registration, the user's PATH (user_path.rs),
                 and the time zone's offset at a moment, for logs written in UTC (time_zone.rs).
                 drives.rs finds the share a drive letter is mapped to, so tabs can name its machine.
+                events.rs reads event logs with Windows' event log API (wevtapi)
                 updates.rs downloads with WinHTTP, hashes with BCrypt and checks signatures with
                 WinVerifyTrust, for auto-updates
                 The window class asks for double-clicks, which reach the app as a press and then a
@@ -55,6 +56,7 @@ crates/
     symptoms.rs   summarize --symptoms: signs of trouble ConfigMgr logs at info level
     setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
     updates.rs    auto-updates: checks GitHub, checks a download and swaps it in
+    events.rs     event logs: writes a .evtx file or named log as rows the engine reads
     gui/          app (connects the window and renderer to the workspace)
                   workspace (menus, tabs, focus, layout, input routing, and the
                   find and pause buttons, which run the same commands as F3,
@@ -334,6 +336,16 @@ The goal is one engine with several front ends in the same EXE:
 - Stdio only, with no network listener.
 - Access is limited to folders the tech allows.
 - Agent control of the GUI is opt-in.
+
+## Event logs
+
+Windows event logs are binary, and read through Windows' own event log API, so `tv-platform::events` does the reading and the engine never sees the format.
+
+- **What's read:** a saved `.evtx` file, here or on another PC's share, or one of this PC's logs by name, written `eventlog:System` where a path would go. The files under `C:\Windows\System32\winevt\Logs` need administrator rights, but most logs read by name without them, as in Event Viewer.
+- **Messages:** `EvtFormatMessage` writes each message as Event Viewer does, from the message files of the providers installed on this PC, which Windows loads as data. When this PC has none for a provider, as for a log from a PC with other software, the event's own values are shown instead, in TraceView's words.
+- **Rows:** `traceview::events` writes the events to a temporary text file as `Format::Event` rows, which the engine then opens like any log, so filters, find, merging, summaries and the command line work on events with nothing else to learn. Times are converted to this PC's time zone with its offset, as for IIS. Event text is untrusted, as any program can write events: the record separator that starts rows is taken out of it, as are tabs and line breaks in the one-line fields, so a crafted event can't make rows of its own.
+- **Speed:** writing out the messages takes about 90% of the time, so the log is split evenly across up to 16 threads, each with its own query that seeks to its stretch, and the stretches are written in order. The System log of 53,000 events reads in about 1.7 s on 24 threads, against 5.2 s on one.
+- **The copy is temporary,** so logs such as Security don't stay behind in the user's profile. The command line deletes it as soon as the engine has it open: the engine opens files allowing deletion, so Windows finishes deleting it when the log is closed, even after a crash. Copies left by older versions or another failure are cleared a day later. A log read this way is shown under its own path or name, with `LogFile::show_as`.
 
 ## Updates
 
