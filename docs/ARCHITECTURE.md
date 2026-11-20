@@ -40,6 +40,7 @@ crates/
   tv-platform/  Win32: window, message loop, input, DPI, clipboard, dialogs, UI Automation, console handling,
                 contrast themes, per-user file type registration, the user's PATH (user_path.rs),
                 and the time zone's offset at a moment, for logs written in UTC (time_zone.rs).
+                drives.rs finds the share a drive letter is mapped to, so tabs can name its machine.
                 updates.rs downloads with WinHTTP, hashes with BCrypt and checks signatures with
                 WinVerifyTrust, for auto-updates
                 The window class asks for double-clicks, which reach the app as a press and then a

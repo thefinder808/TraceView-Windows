@@ -2,6 +2,12 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Viewer**
+
+- A log opened from a mapped network drive is named with its machine too. With `Z:` mapped to `\\SRV01\c$`, `Z:\Windows\CCM\Logs\WUAHandler.log` shows as `WUAHandler.log (SRV01)`, in its tab, the title bar and everywhere else a remote log's name shows. Before, only logs opened as `\\SRV01\...` were.
+
 ## 0.13.0
 
 TraceView now keeps itself up to date. The copy that setup installs checks GitHub once a day and installs newer signed releases in the background, after checking each one the way Windows does and that it comes from the same publisher. Still a beta, tested on Windows 11.
