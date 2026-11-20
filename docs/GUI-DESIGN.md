@@ -464,7 +464,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Decided at the start:**
 
-- **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It was left until the repository was public, because a private repository's releases can't be read without signing in, and it isn't built yet, so TraceView still never connects to the internet. Later, the plan became updates that install themselves, with the safeguards in [ARCHITECTURE.md](ARCHITECTURE.md)'s open questions, for 0.13.
+- **Updates notify, never install.** TraceView will check GitHub at most once a day at launch, and from Help > Check for updates, and offer to open the download page. A setting turns the daily check off. It was left until the repository was public, because a private repository's releases can't be read without signing in, and it isn't built yet, so TraceView still never connects to the internet. Later, the plan became updates that install themselves, which arrived in 0.13, with the safeguards in [ARCHITECTURE.md](ARCHITECTURE.md#updates).
 - **The repository stayed private at first,** so the first releases were private too. It went public on 2026-11-06.
 - **Signing uses Microsoft's own GitHub action** with an existing Azure Artifact Signing account. It signs in to Azure with OpenID Connect, so no Azure secret is stored in GitHub.
 - **The first release is 0.9.0, a beta,** tested on Windows 11 only.
@@ -484,7 +484,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - A privacy sweep came first, over the full history, every ref including pull requests, the object database, pull request text, release notes and every Actions log.
 - Private vulnerability reporting, which `SECURITY.md` points to, and secret scanning with push protection were turned on.
 - The `release` environment now needs the owner's approval before it signs anything.
-- The update check, which needs public releases to read, is still to do. It's now planned as auto-updates, for 0.13.
+- The update check, which needs public releases to read, was still to do. It arrived in 0.13, as auto-updates.
 
 **Licenses:** TraceView is MIT, as the Mac app is. The crates it's built with have their licenses in `THIRD-PARTY-NOTICES.txt`, which `traceview --licenses` also prints, and CI fails on a license that isn't allowed or a crate with a known vulnerability.
 
