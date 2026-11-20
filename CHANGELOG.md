@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.14.0
+
+Windows event logs, in the viewer and the command line: saved `.evtx` files, including ones on other PCs' shares, and this PC's own logs, followed live, with the messages and column names Event Viewer shows. Still a beta, tested on Windows 11.
 
 **Reading logs**
 
