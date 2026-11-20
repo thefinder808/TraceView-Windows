@@ -12,7 +12,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 use tv_engine::time::{offset_text, Stamp};
 use tv_engine::{LogFile, OpenStats};
@@ -42,6 +43,92 @@ pub fn source(path: &Path) -> Option<EventSource<'_>> {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("evtx"))
         .then_some(EventSource::File(path))
+}
+
+/// The name of one of this PC's logs that a path names, as `System` for
+/// `eventlog:System`.
+pub fn log_name(path: &Path) -> Option<&str> {
+    match source(path)? {
+        EventSource::Log(name) => Some(name),
+        EventSource::File(_) => None,
+    }
+}
+
+/// The path that names one of this PC's logs.
+pub fn log_path(name: &str) -> PathBuf {
+    PathBuf::from(format!("{PREFIX}{name}"))
+}
+
+/// This PC's logs that can be opened, as Event Viewer lists them, leaving
+/// out the debug and analytic ones, which hold events only while tracing.
+pub fn log_names() -> Vec<String> {
+    let mut names: Vec<String> = platform::log_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            !lower.ends_with("/debug") && !lower.ends_with("/analytic")
+        })
+        .collect();
+    names.sort_by_key(|name| name.to_ascii_lowercase());
+    names
+}
+
+/// How often a followed log is asked for new events.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
+
+/// An event log's copy while a tab shows it. For one of this PC's logs, a
+/// thread adds new events to the copy every two seconds, and the tab's live
+/// tail shows them as it would new lines in any log. Dropping it stops the
+/// thread and deletes the copy.
+pub struct Feed {
+    copy: Arc<Mutex<Converted>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Feed {
+    /// Keeps a copy, following `name` if it's one of this PC's logs.
+    pub fn new(copy: Converted, name: Option<String>) -> Self {
+        let copy = Arc::new(Mutex::new(copy));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = name.map(|name| {
+            let (copy, stop) = (copy.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let started = std::time::Instant::now();
+                    while started.elapsed() < FOLLOW_EVERY {
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    let mut copy = copy.lock().unwrap_or_else(PoisonError::into_inner);
+                    // A log that can't be read for now is tried again later.
+                    let _ = add_new(EventSource::Log(&name), &mut copy);
+                }
+            })
+        });
+        Self { copy, stop, thread }
+    }
+
+    /// Where the copy is, for the tab to open.
+    pub fn path(&self) -> PathBuf {
+        self.copy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .path
+            .clone()
+    }
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// A temporary text copy of an event log, deleted when dropped.
@@ -109,6 +196,18 @@ pub fn convert(source: EventSource<'_>, progress: &AtomicU64) -> Result<Converte
     let written = write_after(source, &mut converted, BufWriter::new(file), progress)?;
     converted.events = written;
     Ok(converted)
+}
+
+/// Adds the events a source has gained since the copy was written, as a log
+/// being followed does. Returns how many there were.
+pub fn add_new(source: EventSource<'_>, converted: &mut Converted) -> Result<usize, String> {
+    let file = OpenOptions::new()
+        .append(true)
+        .open(&converted.path)
+        .map_err(|error| format!("couldn't add to its copy: {error}"))?;
+    let added = write_after(source, converted, BufWriter::new(file), &AtomicU64::new(0))?;
+    converted.events += added;
+    Ok(added)
 }
 
 fn write_after(
@@ -226,6 +325,11 @@ pub fn open(source: EventSource<'_>, shown: &Path) -> Result<(LogFile, OpenStats
     Ok((log, stats))
 }
 
+/// Held by tests that make copies, so one counting them isn't thrown by
+/// another's.
+#[cfg(test)]
+pub(crate) static COPIES: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,7 +431,29 @@ mod tests {
     }
 
     #[test]
+    fn a_followed_logs_copy_gains_new_events_and_goes_when_dropped() {
+        let _copies = COPIES.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut copy = convert(EventSource::Log("System"), &AtomicU64::new(0)).unwrap();
+        // Pretend the copy is older, so there's something newer to add.
+        let newest = copy.last_record;
+        copy.last_record = newest.saturating_sub(3);
+        let added = add_new(EventSource::Log("System"), &mut copy).unwrap();
+        assert!(added >= 3.min(newest as usize), "{added}");
+        assert!(copy.last_record >= newest);
+        let feed = Feed::new(copy, Some("System".to_string()));
+        let path = feed.path();
+        assert!(path.exists());
+        drop(feed);
+        assert!(!path.exists(), "the copy goes with the feed");
+        assert_eq!(log_name(Path::new("eventlog:System")), Some("System"));
+        assert_eq!(log_name(Path::new(r"C:\a.evtx")), None);
+        assert_eq!(log_path("System"), PathBuf::from("eventlog:System"));
+        assert!(log_names().iter().any(|name| name == "System"));
+    }
+
+    #[test]
     fn this_pcs_system_log_opens_as_a_log_and_its_copy_goes() {
+        let _copies = COPIES.lock().unwrap_or_else(PoisonError::into_inner);
         let folder_before = copies();
         let (log, _) = open(EventSource::Log("System"), Path::new("eventlog:System")).unwrap();
         assert_eq!(log.format(), Format::Event);

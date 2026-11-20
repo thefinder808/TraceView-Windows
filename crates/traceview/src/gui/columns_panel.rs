@@ -114,9 +114,7 @@ impl ColumnsPanel {
             .columns
             .iter()
             .enumerate()
-            .map(|(index, spec)| {
-                ListItem::entry(spec.column.label(), &describe(spec), index as u32)
-            })
+            .map(|(index, spec)| ListItem::entry(spec.label(), &describe(spec), index as u32))
             .collect();
         self.list.select_id(Some(selected as u32));
     }

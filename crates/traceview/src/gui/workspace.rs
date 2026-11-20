@@ -130,6 +130,8 @@ pub mod command {
     pub const AUTO_UPDATES: u32 = 82;
     /// Opens the release notes of a newer version, or this one's.
     pub const WHATS_NEW: u32 = 83;
+    /// Lists this PC's event logs, to open one.
+    pub const OPEN_EVENT_LOG: u32 = 84;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -1161,6 +1163,7 @@ impl Workspace {
                 items: vec![
                     item("Open...", command::OPEN),
                     item("Open folder...", command::OPEN_FOLDER),
+                    item("Open event log...", command::OPEN_EVENT_LOG),
                     item("Merge open logs", command::MERGE),
                     item("Export rows as CSV...", command::EXPORT),
                     item("Close tab", command::CLOSE_TAB),
@@ -1372,7 +1375,12 @@ impl Workspace {
                 continue;
             }
             self.home_over_tabs = false;
-            let absolute = std::path::absolute(&path).unwrap_or(path);
+            // One of this PC's event logs is named, not a path.
+            let absolute = if crate::events::log_name(&path).is_some() {
+                path
+            } else {
+                std::path::absolute(&path).unwrap_or(path)
+            };
             self.settings.add_recent(&absolute);
             if let Some(index) = self
                 .tabs
@@ -1641,6 +1649,7 @@ impl Workspace {
                 text: about_text(),
             }),
             command::CHECK_UPDATES => self.check_for_updates(true),
+            command::OPEN_EVENT_LOG => self.open_palette(Mode::EventLogs, "", commands),
             command::AUTO_UPDATES => {
                 if !self.updates_by_policy {
                     self.settings.check_for_updates = !self.settings.check_for_updates;
@@ -2553,6 +2562,15 @@ impl Workspace {
         let entries = match mode {
             Mode::Font(target) => self.font_entries(target),
             Mode::Keys => self.keys_entries(),
+            Mode::EventLogs => crate::events::log_names()
+                .into_iter()
+                .map(|name| {
+                    (
+                        PaletteItem::new(&name, "Event log on this PC", "", 0),
+                        Action::Open(crate::events::log_path(&name)),
+                    )
+                })
+                .collect(),
             Mode::Everything | Mode::SavePreset | Mode::SaveLayout => self.palette_entries(),
         };
         let mut palette = CommandPalette::open(mode, entries, rows, query);
@@ -4944,6 +4962,65 @@ mod tests {
         assert!(text.starts_with(&format!("TraceView {}\n", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("MIT License"));
         assert!(text.contains("traceview --licenses"));
+    }
+
+    /// This process's temporary event log copies.
+    fn event_copies() -> usize {
+        let mine = format!("events-{}-", std::process::id());
+        std::fs::read_dir(std::env::temp_dir().join("TraceView")).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&mine))
+                .count()
+        })
+    }
+
+    #[test]
+    fn an_event_log_opens_from_the_file_menu_with_event_viewers_columns() {
+        let _copies = crate::events::COPIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut workspace = workspace();
+        let before = event_copies();
+        let mut commands = Commands::default();
+        workspace.run_command(command::OPEN_EVENT_LOG, &mut commands);
+        let palette = workspace.palette.as_ref().expect("the list of logs opens");
+        assert_eq!(palette.mode(), Mode::EventLogs);
+        let system = (0..)
+            .map_while(|index| palette.action_at(index))
+            .find(|action| matches!(action, Action::Open(path) if path.as_os_str() == "eventlog:System"))
+            .expect("the System log is listed");
+        let Action::Open(path) = system else {
+            unreachable!()
+        };
+        workspace.palette = None;
+
+        workspace.open_paths(vec![path]);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0].document().is_some()
+                || workspace.tabs[0].status().starts_with("Couldn't")
+        });
+        let tab = &workspace.tabs[0];
+        assert!(tab.document().is_some(), "{}", tab.status());
+        assert_eq!(tab.title(), "System");
+        assert!(tab.status().contains("Event log"), "{}", tab.status());
+        let kind = tab.kind();
+        let titles: Vec<&str> = workspace
+            .columns_for(kind)
+            .iter()
+            .filter(|spec| spec.shown)
+            .map(ColumnSpec::title)
+            .collect();
+        assert_eq!(titles, ["Time", "Lvl", "Source", "Event ID", "Message"]);
+        assert_eq!(
+            event_copies(),
+            before + 1,
+            "its copy is kept while it's open"
+        );
+
+        workspace.run_command(command::CLOSE_TAB, &mut commands);
+        assert!(workspace.tabs.is_empty());
+        assert_eq!(event_copies(), before, "its copy goes when it closes");
     }
 
     #[test]

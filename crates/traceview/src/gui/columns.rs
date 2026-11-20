@@ -52,14 +52,6 @@ impl Column {
             .find(|column| column.name().eq_ignore_ascii_case(name.trim()))
     }
 
-    /// The header's title, short where the column is narrow.
-    pub fn title(self) -> &'static str {
-        match self {
-            Column::Level => "Lvl",
-            _ => self.label(),
-        }
-    }
-
     /// The full name, for the editor and screen readers.
     pub fn label(self) -> &'static str {
         match self {
@@ -69,6 +61,27 @@ impl Column {
             Column::Thread => "Thread",
             Column::Source => "Source",
             Column::Message => "Message",
+        }
+    }
+
+    /// The full name in a log of this format. Event logs name their columns
+    /// as Event Viewer does: the provider is the Source, the thread the
+    /// event ID and the source the computer.
+    pub fn label_for(self, format: Format) -> &'static str {
+        match (format, self) {
+            (Format::Event, Column::Component) => "Source",
+            (Format::Event, Column::Thread) => "Event ID",
+            (Format::Event, Column::Source) => "Computer",
+            _ => self.label(),
+        }
+    }
+
+    /// The header's title in a log of this format, short where the column
+    /// is narrow.
+    pub fn title_for(self, format: Format) -> &'static str {
+        match self {
+            Column::Level => "Lvl",
+            _ => self.label_for(format),
         }
     }
 
@@ -103,6 +116,18 @@ pub struct ColumnSpec {
     /// In characters.
     pub width: f32,
     pub shown: bool,
+    /// The format of the logs it's for, which can name it differently.
+    pub format: Format,
+}
+
+impl ColumnSpec {
+    pub fn title(&self) -> &'static str {
+        self.column.title_for(self.format)
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.column.label_for(self.format)
+    }
 }
 
 /// What decides a log's columns: its format, and for a custom format, its
@@ -172,6 +197,7 @@ impl LogKind {
                 width: column.default_width(),
                 shown: matches!(column, Column::Level | Column::Message)
                     || self.parts.contains(&column),
+                format: Format::Custom,
             })
             .collect()
     }
@@ -184,12 +210,19 @@ pub fn defaults(format: Format) -> Vec<ColumnSpec> {
         .into_iter()
         .map(|column| ColumnSpec {
             column,
-            width: column.default_width(),
+            // Event logs' providers have long names, and their ID column a
+            // longer title.
+            width: match (format, column) {
+                (Format::Event, Column::Component) => 34.0,
+                (Format::Event, Column::Thread) => 8.0,
+                _ => column.default_width(),
+            },
             shown: match column {
                 Column::Thread => matches!(format, Format::Sccm | Format::Event),
                 Column::Source => false,
                 _ => true,
             },
+            format,
         })
         .collect()
 }
@@ -216,6 +249,7 @@ pub fn from_settings(saved: Option<&[ColumnSetting]>, kind: &LogKind) -> Vec<Col
                 column,
                 width: clamp_width(setting.width, column),
                 shown: setting.shown || column == Column::Message,
+                format: kind.format,
             });
         }
     }
@@ -332,7 +366,15 @@ mod tests {
     fn names_match_in_any_case() {
         assert_eq!(Column::from_name(" Source "), Some(Column::Source));
         assert_eq!(Column::from_name("lvl"), None);
-        assert_eq!(Column::Level.title(), "Lvl");
+        assert_eq!(Column::Level.title_for(Format::Plain), "Lvl");
+        // Event logs name their columns as Event Viewer does.
+        assert_eq!(Column::Component.label_for(Format::Event), "Source");
+        assert_eq!(Column::Thread.title_for(Format::Event), "Event ID");
+        assert_eq!(Column::Source.label_for(Format::Event), "Computer");
+        assert_eq!(Column::Component.label_for(Format::Sccm), "Component");
+        let event = defaults(Format::Event);
+        assert_eq!(event[3].title(), "Event ID");
+        assert!(event[3].shown);
         assert_eq!(Column::Level.label(), "Level");
     }
 }

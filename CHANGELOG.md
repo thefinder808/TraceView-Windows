@@ -10,6 +10,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 - Each event log is read through a temporary copy in `%TEMP%\TraceView`, which is deleted as soon as it's open, so logs such as Security don't stay behind in your profile.
 - The AI agent skill says event logs can be read this way. Run `traceview setup` again to update it.
 
+**Viewer**
+
+- File > Open event log... lists this PC's event logs, such as System, Application and the ones Intune and Windows Update write, to open one by typing part of its name. A saved `.evtx` file opens like any log, from File > Open, which now offers `.evtx` files, or by dropping it on the window.
+- One of this PC's event logs shows new events as they arrive, within a couple of seconds.
+- Event logs' columns are named as in Event Viewer: Source, Event ID and Computer. The tab says how many events it has read while it opens.
+- An event log's temporary copy is deleted when its tab closes.
+
 ## 0.13.1
 
 The first release that 0.13's copies install by themselves. A log on a mapped network drive is now named with its machine. Still a beta, tested on Windows 11.

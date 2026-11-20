@@ -244,8 +244,8 @@ fn choose(hwnd: HWND) -> Option<Vec<PathBuf>> {
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let filters = [
             COMDLG_FILTERSPEC {
-                pszName: w!("Log files (*.log, *.lo_, *.txt)"),
-                pszSpec: w!("*.log;*.lo_;*.txt"),
+                pszName: w!("Log files (*.log, *.lo_, *.txt, *.evtx)"),
+                pszSpec: w!("*.log;*.lo_;*.txt;*.evtx"),
             },
             COMDLG_FILTERSPEC {
                 pszName: w!("All files (*.*)"),

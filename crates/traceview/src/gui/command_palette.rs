@@ -44,6 +44,8 @@ pub enum Mode {
     Font(Target),
     /// Lists commands with their shortcuts, to change one.
     Keys,
+    /// Lists this PC's event logs, to open one.
+    EventLogs,
 }
 
 /// What happened, for the workspace to act on.
@@ -107,6 +109,7 @@ impl CommandPalette {
             Mode::Font(Target::Log) => "Type to find a font. Fixed-width fonts line logs up best",
             Mode::Font(Target::Window) => "Type to find a font",
             Mode::Keys => "Type to find a command, then press Enter to change its shortcut",
+            Mode::EventLogs => "Type to find an event log, such as System or TaskScheduler",
         }
     }
 
@@ -119,6 +122,7 @@ impl CommandPalette {
             Mode::Font(Target::Log) => "Choose the log font",
             Mode::Font(Target::Window) => "Choose the window font",
             Mode::Keys => "Keyboard shortcuts",
+            Mode::EventLogs => "Open an event log",
         }
     }
 
@@ -190,7 +194,7 @@ impl CommandPalette {
                 }
                 None => self.everything.clone(),
             },
-            Mode::Font(_) | Mode::Keys => self.everything.clone(),
+            Mode::Font(_) | Mode::Keys | Mode::EventLogs => self.everything.clone(),
         };
         let (mut items, actions): (Vec<PaletteItem>, Vec<Action>) = listed.into_iter().unzip();
         for (id, item) in items.iter_mut().enumerate() {

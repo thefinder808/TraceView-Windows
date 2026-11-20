@@ -227,7 +227,9 @@ What you give an AI service leaves your PC, and logs hold user, machine and serv
 
 ## Event logs
 
-The command line reads Windows event logs too: a saved `.evtx` file, including one on another PC's share, or one of this PC's logs by the name Event Viewer gives it.
+TraceView reads Windows event logs too: a saved `.evtx` file, including one on another PC's share, or one of this PC's logs by the name Event Viewer gives it.
+
+In the viewer, File > Open event log... lists this PC's logs, such as System, Application and the ones Intune and Windows Update write, to open one by typing part of its name. A saved `.evtx` file opens like any log, from File > Open or by dropping it on the window. One of this PC's logs shows new events as they arrive, within a couple of seconds. On the command line, name them like this:
 
 ```powershell
 traceview summarize eventlog:System
@@ -235,7 +237,7 @@ traceview query eventlog:Microsoft-Windows-TaskScheduler/Operational --min-level
 traceview query \\SRV01\c$\Windows\System32\winevt\Logs\Application.evtx --text "Application Error"
 ```
 
-Each event is a row with its time in this PC's time zone, its level, its provider as the component, its event ID as the thread and its computer as the source. Messages are the ones Event Viewer shows, from the message files of the software installed on this PC. An event this PC has no message for shows its own values instead. Logs this PC lets you read in Event Viewer work without administrator rights, but the files under `C:\Windows\System32\winevt\Logs` need them.
+Each event is a row with its time in this PC's time zone, its level, and Event Viewer's Source, Event ID and Computer, which the command line calls the component, thread and source. Messages are the ones Event Viewer shows, from the message files of the software installed on this PC. An event this PC has no message for shows its own values instead. Logs this PC lets you read in Event Viewer work without administrator rights, but the files under `C:\Windows\System32\winevt\Logs` need them.
 
 ## Privacy
 
@@ -248,7 +250,7 @@ It only writes:
 - registry entries under `HKEY_CURRENT_USER`, only if you choose Tools > Use TraceView for .log files;
 - a copy of itself in `%LOCALAPPDATA%\Programs\TraceView`, that folder on your PATH, and a skill file for each AI agent found, only if you choose Tools > Set up for AI agents or run `traceview setup`. Updates replace that copy, keeping the one before as `traceview.exe.old` until the next launch;
 - `%LOCALAPPDATA%\TraceView\update-checked`, an empty file whose time says when it last checked for updates;
-- a temporary text copy of each event log it reads, in `%TEMP%\TraceView`, deleted as soon as it's open, which Windows finishes when TraceView closes it. One left by a crash is cleared a day later.
+- a temporary text copy of each event log it reads, in `%TEMP%\TraceView`. The viewer deletes it when its tab closes. The command line deletes it as soon as it's open, which Windows finishes when the command ends. One left by a crash is cleared a day later.
 
 ## Removing it
 
