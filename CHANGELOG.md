@@ -4,6 +4,13 @@ Each release's changes, newest first. Versions follow [Semantic Versioning](http
 
 ## Unreleased
 
+**Installing**
+
+- Install TraceView... installs it for your Windows account, from the start page of a copy run from somewhere else, from the Tools menu, or as `traceview install`. It copies TraceView to `%LOCALAPPDATA%\Programs\TraceView`, where it keeps itself up to date, adds it to the Start menu, so typing TraceView in Start opens it, adds it to your PATH, and lets it open `.log`, `.lo_` and `.evtx` files. Then Windows' Default apps page opens at TraceView, to make it their default, as Windows doesn't let a program do that itself. It says what it will change and asks first, and needs no administrator rights.
+- Setting up for AI agents adds the Start menu shortcut too.
+- Tools > Use TraceView for .log files... registers the installed copy when there is one, so double-clicking a log keeps working as updates replace it, and offers `.evtx` files too.
+- Tools > Remove AI agent setup... is now Tools > Uninstall TraceView..., and with `traceview setup --remove` also takes back the Start menu shortcut and the file types. A shortcut that opens something else is left alone.
+
 **Reading logs**
 
 - A blank line is part of the row before it, rather than a row of its own. Some Windows setup logs, such as `setupact.log` with the compatibility appraiser's rows, showed an empty row after every row, from blank lines between entries or a line feed before each carriage return. Row numbers now count entries, not lines, in such logs. Indexes of logs of 64 MB or more are rebuilt once, the next time each is opened.

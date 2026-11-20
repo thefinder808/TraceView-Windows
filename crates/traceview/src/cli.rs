@@ -34,6 +34,7 @@ Usage:
   traceview summarize <log or folder>... [options]
   traceview trace <id> <log or folder>... [options]
   traceview lookup <code>
+  traceview install [--yes]
   traceview setup [--remove] [--yes]
   traceview setup --print
   traceview [file]             Open the viewer
@@ -132,13 +133,19 @@ ConfigMgr is installed or a CMTrace.exe is in TraceView's own folder. Give the
 code as hex, decimal or a negative number, such as 0x80070005, 1603 or
 -2147024891, or give a line of a log.
 
+Install puts TraceView on this PC for your Windows account only: it copies
+TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds it to the Start menu,
+adds that folder to your PATH, and lets it open .log, .lo_ and .evtx files,
+then opens Windows' Default apps page, where you can make it their default.
+That copy keeps itself up to date.
+
 Setup gets TraceView ready for AI agents, for your Windows account only: it
-copies TraceView to %LOCALAPPDATA%\\Programs\\TraceView, adds that folder to your
-PATH, and adds a skill telling Claude Code, Codex, the ChatGPT app and GitHub
-Copilot how to use it, for those that are installed. It says what will change
-and asks first.
+copies TraceView there too, adds it to the Start menu and your PATH, and adds a
+skill telling Claude Code, Codex, the ChatGPT app and GitHub Copilot how to use
+it, for those that are installed. Both say what will change and ask first.
   --yes                Go ahead without asking
-  --remove             Undo it
+  --remove             Undo setup and install: remove the copy, its Start menu
+                       shortcut, PATH entry and file types, and the skills
   --print              Show the instructions to give any other agent
 
 Common options:
@@ -328,9 +335,10 @@ enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SetupAction {
-    /// Set up, asking first unless told not to.
+    /// Install or set up for agents, asking first unless told not to.
     Install {
         ask: bool,
+        purpose: setup::Purpose,
     },
     Remove {
         ask: bool,
@@ -383,6 +391,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         "--licenses" => return Ok(Command::Licenses),
         "lookup" => return parse_lookup(args),
         "setup" => return parse_setup(args),
+        "install" => return parse_install(args),
         "query" | "summarize" | "trace" => {}
         other => return Err(format!("unknown command \"{other}\"")),
     }
@@ -557,6 +566,21 @@ fn parse_lookup(args: impl Iterator<Item = String>) -> Result<Command, String> {
     Ok(Command::Lookup(text, pretty))
 }
 
+fn parse_install(args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut yes = false;
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Command::Help),
+            "--yes" | "-y" => yes = true,
+            other => return Err(format!("unknown option {other} for install")),
+        }
+    }
+    Ok(Command::Setup(SetupAction::Install {
+        ask: !yes,
+        purpose: setup::Purpose::Install,
+    }))
+}
+
 fn parse_setup(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let (mut yes, mut remove, mut print) = (false, false, false);
     for arg in args {
@@ -572,7 +596,10 @@ fn parse_setup(args: impl Iterator<Item = String>) -> Result<Command, String> {
         (true, false) if !yes => SetupAction::Print,
         (true, _) => return Err("use --print on its own".to_string()),
         (false, true) => SetupAction::Remove { ask: !yes },
-        (false, false) => SetupAction::Install { ask: !yes },
+        (false, false) => SetupAction::Install {
+            ask: !yes,
+            purpose: setup::Purpose::Agents,
+        },
     }))
 }
 
@@ -2944,10 +2971,13 @@ fn run_setup(action: SetupAction) -> ExitCode {
         Err(error) => return fail(("setup_failed", error.to_string())),
     };
     let declined = || {
-        let flag = if matches!(action, SetupAction::Remove { .. }) {
-            "setup --remove --yes"
-        } else {
-            "setup --yes"
+        let flag = match action {
+            SetupAction::Remove { .. } => "setup --remove --yes",
+            SetupAction::Install {
+                purpose: setup::Purpose::Install,
+                ..
+            } => "install --yes",
+            _ => "setup --yes",
         };
         finish(writeln!(
             io::stdout(),
@@ -2962,16 +2992,28 @@ fn run_setup(action: SetupAction) -> ExitCode {
                 setup::instructions(&places.exe_for_agents(&exe))
             ))
         }
-        SetupAction::Install { ask: asking } => {
-            let plan = setup::plan(&places, &exe);
+        SetupAction::Install {
+            ask: asking,
+            purpose,
+        } => {
+            let plan = setup::plan(&places, &exe, purpose);
             println!("{}\n", plan.describe());
+            let installing = purpose == setup::Purpose::Install;
             if plan.is_done() {
+                // Default apps still opens, where it's made the default.
+                if installing {
+                    tv_platform::open_default_apps();
+                }
                 return ExitCode::SUCCESS;
             }
             if asking && !ask("Go ahead?") {
                 return declined();
             }
-            plan.apply(&places)
+            let applied = plan.apply(&places);
+            if installing && applied.is_ok() {
+                tv_platform::open_default_apps();
+            }
+            applied
         }
         SetupAction::Remove { ask: asking } => {
             let removal = setup::removal(&places, &exe);
@@ -2995,6 +3037,6 @@ fn run_setup(action: SetupAction) -> ExitCode {
 pub fn is_command(arg: &str) -> bool {
     matches!(
         arg,
-        "query" | "summarize" | "trace" | "lookup" | "setup" | "help"
+        "query" | "summarize" | "trace" | "lookup" | "setup" | "install" | "help"
     )
 }

@@ -41,6 +41,7 @@ crates/
                 contrast themes, per-user file type registration, the user's PATH (user_path.rs),
                 and the time zone's offset at a moment, for logs written in UTC (time_zone.rs).
                 drives.rs finds the share a drive letter is mapped to, so tabs can name its machine.
+                shortcuts.rs makes and reads Start menu shortcuts, with IShellLinkW
                 events.rs reads event logs with Windows' event log API (wevtapi)
                 updates.rs downloads with WinHTTP, hashes with BCrypt and checks signatures with
                 WinVerifyTrust, for auto-updates
@@ -54,7 +55,8 @@ crates/
   traceview/    the EXE. No unsafe
     cli.rs        query, summarize, trace, lookup and setup
     symptoms.rs   summarize --symptoms: signs of trouble ConfigMgr logs at info level
-    setup.rs      sets TraceView up for AI agents, for the command line and the Tools menu
+    setup.rs      installs TraceView, or sets it up for AI agents, for the command line, the
+                  Tools menu and the start page, and takes both back
     updates.rs    auto-updates: checks GitHub, checks a download and swaps it in
     events.rs     event logs: writes a .evtx file or named log as rows the engine reads
     gui/          app (connects the window and renderer to the workspace)

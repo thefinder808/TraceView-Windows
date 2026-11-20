@@ -507,6 +507,13 @@ The RDP window was minimized for these frame times, so they leave out presenting
 
 **Not covered by automation:** the folder dialog, dropping a folder, and Narrator reading the start page.
 
+## Installing
+
+- **Install TraceView...** is in the Tools menu, and on the start page of a copy run from anywhere but the installed copy's folder, such as Downloads. It's a button there, never a prompt: TraceView still never asks anything on its own at launch.
+- **It says what will change, then asks,** in a standard Windows box, as setting up for AI agents does: the copy, the Start menu shortcut, the PATH, and the file types. After the report, Windows' Default apps page opens at TraceView, which is as far as Windows lets a program go towards being the default.
+- **Run on a copy already installed,** it says so and still opens Default apps, as making it the default is usually what's wanted.
+- **Tools > Uninstall TraceView...** replaces Remove AI agent setup..., since either way it deletes the installed copy. Its keyboard command keeps the name `remove_agent_setup`, so shortcuts people set still work.
+
 ## Event logs
 
 [ARCHITECTURE.md](ARCHITECTURE.md#event-logs) has how events are read.

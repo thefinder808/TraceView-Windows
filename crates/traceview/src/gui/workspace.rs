@@ -25,7 +25,7 @@ use super::sidebar::{self, Sidebar, Target};
 use super::tab::{file_name, with_commas, Tab};
 use super::themes::{self, FileTheme};
 use super::themes_panel::{Part as ThemesPart, ThemesPanel, ThemesResponse};
-use crate::setup;
+use crate::setup::{self, Purpose};
 use crate::updates;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -132,6 +132,11 @@ pub mod command {
     pub const WHATS_NEW: u32 = 83;
     /// Lists this PC's event logs, to open one.
     pub const OPEN_EVENT_LOG: u32 = 84;
+    /// Says what installing TraceView would change, then asks to go ahead.
+    pub const INSTALL: u32 = 85;
+    /// Run once OK is chosen in the box that [`INSTALL`] shows. It's in no
+    /// menu.
+    pub const INSTALL_CONFIRMED: u32 = 86;
     /// Themes from files, in the order they load, from this number on.
     pub const FILE_THEMES: u32 = 100;
     /// Layouts, the built-in ones first, from this number on.
@@ -666,6 +671,9 @@ pub struct Workspace {
     newer: Option<String>,
     /// Whether an administrator turned updates off, read at launch.
     updates_by_policy: bool,
+    /// Whether the start page offers to install this copy, as one run from
+    /// somewhere else, such as Downloads. Decided at launch.
+    pub offer_install: bool,
 }
 
 fn checked(mut item: MenuItem, is_checked: bool) -> MenuItem {
@@ -680,6 +688,16 @@ fn enabled(mut item: MenuItem, is_enabled: bool) -> MenuItem {
         *enabled = is_enabled;
     }
     item
+}
+
+/// The copy to open files with: the installed one if there is one, so it
+/// keeps working as updates replace it, and otherwise this one.
+fn copy_for_files() -> PathBuf {
+    let this = std::env::current_exe().unwrap_or_default();
+    match setup::Places::current() {
+        Ok(places) if places.installed_exe().is_file() => places.installed_exe(),
+        _ => this,
+    }
 }
 
 /// Text that starts with a capital letter and ends with a full stop.
@@ -794,6 +812,7 @@ impl Workspace {
             updating: None,
             newer: None,
             updates_by_policy: false,
+            offer_install: false,
             exporting: None,
             notice: None,
             scale: 1.0,
@@ -1268,6 +1287,7 @@ impl Workspace {
                     item("Log formats...", command::FORMATS),
                     item("Keyboard shortcuts...", command::KEYS),
                     MenuItem::Separator,
+                    item("Install TraceView...", command::INSTALL),
                     item(
                         if self.registered_elsewhere() {
                             "Use this copy for .log files..."
@@ -1286,7 +1306,7 @@ impl Workspace {
                         "Copy instructions for AI agents",
                         command::COPY_AGENT_INSTRUCTIONS,
                     ),
-                    item("Remove AI agent setup...", command::REMOVE_AGENT_SETUP),
+                    item("Uninstall TraceView...", command::REMOVE_AGENT_SETUP),
                 ],
             },
             Menu {
@@ -1335,6 +1355,7 @@ impl Workspace {
         match choice {
             HomeChoice::OpenLog => self.run_command(command::OPEN, commands),
             HomeChoice::OpenFolder => self.run_command(command::OPEN_FOLDER, commands),
+            HomeChoice::Install => self.run_command(command::INSTALL, commands),
             HomeChoice::Open(path) => self.open_paths(vec![path]),
             HomeChoice::Folder(path) => self.open_folder(path),
             HomeChoice::Back => {
@@ -1637,10 +1658,12 @@ impl Workspace {
             },
             command::GO_TO_ROW => self.open_palette(Mode::Everything, ":", commands),
             command::SAVE_LAYOUT => self.open_palette(Mode::SaveLayout, "", commands),
-            command::USE_FOR_LOGS => commands.push(Command::SetFileTypes(true)),
-            command::STOP_FOR_LOGS => commands.push(Command::SetFileTypes(false)),
+            command::USE_FOR_LOGS => commands.push(Command::SetFileTypes(Some(copy_for_files()))),
+            command::STOP_FOR_LOGS => commands.push(Command::SetFileTypes(None)),
             command::SET_UP_AGENTS
             | command::SET_UP_AGENTS_CONFIRMED
+            | command::INSTALL
+            | command::INSTALL_CONFIRMED
             | command::REMOVE_AGENT_SETUP
             | command::REMOVE_AGENT_SETUP_CONFIRMED
             | command::COPY_AGENT_INSTRUCTIONS => self.agent_setup(id, commands),
@@ -2709,8 +2732,36 @@ impl Workspace {
                         .to_string(),
                 );
             }
+            command::INSTALL => {
+                let plan = setup::plan(&places, &exe, Purpose::Install);
+                if plan.is_done() {
+                    // Default apps still opens, where it's made the default.
+                    commands.push(show(plan.describe()));
+                    commands.push(Command::SetFileTypes(Some(places.installed_exe())));
+                } else {
+                    commands.push(Command::Confirm {
+                        title: "Install TraceView".to_string(),
+                        text: plan.describe(),
+                        command: command::INSTALL_CONFIRMED,
+                    });
+                }
+            }
+            command::INSTALL_CONFIRMED => {
+                match setup::plan(&places, &exe, Purpose::Install).apply(&places) {
+                    Ok(report) => {
+                        self.offer_install = false;
+                        commands.push(Command::ShowMessage {
+                            title: "Install TraceView".to_string(),
+                            text: report,
+                        });
+                        // Opens Default apps once the report is read.
+                        commands.push(Command::SetFileTypes(Some(places.installed_exe())));
+                    }
+                    Err(error) => commands.push(show(error)),
+                }
+            }
             command::SET_UP_AGENTS => {
-                let plan = setup::plan(&places, &exe);
+                let plan = setup::plan(&places, &exe, Purpose::Agents);
                 commands.push(if plan.is_done() {
                     show(plan.describe())
                 } else {
@@ -2722,7 +2773,7 @@ impl Workspace {
                 });
             }
             command::SET_UP_AGENTS_CONFIRMED => {
-                let done = setup::plan(&places, &exe).apply(&places);
+                let done = setup::plan(&places, &exe, Purpose::Agents).apply(&places);
                 commands.push(show(done.unwrap_or_else(|error| error)));
             }
             command::REMOVE_AGENT_SETUP => {
@@ -2739,6 +2790,7 @@ impl Workspace {
             }
             command::REMOVE_AGENT_SETUP_CONFIRMED => {
                 let done = setup::removal(&places, &exe).apply(&places);
+                self.file_types = places.file_types.registered();
                 commands.push(show(done.unwrap_or_else(|error| error)));
             }
             _ => {}
@@ -2747,7 +2799,7 @@ impl Workspace {
 
     /// Says how registering for `.log` files went.
     pub fn file_types_changed(&mut self, outcome: Result<Option<PathBuf>, String>) {
-        let types = tv_platform::FILE_TYPES.join(" and ");
+        let types = setup::file_types_text();
         self.notice = Some(match outcome {
             Ok(Some(path)) => {
                 self.file_types = Some(path);
@@ -3489,8 +3541,13 @@ impl Workspace {
                 self.keymap.label_for(command::OPEN),
                 self.keymap.label_for(command::OPEN_FOLDER),
             ];
-            self.home
-                .rebuild(&self.settings, self.sidebar.places(), theme, shortcuts);
+            self.home.rebuild(
+                &self.settings,
+                self.sidebar.places(),
+                theme,
+                shortcuts,
+                self.offer_install,
+            );
             self.home.arrange(self.layout.grid, canvas);
         }
         let grid_line = canvas.line_height(FontRole::Grid);
@@ -4872,7 +4929,7 @@ mod tests {
         workspace.run_command(command::USE_FOR_LOGS, &mut commands);
         assert!(commands
             .iter()
-            .any(|command| matches!(command, Command::SetFileTypes(true))));
+            .any(|command| matches!(command, Command::SetFileTypes(Some(_)))));
         assert!(
             !tools_item(&workspace, command::STOP_FOR_LOGS).1,
             "nothing to stop yet"
@@ -4882,7 +4939,7 @@ mod tests {
         workspace.file_types_changed(Ok(Some(here)));
         assert!(workspace
             .status()
-            .contains("TraceView can open .log and .lo_ files"));
+            .contains("TraceView can open .log, .lo_ and .evtx files"));
         assert_eq!(
             tools_item(&workspace, command::USE_FOR_LOGS).0,
             "Use TraceView for .log files..."
@@ -4910,8 +4967,17 @@ mod tests {
             "Set up for AI agents..."
         );
         assert!(tools_item(&workspace, command::REMOVE_AGENT_SETUP).1);
+        assert_eq!(
+            tools_item(&workspace, command::INSTALL).0,
+            "Install TraceView..."
+        );
+        assert_eq!(
+            tools_item(&workspace, command::REMOVE_AGENT_SETUP).0,
+            "Uninstall TraceView..."
+        );
         // Only asks or reports here, so nothing on this PC changes.
         for (id, confirmed) in [
+            (command::INSTALL, command::INSTALL_CONFIRMED),
             (command::SET_UP_AGENTS, command::SET_UP_AGENTS_CONFIRMED),
             (
                 command::REMOVE_AGENT_SETUP,
@@ -4924,7 +4990,7 @@ mod tests {
                 Command::Confirm { text, command, .. } => {
                     *command == confirmed && text.contains("TraceView will")
                 }
-                Command::ShowMessage { text, .. } => text.contains("AI agents"),
+                Command::ShowMessage { text, .. } => text.contains("TraceView"),
                 _ => false,
             });
             assert!(asked, "command {id}");
