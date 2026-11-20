@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.13.1
+
+The first release that 0.13's copies install by themselves. A log on a mapped network drive is now named with its machine. Still a beta, tested on Windows 11.
 
 **Viewer**
 
