@@ -1601,8 +1601,10 @@ fn incorrect_usage_exits_with_code_two() {
     }
 }
 
-/// Runs setup with a home and app data folder of its own, and nothing to
-/// answer its question, so it never changes this PC.
+/// Runs setup with a home and app data folders of its own, and nothing to
+/// answer its question, so it never changes this PC. It doesn't see this
+/// PC's Start menu either, where reading an installed copy's shortcut
+/// makes Windows create a cache folder in the app data folder.
 fn setup_in(dir: &tempfile::TempDir, args: &[&str]) -> Output {
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
@@ -1611,6 +1613,7 @@ fn setup_in(dir: &tempfile::TempDir, args: &[&str]) -> Output {
         .args(args)
         .env("USERPROFILE", &home)
         .env("LOCALAPPDATA", dir.path().join("local"))
+        .env("APPDATA", dir.path().join("roaming"))
         .env_remove("CODEX_HOME")
         .output()
         .unwrap()
@@ -1631,7 +1634,14 @@ fn setup_says_what_it_would_change_and_changes_nothing_unanswered() {
 
     let removal = setup_in(&dir, &["--remove"]);
     assert!(removal.status.success());
-    assert!(String::from_utf8_lossy(&removal.stdout).contains("nothing to remove"));
+    // File types are registered in this PC's registry, where an installed
+    // copy may have registered them. Removal offers to take that back, and
+    // with no answer changes nothing.
+    let text = String::from_utf8_lossy(&removal.stdout);
+    assert!(
+        text.contains("nothing to remove") || text.contains("Nothing changed"),
+        "{text}"
+    );
 }
 
 #[test]
