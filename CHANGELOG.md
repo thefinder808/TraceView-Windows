@@ -2,7 +2,9 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.15.1
+
+Rows too long for the window now scroll sideways, so their ends can be read in the grid. Still a beta, tested on Windows 11.
 
 **Reading logs**
 
