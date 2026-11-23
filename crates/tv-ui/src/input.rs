@@ -52,6 +52,10 @@ pub enum Event {
     MouseMove(Point),
     /// Wheel movement in rows, positive when scrolling toward the file's start.
     Wheel(f32),
+    /// Sideways wheel movement, from a tilted wheel, a touchpad swiped sideways
+    /// or the wheel turned with Shift held. It's in rows as for `Wheel`, and
+    /// positive when scrolling toward the start of a line.
+    SideWheel(f32),
     /// The wheel turned with Ctrl held, which zooms. Positive is away from the
     /// user, which makes text larger.
     ZoomWheel(f32),

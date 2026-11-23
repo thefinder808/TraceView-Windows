@@ -1,5 +1,9 @@
 //! Scroll bar behavior for very long content. Positions are `f64` row numbers,
 //! because `f32` can't address every row of a file with tens of millions of them.
+//!
+//! The bars here run up and down. A bar that runs across uses the same
+//! functions, given its track and the mouse turned on their side with
+//! [`across`], and turns the thumb they return back the same way.
 
 use crate::geometry::{Point, Rect};
 
@@ -30,6 +34,17 @@ pub enum Press {
     Before,
     /// Below the thumb, which pages down.
     After,
+}
+
+/// The rectangle turned on its side, with left and top swapped, and right
+/// and bottom. Doing it twice gives the rectangle back.
+pub fn across(rect: Rect) -> Rect {
+    Rect::new(rect.top, rect.left, rect.bottom, rect.right)
+}
+
+/// The point turned on its side, to match [`across`].
+pub fn across_point(point: Point) -> Point {
+    Point::new(point.y, point.x)
 }
 
 fn thumb_height(track: &Rect, state: &ScrollState) -> f32 {
@@ -154,6 +169,29 @@ mod tests {
         let content = state(10.0, 0.0);
         assert_eq!(thumb_rect(&TRACK, &content).height(), TRACK.height());
         assert_eq!(drag_position(&TRACK, &content, 400.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_bar_across_works_on_its_side() {
+        let track = Rect::new(0.0, 586.0, 800.0, 600.0);
+        assert_eq!(across(across(track)), track);
+        let content = state(160.0, 120.0);
+        let thumb = across(thumb_rect(&across(track), &content));
+        assert_eq!(
+            (thumb.top, thumb.bottom),
+            (588.0, 598.0),
+            "inset like a bar up and down"
+        );
+        assert_eq!(
+            (thumb.left, thumb.right),
+            (600.0, 800.0),
+            "a quarter of the track, at its end"
+        );
+        let left_of_thumb = across_point(Point::new(10.0, 590.0));
+        assert_eq!(
+            press_at(&across(track), &content, left_of_thumb),
+            Press::Before
+        );
     }
 
     #[test]

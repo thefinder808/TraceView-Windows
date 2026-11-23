@@ -23,6 +23,11 @@ const DRAG_START: f32 = 4.0;
 const BOOKMARK_WIDTH: f32 = 3.0;
 /// A highlight rule's marker, a bar between the row number and the time.
 const MARKER_WIDTH: f32 = 4.0;
+/// How many characters the Left and Right keys scroll sideways.
+const KEY_STEP_CHARS: f32 = 8.0;
+/// How many characters each row of sideways wheel movement scrolls, which
+/// makes a notch of three rows twelve characters.
+const WHEEL_ROW_CHARS: f32 = 4.0;
 
 /// Where rows come from. The GUI backs this with the row cache.
 pub trait RowSource {
@@ -83,6 +88,10 @@ enum Drag {
     Thumb {
         grab: f32,
     },
+    /// The thumb of the scroll bar under the rows, which scrolls sideways.
+    SideThumb {
+        grab: f32,
+    },
     Rows,
     /// A column's right edge, with `column` indexing `LogView::columns`.
     Resize {
@@ -124,6 +133,9 @@ struct Layout {
     header: Rect,
     body: Rect,
     track: Rect,
+    /// The track of the scroll bar under the rows, which is empty while
+    /// every row's text fits.
+    side_track: Rect,
     row_number_right: f32,
     /// Where the first column starts, after the gap that holds rule markers.
     first_left: f32,
@@ -143,6 +155,16 @@ pub struct LogView {
     /// Every column in order, shown or not.
     columns: Vec<ColumnSpec>,
     placed: Vec<Placed>,
+    /// How far the columns are scrolled sideways. The row numbers stay put.
+    left: f32,
+    /// How wide the last column's text is on the widest row shown since the
+    /// last column or the font changed. It sets how far the columns scroll.
+    widest: f32,
+    /// The last column's text width on each row measured last frame, by its
+    /// row in the file, so rows that stay on screen aren't measured again.
+    measured: Vec<(usize, f32)>,
+    /// The last column and character width those widths are for.
+    measured_for: Option<(Column, f32)>,
 }
 
 /// Rounds to a whole number of physical pixels, which keeps rows crisp.
@@ -198,19 +220,98 @@ impl LogView {
             header,
             body,
             track,
+            side_track: Rect::default(),
             row_number_right,
             first_left: row_number_right + CELL_PADDING * 1.5,
         };
         if !matches!(self.drag, Some(Drag::Resize { .. } | Drag::Move { .. })) {
             self.columns = columns.to_vec();
         }
+        // Widths measured for another last column, or another font, no
+        // longer say how far to scroll.
+        let measured_for = self
+            .columns
+            .iter()
+            .rfind(|spec| spec.shown)
+            .map(|spec| (spec.column, metrics.char_width));
+        if measured_for != self.measured_for {
+            self.measured_for = measured_for;
+            self.widest = 0.0;
+            self.measured.clear();
+        }
         self.place();
+        if self.max_left() > 0.0 {
+            self.layout.side_track = self.layout.body.take_bottom(scrollbar::WIDTH);
+        }
+        self.scroll_sideways(0.0);
         self.clamp_top();
     }
 
+    /// Measures the last column's text on the rows on screen, so the columns
+    /// can scroll as far as the widest text shown. Rows measured last frame
+    /// aren't measured again. Call after `arrange`. Returns true when this
+    /// text is the first that's too wide, as the scroll bar it needs takes
+    /// room from the rows, so the owner should arrange the view again.
+    pub fn measure(&mut self, canvas: &mut dyn Canvas, source: &dyn RowSource) -> bool {
+        let Some(last) = self.placed.last().map(|placed| placed.column) else {
+            return false;
+        };
+        let mut measured = Vec::with_capacity(self.visible_rows().len());
+        for row in self.visible_rows() {
+            let file_row = source.file_row(row);
+            let known = self
+                .measured
+                .iter()
+                .find(|(seen, _)| *seen == file_row)
+                .map(|(_, width)| *width);
+            let width = match (known, last) {
+                (Some(width), _) => width,
+                (None, Column::Level) => {
+                    canvas.text_width(short_level(source.level(row)), FontRole::Grid)
+                }
+                (None, column) => match source.cells(row) {
+                    Some(cells) => canvas.text_width(column.text(&cells), FontRole::Grid),
+                    // It's measured once it has loaded.
+                    None => continue,
+                },
+            };
+            self.widest = self.widest.max(width);
+            measured.push((file_row, width));
+        }
+        self.measured = measured;
+        self.layout.side_track.height() == 0.0 && self.max_left() > 0.0
+    }
+
+    /// How far the columns can scroll sideways: until the end of the widest
+    /// text shown meets the grid's right edge.
+    fn max_left(&self) -> f32 {
+        self.placed.last().map_or(0.0, |last| {
+            let end = last.left + self.left + self.widest + CELL_PADDING;
+            (end - self.layout.body.right).max(0.0)
+        })
+    }
+
+    /// Scrolls the columns sideways by `delta`, positive toward the end of
+    /// the line, and keeps them in range.
+    fn scroll_sideways(&mut self, delta: f32) {
+        self.left = (self.left + delta).clamp(0.0, self.max_left());
+        self.place();
+    }
+
+    /// The sideways scroll bar's content, in pixels.
+    fn side_state(&self) -> ScrollState {
+        let visible = f64::from(self.layout.body.right - self.layout.first_left);
+        ScrollState {
+            total: visible + f64::from(self.max_left()),
+            visible,
+            top: f64::from(self.left),
+        }
+    }
+
+    /// Places the shown columns, moved left by however far they're scrolled.
     fn place(&mut self) {
         let char_width = self.metrics.char_width;
-        let mut left = self.layout.first_left;
+        let mut left = self.layout.first_left - self.left;
         self.placed.clear();
         for spec in self.columns.iter().filter(|spec| spec.shown) {
             let right = left + spec.width * char_width;
@@ -241,15 +342,17 @@ impl LogView {
     }
 
     /// The shown column whose right edge is under `point` in the header. The
-    /// last column fills the grid, so its edge can't be dragged.
+    /// last column fills the grid, so its edge can't be dragged, and nor can
+    /// an edge scrolled out of sight under the row numbers.
     fn edge_at(&self, point: Point) -> Option<usize> {
         if !self.layout.header.contains(point) {
             return None;
         }
         let last = self.placed.len().checked_sub(1)?;
-        self.placed[..last]
-            .iter()
-            .position(|placed| (point.x - (placed.right + CELL_PADDING / 2.0)).abs() <= EDGE_GRAB)
+        self.placed[..last].iter().position(|placed| {
+            let edge = placed.right + CELL_PADDING / 2.0;
+            edge >= self.layout.first_left && (point.x - edge).abs() <= EDGE_GRAB
+        })
     }
 
     /// True where a press would resize a column, or while one is resizing,
@@ -374,8 +477,9 @@ impl LogView {
         self.anchor = self.cursor;
     }
 
-    /// Clears the selection and scroll position for a new set of rows. The layout
-    /// stays, so a row can be selected again before the next frame arranges it.
+    /// Clears the selection and the scroll position up and down for a new set
+    /// of rows. The layout stays, so a row can be selected again before the
+    /// next frame arranges it, and so does the sideways scroll position.
     pub fn reset(&mut self, rows: usize) {
         *self = Self {
             layout: self.layout,
@@ -383,6 +487,10 @@ impl LogView {
             rows,
             columns: std::mem::take(&mut self.columns),
             placed: std::mem::take(&mut self.placed),
+            left: self.left,
+            widest: self.widest,
+            measured: std::mem::take(&mut self.measured),
+            measured_for: self.measured_for,
             ..Self::default()
         };
     }
@@ -434,6 +542,11 @@ impl LogView {
                 self.scroll_to(self.top + 1.0);
                 return Response::REDRAW;
             }
+            (Key::Left | Key::Right, false) => {
+                let step = KEY_STEP_CHARS * self.metrics.char_width;
+                self.scroll_sideways(if key == Key::Left { -step } else { step });
+                return Response::REDRAW;
+            }
             (Key::Char('A'), true) => self.select_all(),
             (Key::Char('C'), true) => {
                 return Response {
@@ -451,6 +564,16 @@ impl LogView {
     }
 
     fn handle_press(&mut self, point: Point, shift: bool) -> Response {
+        if self.layout.side_track.contains(point) {
+            let track = scrollbar::across(self.layout.side_track);
+            let page = self.layout.body.right - self.layout.first_left;
+            match scrollbar::press_at(&track, &self.side_state(), scrollbar::across_point(point)) {
+                Press::Thumb { grab } => self.drag = Some(Drag::SideThumb { grab }),
+                Press::Before => self.scroll_sideways(-page),
+                Press::After => self.scroll_sideways(page),
+            }
+            return Response::REDRAW;
+        }
         if self.layout.track.contains(point) {
             let state = self.scroll_state();
             match scrollbar::press_at(&self.layout.track, &state, point) {
@@ -471,10 +594,12 @@ impl LogView {
             return Response::default();
         }
         if self.layout.header.contains(point) {
+            // Scrolled sideways, a column under the row number's title is out of sight.
+            let hidden = self.left > 0.0 && point.x < self.layout.first_left;
             let pressed = self
                 .placed
                 .iter()
-                .find(|placed| point.x < placed.right + CELL_PADDING)
+                .find(|placed| !hidden && point.x < placed.right + CELL_PADDING)
                 .and_then(|placed| self.spec_index(placed.column));
             if let Some(column) = pressed {
                 self.drag = Some(Drag::Move {
@@ -549,6 +674,12 @@ impl LogView {
                 let state = self.scroll_state();
                 self.top = scrollbar::drag_position(&self.layout.track, &state, point.y, grab);
                 self.clamp_top();
+                Response::REDRAW
+            }
+            Some(Drag::SideThumb { grab }) => {
+                let track = scrollbar::across(self.layout.side_track);
+                let left = scrollbar::drag_position(&track, &self.side_state(), point.x, grab);
+                self.scroll_sideways(left as f32 - self.left);
                 Response::REDRAW
             }
             Some(Drag::Rows) => {
@@ -634,6 +765,10 @@ impl LogView {
                 self.scroll_to(self.top - f64::from(rows));
                 Response::REDRAW
             }
+            Event::SideWheel(rows) => {
+                self.scroll_sideways(-rows * WHEEL_ROW_CHARS * self.metrics.char_width);
+                Response::REDRAW
+            }
             _ => Response::default(),
         }
     }
@@ -684,6 +819,7 @@ impl LogView {
             theme.primary_text,
         );
         canvas.push_clip(header);
+        canvas.push_clip(cell(layout.first_left, header.right));
         for placed in &self.placed {
             canvas.text(
                 placed.title,
@@ -692,6 +828,7 @@ impl LogView {
                 theme.primary_text,
             );
         }
+        canvas.pop_clip();
         // Where a dragged header would land.
         if let Some(Drag::Move {
             target: Some(target),
@@ -809,6 +946,8 @@ impl LogView {
             GRID_RIGHT,
             themed(theme.tertiary_text),
         );
+        // Columns scrolled sideways go out of sight beside the row number.
+        canvas.push_clip(cell(layout.first_left, rect.right));
         // The level comes from the index, so it draws before the row has loaded.
         for placed in &self.placed {
             let (text, color) = match (placed.column, &cells) {
@@ -821,6 +960,7 @@ impl LogView {
             };
             canvas.text(text, cell(placed.left, placed.right), GRID_LEFT, color);
         }
+        canvas.pop_clip();
     }
 
     pub fn draw(&self, canvas: &mut dyn Canvas, source: &dyn RowSource, theme: &Theme) {
@@ -837,6 +977,12 @@ impl LogView {
         if self.rows > 0 {
             let thumb = scrollbar::thumb_rect(&layout.track, &self.scroll_state());
             canvas.fill_rect(thumb, theme.scrollbar_thumb);
+        }
+        if layout.side_track.height() > 0.0 {
+            canvas.fill_rect(layout.side_track, theme.scrollbar_track);
+            let track = scrollbar::across(layout.side_track);
+            let thumb = scrollbar::thumb_rect(&track, &self.side_state());
+            canvas.fill_rect(scrollbar::across(thumb), theme.scrollbar_thumb);
         }
     }
 }
@@ -1344,6 +1490,213 @@ mod tests {
         let small = view(100);
         let large = view(47_815_464);
         assert!(large.layout.first_left > small.layout.first_left);
+    }
+
+    /// A hundred rows with 300-character messages, 2,100 pixels wide here.
+    /// It counts how often rows are read.
+    #[derive(Default)]
+    struct LongRows {
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl RowSource for LongRows {
+        fn row_count(&self) -> usize {
+            100
+        }
+
+        fn level(&self, _row: usize) -> Level {
+            Level::Info
+        }
+
+        fn cells(&self, row: usize) -> Option<Arc<RowCells>> {
+            self.reads.set(self.reads.get() + 1);
+            Some(Arc::new(RowCells {
+                message: format!("{row:03}{}", "x".repeat(297)),
+                ..RowCells::default()
+            }))
+        }
+    }
+
+    /// A view of long rows, measured and then arranged again, as the
+    /// workspace does when the first long text comes on screen.
+    fn long_view(rows: &LongRows) -> LogView {
+        let mut view = view(100);
+        assert!(view.measure(&mut RecordingCanvas::new(), rows));
+        view.arrange(AREA, 100, METRICS, &defaults(Format::Plain));
+        view
+    }
+
+    fn left_of(view: &LogView, column: Column) -> f32 {
+        view.header_rect(column).unwrap().left
+    }
+
+    /// Where the longest text ends, which scrolling stops at the grid's edge.
+    fn text_end(view: &LogView) -> f32 {
+        left_of(view, Column::Message) + 300.0 * 7.0 + CELL_PADDING
+    }
+
+    #[test]
+    fn rows_that_fit_dont_scroll_sideways() {
+        let mut view = view(100);
+        let rows = FakeRows {
+            count: 100,
+            loaded: true,
+        };
+        assert!(!view.measure(&mut RecordingCanvas::new(), &rows));
+        view.arrange(AREA, 100, METRICS, &defaults(Format::Plain));
+        let time = left_of(&view, Column::Time);
+        view.handle(Event::SideWheel(-3.0));
+        key(&mut view, Key::Right, NONE);
+        assert_eq!(left_of(&view, Column::Time), time);
+        assert_eq!(view.layout.side_track, Rect::default(), "no scroll bar");
+        assert_eq!(view.body_rect().bottom, AREA.bottom);
+    }
+
+    #[test]
+    fn long_rows_scroll_sideways_and_stop_at_their_end() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        assert_eq!(view.layout.side_track.height(), scrollbar::WIDTH);
+        assert_eq!(view.body_rect().bottom, AREA.bottom - scrollbar::WIDTH);
+        let time = left_of(&view, Column::Time);
+        // A notch is three rows of four characters, each 7 wide here.
+        view.handle(Event::SideWheel(-3.0));
+        assert_eq!(left_of(&view, Column::Time), time - 84.0);
+        // The keys move eight characters.
+        key(&mut view, Key::Left, NONE);
+        assert_eq!(left_of(&view, Column::Time), time - 28.0);
+        key(&mut view, Key::Right, NONE);
+        key(&mut view, Key::Right, NONE);
+        assert_eq!(left_of(&view, Column::Time), time - 140.0);
+        assert_eq!(view.selection(), None, "scrolling sideways selects nothing");
+        view.handle(Event::SideWheel(-1000.0));
+        assert_eq!(text_end(&view), view.body_rect().right);
+        view.handle(Event::SideWheel(1000.0));
+        assert_eq!(left_of(&view, Column::Time), time);
+    }
+
+    #[test]
+    fn row_numbers_stay_put_while_the_columns_scroll_beside_them() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        view.handle(Event::SideWheel(-30.0));
+        let first_left = view.layout.first_left;
+        assert!(left_of(&view, Column::Time) < first_left, "out of sight");
+        let mut canvas = RecordingCanvas::new();
+        view.draw(&mut canvas, &rows, &Theme::CLASSIC);
+        assert!(canvas.clips_balance());
+        let number = canvas.ops.iter().find_map(|op| match op {
+            DrawOp::Text(text, rect, ..) if text == "1" => Some(*rect),
+            _ => None,
+        });
+        assert_eq!(number.map(|rect| rect.left), Some(view.body_rect().left));
+        let row = view.row_rect(0);
+        let beside_numbers = Rect::new(first_left, row.top, row.right, row.bottom);
+        assert!(canvas.ops.contains(&DrawOp::PushClip(beside_numbers)));
+        let track = view.layout.side_track;
+        let thumb = canvas.ops.iter().find_map(|op| match op {
+            DrawOp::Fill(rect, color)
+                if *color == Theme::CLASSIC.scrollbar_thumb && rect.top > track.top =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        });
+        assert!(thumb.is_some_and(|thumb| thumb.left > track.left && thumb.bottom < track.bottom));
+    }
+
+    #[test]
+    fn rows_are_measured_once_while_they_stay_on_screen() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        assert_eq!(rows.reads.get(), view.visible_rows().len());
+        rows.reads.set(0);
+        assert!(!view.measure(&mut RecordingCanvas::new(), &rows));
+        assert_eq!(rows.reads.get(), 0, "nothing new on screen");
+        view.handle(Event::Wheel(-3.0));
+        view.measure(&mut RecordingCanvas::new(), &rows);
+        assert_eq!(rows.reads.get(), 3);
+    }
+
+    #[test]
+    fn another_font_or_last_column_measures_again() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        view.handle(Event::SideWheel(-3.0));
+        let larger = Metrics {
+            char_width: 8.0,
+            ..METRICS
+        };
+        view.arrange(AREA, 100, larger, &defaults(Format::Plain));
+        assert_eq!(view.layout.side_track, Rect::default());
+        assert_eq!(left_of(&view, Column::Time), view.layout.first_left);
+        assert!(view.measure(&mut RecordingCanvas::new(), &rows));
+        // With the message first, the time is last, and its text fits.
+        let mut columns = defaults(Format::Plain);
+        let message = columns
+            .iter()
+            .position(|spec| spec.column == Column::Message)
+            .unwrap();
+        let spec = columns.remove(message);
+        columns.insert(0, spec);
+        view.arrange(AREA, 100, METRICS, &columns);
+        assert!(!view.measure(&mut RecordingCanvas::new(), &rows));
+        assert_eq!(view.layout.side_track, Rect::default());
+    }
+
+    #[test]
+    fn new_rows_keep_the_sideways_position() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        let time = left_of(&view, Column::Time);
+        view.handle(Event::SideWheel(-3.0));
+        view.reset(100);
+        view.arrange(AREA, 100, METRICS, &defaults(Format::Plain));
+        assert_eq!(left_of(&view, Column::Time), time - 84.0);
+    }
+
+    #[test]
+    fn the_sideways_bar_pages_and_drags() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        let track = view.layout.side_track;
+        let time = left_of(&view, Column::Time);
+        let page = view.body_rect().right - view.layout.first_left;
+        click(&mut view, track.right - 5.0, track.top + 5.0, NONE);
+        assert_eq!(left_of(&view, Column::Time), time - page);
+        assert_eq!(view.selection(), None, "the bar doesn't select rows");
+        let thumb = scrollbar::across(scrollbar::thumb_rect(
+            &scrollbar::across(track),
+            &view.side_state(),
+        ));
+        let middle = track.top + scrollbar::WIDTH / 2.0;
+        view.handle(Event::MouseDown(
+            Point::new(thumb.left + 2.0, middle),
+            MouseButton::Left,
+            NONE,
+        ));
+        view.handle(Event::MouseMove(Point::new(AREA.right + 500.0, middle)));
+        assert_eq!(text_end(&view), view.body_rect().right);
+        view.handle(Event::MouseMove(Point::new(-500.0, middle)));
+        assert_eq!(left_of(&view, Column::Time), time);
+        view.handle(Event::MouseUp(Point::new(0.0, middle), MouseButton::Left));
+    }
+
+    #[test]
+    fn columns_out_of_sight_cant_be_resized_or_moved() {
+        let rows = LongRows::default();
+        let mut view = long_view(&rows);
+        let edge = view.header_rect(Column::Time).unwrap().right + CELL_PADDING / 2.0;
+        assert!(view.shows_resize_cursor(Point::new(edge, 10.0)));
+        // Seven rows of wheel move 196 pixels, which puts the edge under the
+        // row numbers.
+        view.handle(Event::SideWheel(-7.0));
+        let hidden = edge - 196.0;
+        assert!(hidden > 0.0 && hidden < view.layout.first_left);
+        assert!(!view.shows_resize_cursor(Point::new(hidden, 10.0)));
+        assert_eq!(press(&mut view, hidden), Response::default());
+        move_to(&mut view, 600.0);
+        assert!(!release(&mut view, 600.0).columns_changed);
     }
 
     fn order(view: &LogView) -> Vec<Column> {

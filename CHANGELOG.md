@@ -2,6 +2,12 @@
 
 Each release's changes, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+**Reading logs**
+
+- Rows too long for the window scroll sideways: with Shift and the mouse wheel, a tilting wheel or a touchpad, the Left and Right keys, or the scroll bar that appears under the rows. The row numbers stay put. Before, the end of a long row could only be read in the details pane or by widening the window.
+
 ## 0.15.0
 
 Installing TraceView properly: one step adds it to the Start menu, puts it on your PATH, lets it open `.log`, `.lo_` and `.evtx` files and opens Windows' Default apps page to make it their default. And setup logs with blank lines between entries no longer show an empty row after each. Still a beta, tested on Windows 11.

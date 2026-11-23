@@ -728,6 +728,67 @@ fn sccm_logs_show_the_thread_and_the_columns_editor_draws() {
 }
 
 #[test]
+fn long_rows_scroll_sideways_beside_the_row_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("WUAHandler.log");
+    // Every third row runs far past the window's edge.
+    let text: String = (0..60)
+        .map(|row| {
+            let more = if row % 3 == 0 {
+                " and more words".repeat(30)
+            } else {
+                String::new()
+            };
+            format!(
+                "<![LOG[Row {row} starts here{more}]LOG]!><time=\"10:00:{row:02}.000+000\" date=\"04-06-2026\" component=\"WUAHandler\" context=\"\" type=\"1\" thread=\"4128\" file=\"a.cpp\">\r\n"
+            )
+        })
+        .collect();
+    std::fs::write(&path, text).unwrap();
+    let mut workspace = Workspace::new(Waker::detached(), 0, false);
+    workspace.theme_choice = ThemeChoice::Fixed(&Theme::CLASSIC);
+    workspace.open_paths(vec![path]);
+    workspace.tabs[0].following = false;
+    render(&mut workspace, "sideways-start", 96.0, |workspace| {
+        workspace.tabs[0].document().is_some()
+    });
+    // Each press moves eight characters, so this goes past the end.
+    for _ in 0..200 {
+        send(&mut workspace, Event::KeyDown(Key::Right, NONE));
+    }
+    let frame = render(&mut workspace, "sideways-end", 96.0, |_| true);
+    let theme = workspace.theme();
+    let view = &workspace.tabs[0].view;
+    let body = view.body_rect();
+
+    // The scroll bar under the rows has its thumb at the right end.
+    let bar = body.bottom + 7.0;
+    assert_eq!(frame.at(body.right - 10.0, bar), theme.scrollbar_thumb);
+    assert_eq!(frame.at(body.left + 10.0, bar), theme.scrollbar_track);
+    // The long rows end at the grid's edge, and short ones are scrolled past.
+    let near_edge = |row: usize| {
+        let rect = view.row_rect(row);
+        Rect::new(body.right - 80.0, rect.top, body.right - 10.0, rect.bottom)
+    };
+    assert!(frame.has_ink(near_edge(0), theme.grid_background));
+    assert!(!frame.has_ink(near_edge(1), theme.grid_background));
+    // Row numbers still draw, and no text runs over the gap beside them.
+    for row in 0..3 {
+        let marker = view.marker_rect(row);
+        let rect = view.row_rect(row);
+        let number = Rect::new(body.left, rect.top, marker.left - 2.0, rect.bottom);
+        assert!(
+            frame.has_ink(number, theme.grid_background),
+            "row {row}'s number"
+        );
+        assert!(
+            !frame.has_ink(marker, theme.grid_background),
+            "text ran beside row {row}'s number"
+        );
+    }
+}
+
+#[test]
 fn rows_fit_their_font_at_every_size() {
     let (_dir, mut workspace) = opened(ThemeChoice::Fixed(&Theme::CLASSIC));
     render(&mut workspace, "fonts-default", 96.0, |workspace| {

@@ -319,7 +319,7 @@ The RDP window was minimized for these frame times, so they leave out presenting
 **Differences from this design:**
 
 - **The Row column can't be hidden or moved,** because bookmark and rule markers sit beside it.
-- **No horizontal scrolling.** Columns past the window's right edge are cut off, so the last column should be the one that can lose text.
+- **No horizontal scrolling at first.** Columns past the window's right edge were cut off. [Scrolling sideways](#scrolling-sideways) came later.
 - **A merged tab uses its first file's columns.** Merging SCCM and other logs together gives one layout either way.
 
 **Not covered by automation:** dragging headers by hand, where the feel of the grab zones matters.
@@ -524,6 +524,19 @@ The RDP window was minimized for these frame times, so they leave out presenting
 - **Opening shows a count of events,** as "Reading System: 12,345 events", since an event log has no size in bytes to show a percentage of.
 - **One of this PC's logs is followed:** every two seconds a thread adds new events to its copy, and the tab's live tail shows them as it does new lines in any log. A saved `.evtx` file isn't followed.
 - **The copy goes with the tab.** Closing the tab stops the thread and deletes the copy.
+
+## Scrolling sideways
+
+[ARCHITECTURE.md](ARCHITECTURE.md#scrolling-sideways) has how far the grid scrolls and how rows are measured.
+
+- **Rows too long for the window scroll sideways,** as in CMTrace. The columns and their headers move together. The row numbers stay put, with bookmark and rule markers beside them, so it's always clear which row is which.
+- **Ways to scroll:** Shift with the mouse wheel, a tilting wheel or a touchpad swiped sideways, the Left and Right keys in the grid, and a scroll bar under the rows. A wheel notch moves twelve characters, at Windows' usual three lines a notch, and a key press moves eight.
+- **The scroll bar appears once a row is too long, then stays.** It reaches the widest row shown since the log opened, and doesn't shrink as shorter rows go by, so the bar doesn't come and go and the view doesn't jump. Another font, or another last column, starts measuring again. Filtering keeps the sideways position.
+- **Text is measured in the real font,** so a proportional font such as Segoe UI scrolls exactly to the end of a row, as a fixed-width font does.
+- **The grid keeps the first 2,048 bytes of a message,** about 2,000 characters, which is as far as it scrolls. The details pane shows the whole message.
+- **Screen readers aren't affected:** a row's text is read whole, however far the grid is scrolled.
+
+**Not covered by automation:** how a tilting wheel and a touchpad feel.
 
 ## After 0.12.0
 
