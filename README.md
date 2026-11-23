@@ -71,6 +71,7 @@ The start page opens recent logs and folders, and this PC's usual log folders, s
 | Up, Down, Page Up, Page Down, Home, End | Move the selection |
 | Shift with any of those, or Shift+click | Extend the selection |
 | Ctrl+Up, Ctrl+Down, mouse wheel | Scroll without moving the selection |
+| Left, Right, Shift with the mouse wheel | Scroll sideways, to read rows too long for the window |
 | Ctrl+A, Ctrl+C | Select all, copy as tab-separated text |
 | Ctrl+O | Open logs, each in its own tab |
 | Ctrl+Shift+O | Open a folder, such as one of logs copied from another PC. Its logs are listed with their errors and warnings, and a click opens one. Dropping a folder does the same |

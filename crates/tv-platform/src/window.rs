@@ -35,8 +35,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER, SW_SHOW, WM_APP, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED,
     WM_DROPFILES, WM_ERASEBKGND, WM_GETOBJECT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDBLCLK,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
     WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WNDCLASSW, WS_EX_ACCEPTFILES, WS_OVERLAPPEDWINDOW,
 };
 
@@ -652,11 +652,21 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEWHEEL => {
             let rows = input::wheel_rows(high_word(wparam.0 as isize));
-            let event = if input::modifiers().ctrl {
+            let modifiers = input::modifiers();
+            let event = if modifiers.ctrl {
                 Event::ZoomWheel(rows)
+            } else if modifiers.shift {
+                Event::SideWheel(rows)
             } else {
                 Event::Wheel(rows)
             };
+            state.with_handler(|handler, commands| handler.event(event, commands));
+            return LRESULT(0);
+        }
+        // A tilted wheel, or a touchpad swiped sideways. Its movement to the
+        // right is positive, the other way round from `SideWheel`.
+        WM_MOUSEHWHEEL => {
+            let event = Event::SideWheel(-input::wheel_rows(high_word(wparam.0 as isize)));
             state.with_handler(|handler, commands| handler.event(event, commands));
             return LRESULT(0);
         }

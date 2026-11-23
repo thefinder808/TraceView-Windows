@@ -464,7 +464,6 @@ impl Tab {
     }
 
     /// The view and its rows together, for code that scrolls while reading rows.
-    #[cfg_attr(not(feature = "bench"), allow(dead_code))]
     pub fn split(&mut self) -> (&mut LogView, Option<TabRows<'_>>) {
         let rows = match &self.content {
             Content::Ready(document) => document

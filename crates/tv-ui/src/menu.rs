@@ -432,7 +432,9 @@ impl MenuBar {
                     ..MenuResponse::default()
                 }
             }
-            Event::MouseUp(..) | Event::Wheel(_) | Event::Char(_) if self.open.is_some() => {
+            Event::MouseUp(..) | Event::Wheel(_) | Event::SideWheel(_) | Event::Char(_)
+                if self.open.is_some() =>
+            {
                 MenuResponse {
                     consumed: true,
                     ..MenuResponse::default()

@@ -13,7 +13,8 @@ use tv_engine::{encoding, LogFile};
 
 const ROWS_PER_BLOCK: usize = 128;
 const MAX_BLOCKS: usize = 512;
-/// Only this much of a message is kept for display, because no screen shows more.
+/// Only this much of a message is kept for display, which the grid scrolls
+/// sideways to the end of. The details pane shows the whole message.
 const MAX_DISPLAY_BYTES: usize = 2048;
 
 /// A row's fields, ready to draw.

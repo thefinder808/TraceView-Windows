@@ -2285,7 +2285,7 @@ impl Workspace {
                 self.sidebar.contains(point)
             }
             Event::MouseMove(_) | Event::MouseUp(..) => self.sidebar.is_dragging(),
-            Event::Wheel(_) => self.sidebar.contains(self.pointer),
+            Event::Wheel(_) | Event::SideWheel(_) => self.sidebar.contains(self.pointer),
             Event::KeyDown(Key::Escape, _) if self.focus == Focus::Sidebar => {
                 self.set_focus(Focus::Grid, commands);
                 return true;
@@ -2370,7 +2370,7 @@ impl Workspace {
         };
         let other_tab = self.split.as_ref().map_or(usize::MAX, |split| split.other);
         match event {
-            Event::Wheel(_) if other.grid.contains(self.pointer) => {
+            Event::Wheel(_) | Event::SideWheel(_) if other.grid.contains(self.pointer) => {
                 if let Some(tab) = self.tabs.get_mut(other_tab) {
                     tab.view.handle(event);
                     tab.following = tab.view.at_bottom();
@@ -3065,6 +3065,7 @@ impl Workspace {
             Event::MouseMove(_)
             | Event::MouseUp(..)
             | Event::Wheel(_)
+            | Event::SideWheel(_)
             | Event::ZoomWheel(_)
             | Event::Char(_) => open,
         }
@@ -3277,7 +3278,7 @@ impl Workspace {
             return;
         };
         let field_event = match event {
-            Event::Wheel(_) => false,
+            Event::Wheel(_) | Event::SideWheel(_) => false,
             Event::MouseDown(point, ..) => !layout.grid.contains(point),
             _ => focus != Focus::Grid,
         };
@@ -3594,16 +3595,24 @@ impl Workspace {
             };
             let columns = self.columns_for(self.tabs.get(index).and_then(Tab::kind));
             if let Some(tab) = self.tabs.get_mut(index) {
-                let count = tab.rows().map_or(0, |rows| rows.row_count());
                 // A selected last row moves to the newest one as rows arrive,
                 // so the details pane shows each new row.
-                let on_last = tab.following && tab.view.selects_last_row();
-                tab.view.arrange(pane.grid, count, metrics, &columns);
-                if tab.following {
-                    if on_last && count > 0 {
-                        tab.view.select(count - 1, false);
+                let (following, on_last) = (tab.following, tab.view.selects_last_row());
+                let (view, rows) = tab.split();
+                let count = rows.as_ref().map_or(0, |rows| rows.row_count());
+                // Arranged again when the rows on screen first need the
+                // sideways scroll bar, which leaves less room for them.
+                for _ in 0..2 {
+                    view.arrange(pane.grid, count, metrics, &columns);
+                    if following {
+                        if on_last && count > 0 {
+                            view.select(count - 1, false);
+                        }
+                        view.scroll_to_end();
                     }
-                    tab.view.scroll_to_end();
+                    if !rows.as_ref().is_some_and(|rows| view.measure(canvas, rows)) {
+                        break;
+                    }
                 }
             }
         }
@@ -5602,6 +5611,43 @@ mod tests {
             send(&mut workspace, Event::KeyDown(Key::Char('-'), CTRL));
         }
         assert_eq!(size(&workspace), *LOG_SIZES.start());
+    }
+
+    #[test]
+    fn the_wheel_scrolls_long_rows_sideways() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.log");
+        let long = "x".repeat(400);
+        let text: String = (0..20)
+            .map(|row| format!("2026-01-01 10:00:{row:02} host app[1]: INFO: {long}\n"))
+            .collect();
+        std::fs::write(&path, text).unwrap();
+        let mut workspace = workspace();
+        workspace.open_paths(vec![path]);
+        settle(&mut workspace, |workspace| {
+            workspace.tabs[0]
+                .rows()
+                .is_some_and(|rows| rows.cells(0).is_some())
+        });
+        // One more frame, which measures the rows that just loaded.
+        settle(&mut workspace, |_| true);
+        let time = |workspace: &Workspace| {
+            workspace.tabs[0]
+                .view
+                .header_rect(Column::Time)
+                .map(|rect| rect.left)
+        };
+        let start = time(&workspace).unwrap();
+        let grid = workspace.layout.grid;
+        send(
+            &mut workspace,
+            Event::MouseMove(Point::new(grid.left + 100.0, grid.top + 100.0)),
+        );
+        send(&mut workspace, Event::SideWheel(-3.0));
+        // Three rows of four characters, each 7 wide on the test canvas.
+        assert_eq!(time(&workspace), Some(start - 84.0));
+        send(&mut workspace, Event::KeyDown(Key::Left, NONE));
+        assert_eq!(time(&workspace), Some(start - 28.0));
     }
 
     #[test]
